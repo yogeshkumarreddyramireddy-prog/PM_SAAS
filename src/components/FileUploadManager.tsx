@@ -57,7 +57,7 @@ export const FileUploadManagerFixed = ({
     const { data: presignData, error: presignError } = await supabase.functions.invoke('r2-presign', {
       body: {
         fileName: file.name,
-        fileType: file.type,
+        fileType: file.type || 'image/tiff',
         fileSize: file.size,
         golfCourseId,
         category,
@@ -71,7 +71,7 @@ export const FileUploadManagerFixed = ({
     await new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open('PUT', presignData.uploadUrl);
-      xhr.setRequestHeader('Content-Type', file.type);
+      xhr.setRequestHeader('Content-Type', file.type || 'image/tiff');
       xhr.upload.onprogress = (e) => {
         if (onProgress && e.lengthComputable) {
           onProgress(Math.round((e.loaded / e.total) * 100));

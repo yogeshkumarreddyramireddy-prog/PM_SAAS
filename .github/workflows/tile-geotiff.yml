@@ -1,0 +1,202 @@
+name: Tile GeoTIFF
+
+on:
+  workflow_dispatch:
+    inputs:
+      file_id:
+        description: 'Content file ID from Supabase'
+        required: true
+        type: string
+      r2_key:
+        description: 'R2 object key of the uploaded TIFF'
+        required: true
+        type: string
+      golf_course_id:
+        description: 'Golf course (club) UUID'
+        required: true
+        type: string
+      golf_course_name:
+        description: 'Golf course name (sanitized)'
+        required: true
+        type: string
+
+jobs:
+  tile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install GDAL and Python dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gdal-bin python3-gdal python3-pip
+          pip3 install boto3 requests
+
+      - name: Configure R2 (S3-compatible) access
+        run: |
+          mkdir -p ~/.aws
+          cat > ~/.aws/credentials << EOF
+          [default]
+          aws_access_key_id=${{ secrets.R2_ACCESS_KEY_ID }}
+          aws_secret_access_key=${{ secrets.R2_SECRET_ACCESS_KEY }}
+          EOF
+          cat > ~/.aws/config << EOF
+          [default]
+          region = auto
+          EOF
+
+      - name: Download TIFF from R2
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          echo "Downloading: ${{ inputs.r2_key }}"
+          aws s3 cp \
+            "s3://$R2_BUCKET/${{ inputs.r2_key }}" \
+            /tmp/input.tif \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+
+      - name: Extract geospatial metadata
+        id: metadata
+        run: |
+          echo "Extracting metadata from TIFF..."
+          python3 scripts/extract_metadata.py /tmp/input.tif > /tmp/metadata.json
+          cat /tmp/metadata.json
+
+          # Parse metadata into outputs
+          echo "bounds=$(python3 -c 'import json; m=json.load(open("/tmp/metadata.json")); print(json.dumps(m["bounds"]))')" >> $GITHUB_OUTPUT
+          echo "center_lat=$(python3 -c 'import json; m=json.load(open("/tmp/metadata.json")); print(m["center_lat"])')" >> $GITHUB_OUTPUT
+          echo "center_lon=$(python3 -c 'import json; m=json.load(open("/tmp/metadata.json")); print(m["center_lon"])')" >> $GITHUB_OUTPUT
+          echo "min_zoom=$(python3 -c 'import json; m=json.load(open("/tmp/metadata.json")); print(m["min_zoom"])')" >> $GITHUB_OUTPUT
+          echo "max_zoom=$(python3 -c 'import json; m=json.load(open("/tmp/metadata.json")); print(m["max_zoom"])')" >> $GITHUB_OUTPUT
+
+      - name: Reproject to EPSG:4326 if needed
+        run: |
+          python3 -c "
+          import json
+          m = json.load(open('/tmp/metadata.json'))
+          if m.get('needs_reproject'):
+              print('Reprojecting to EPSG:4326...')
+          else:
+              print('Already in EPSG:4326, skipping reproject')
+          "
+
+          # Check if reprojection is needed
+          NEEDS_REPROJECT=$(python3 -c "import json; m=json.load(open('/tmp/metadata.json')); print('yes' if m.get('needs_reproject') else 'no')")
+          if [ "$NEEDS_REPROJECT" = "yes" ]; then
+            gdalwarp -t_srs EPSG:4326 /tmp/input.tif /tmp/reprojected.tif
+            mv /tmp/reprojected.tif /tmp/input.tif
+            echo "Reprojection complete"
+          fi
+
+      - name: Generate tiles with gdal2tiles
+        run: |
+          MIN_ZOOM=${{ steps.metadata.outputs.min_zoom }}
+          MAX_ZOOM=${{ steps.metadata.outputs.max_zoom }}
+
+          echo "Tiling from zoom $MIN_ZOOM to $MAX_ZOOM..."
+
+          gdal2tiles.py \
+            --zoom="${MIN_ZOOM}-${MAX_ZOOM}" \
+            --processes=4 \
+            --tmscompatible \
+            --webviewer=none \
+            --resampling=average \
+            /tmp/input.tif \
+            /tmp/tiles
+
+          # Count generated tiles
+          TILE_COUNT=$(find /tmp/tiles -name "*.png" | wc -l)
+          echo "Generated $TILE_COUNT tiles"
+
+      - name: Upload tiles to R2
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          COURSE_NAME="${{ inputs.golf_course_name }}"
+          R2_FOLDER="${COURSE_NAME}/tiles"
+
+          echo "Uploading tiles to R2: ${R2_FOLDER}/"
+
+          aws s3 sync \
+            /tmp/tiles/ \
+            "s3://$R2_BUCKET/${R2_FOLDER}/" \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --content-type "image/png" \
+            --exclude "*.html" \
+            --exclude "*.xml"
+
+          echo "Upload complete"
+
+      - name: Register tileset in Supabase
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          BOUNDS='${{ steps.metadata.outputs.bounds }}'
+          CENTER_LAT=${{ steps.metadata.outputs.center_lat }}
+          CENTER_LON=${{ steps.metadata.outputs.center_lon }}
+          MIN_ZOOM=${{ steps.metadata.outputs.min_zoom }}
+          MAX_ZOOM=${{ steps.metadata.outputs.max_zoom }}
+          COURSE_NAME="${{ inputs.golf_course_name }}"
+          GOLF_COURSE_ID="${{ inputs.golf_course_id }}"
+          FILE_ID="${{ inputs.file_id }}"
+          TODAY=$(date +%Y-%m-%d)
+          NOW_TIME=$(date +%H:%M)
+
+          MIN_LON=$(echo "$BOUNDS" | python3 -c "import json,sys; b=json.load(sys.stdin); print(b[0])")
+          MIN_LAT=$(echo "$BOUNDS" | python3 -c "import json,sys; b=json.load(sys.stdin); print(b[1])")
+          MAX_LON=$(echo "$BOUNDS" | python3 -c "import json,sys; b=json.load(sys.stdin); print(b[2])")
+          MAX_LAT=$(echo "$BOUNDS" | python3 -c "import json,sys; b=json.load(sys.stdin); print(b[3])")
+
+          echo "Registering tileset in Supabase..."
+
+          # Insert into golf_course_tilesets
+          curl -s -X POST "${SUPABASE_URL}/rest/v1/golf_course_tilesets" \
+            -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: return=representation" \
+            -d "{
+              \"golf_club_id\": \"${GOLF_COURSE_ID}\",
+              \"name\": \"${COURSE_NAME} - ${TODAY}\",
+              \"description\": \"Auto-tiled from uploaded TIFF\",
+              \"r2_folder_path\": \"${COURSE_NAME}/tiles\",
+              \"tile_url_pattern\": \"{z}/{x}/{y}.png\",
+              \"min_lat\": ${MIN_LAT},
+              \"max_lat\": ${MAX_LAT},
+              \"min_lon\": ${MIN_LON},
+              \"max_lon\": ${MAX_LON},
+              \"center_lat\": ${CENTER_LAT},
+              \"center_lon\": ${CENTER_LON},
+              \"min_zoom\": ${MIN_ZOOM},
+              \"max_zoom\": ${MAX_ZOOM},
+              \"default_zoom\": 16,
+              \"format\": \"png\",
+              \"tile_size\": 256,
+              \"is_active\": true,
+              \"flight_date\": \"${TODAY}\",
+              \"flight_time\": \"${NOW_TIME}\"
+            }"
+
+          echo ""
+          echo "Tileset registered successfully"
+
+      - name: Update content file status
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          FILE_ID="${{ inputs.file_id }}"
+
+          curl -s -X PATCH "${SUPABASE_URL}/rest/v1/content_files?id=eq.${FILE_ID}" \
+            -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
+            -H "Content-Type: application/json" \
+            -d '{"status": "processed", "metadata": {"tiling_complete": true, "tiled_at": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}}'
+
+          echo "Content file status updated to 'processed'"

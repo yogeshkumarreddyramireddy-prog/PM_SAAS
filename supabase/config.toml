@@ -1,0 +1,34 @@
+project_id = "bqqovejpcaowfzpkcqyt"
+
+[functions.r2-register]
+verify_jwt = true
+
+[functions.r2-upload]
+verify_jwt = true
+
+[functions.r2-presign]
+verify_jwt = true
+
+[functions.r2-complete]
+verify_jwt = true
+
+[functions.r2-download]
+verify_jwt = false
+
+[functions.r2-delete]
+verify_jwt = true
+
+[functions.extract-zip-tiles]
+verify_jwt = true
+
+[functions.r2-list-folders]
+verify_jwt = true
+
+[functions.r2-assign-tilemap]
+verify_jwt = true
+
+[functions.tile-proxy]
+verify_jwt = false
+
+[functions.r2-sign]
+verify_jwt = false

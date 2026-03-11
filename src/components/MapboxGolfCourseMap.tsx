@@ -174,31 +174,66 @@ const MapboxGolfCourseMap = ({
       return;
     }
 
-    if (!mapContainer.current || tilesets.length === 0 || map.current) {
-      console.log('⏸️ Skipping map init - waiting for container or tilesets');
+    if (!mapContainer.current || map.current) {
+      console.log('⏸️ Skipping map init - waiting for container');
       return;
     }
 
-    const primaryTileset = tilesets[0];
-    console.log('✅ Initializing main map with tileset:', primaryTileset.name);
-
     mapInitializedRef.current = true;
+
+    // Default center (Netherlands/world center), overridden if we have a tileset
+    let initialCenter: [number, number] = [5.2913, 52.1326]; // Netherlands
+    let initialZoom = 7;
+    let initialMinZoom = 0;
+    let initialMaxZoom = 22;
+    let useBounds = false;
+    let boundsCoords: [[number, number], [number, number]] | undefined = undefined;
+
+    const primaryTileset = tilesets.length > 0 ? tilesets[0] : null;
+
+    if (primaryTileset) {
+      // Validate that coordinates are in valid WGS84 range
+      const validLat = (v: number) => typeof v === 'number' && isFinite(v) && v >= -90 && v <= 90;
+      const validLon = (v: number) => typeof v === 'number' && isFinite(v) && v >= -180 && v <= 180;
+
+      if (
+        validLon(primaryTileset.center_lon) &&
+        validLat(primaryTileset.center_lat) &&
+        validLon(primaryTileset.min_lon) && validLon(primaryTileset.max_lon) &&
+        validLat(primaryTileset.min_lat) && validLat(primaryTileset.max_lat)
+      ) {
+        initialCenter = [primaryTileset.center_lon, primaryTileset.center_lat];
+        initialZoom = primaryTileset.default_zoom;
+        initialMinZoom = primaryTileset.min_zoom;
+        initialMaxZoom = primaryTileset.max_zoom;
+        useBounds = true;
+        boundsCoords = [
+          [primaryTileset.min_lon, primaryTileset.min_lat],
+          [primaryTileset.max_lon, primaryTileset.max_lat]
+        ];
+        console.log('✅ Initializing main map with tileset:', primaryTileset.name);
+      } else {
+        console.warn('⚠️ Tileset has invalid coordinates, using default center:', {
+          center_lat: primaryTileset.center_lat,
+          center_lon: primaryTileset.center_lon,
+        });
+      }
+    } else {
+      console.log('ℹ️ No tilesets yet, showing default map view');
+    }
 
     try {
       map.current = new mapboxgl.Map({
         container: mapContainer.current,
         style: baseStyle,
-        center: [primaryTileset.center_lon, primaryTileset.center_lat],
-        zoom: primaryTileset.default_zoom,
-        minZoom: primaryTileset.min_zoom,
-        maxZoom: primaryTileset.max_zoom,
-        bounds: [
-          [primaryTileset.min_lon, primaryTileset.min_lat],
-          [primaryTileset.max_lon, primaryTileset.max_lat]
-        ],
-        fitBoundsOptions: {
-          padding: 50
-        }
+        center: initialCenter,
+        zoom: initialZoom,
+        minZoom: initialMinZoom,
+        maxZoom: initialMaxZoom,
+        ...(useBounds && boundsCoords ? {
+          bounds: boundsCoords,
+          fitBoundsOptions: { padding: 50 }
+        } : {})
       });
 
       if (showControls) {

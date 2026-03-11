@@ -108,8 +108,8 @@ serve(async (req) => {
       region: "auto",
       endpoint: `https://${r2AccountId}.r2.cloudflarestorage.com`,
       forcePathStyle: true,
-      requestChecksumCalculation: "WHEN_SUPPORTED",
-      responseChecksumValidation: "WHEN_SUPPORTED",
+      requestChecksumCalculation: "WHEN_REQUIRED",
+      responseChecksumValidation: "WHEN_REQUIRED",
       credentials: {
         accessKeyId: r2AccessKey,
         secretAccessKey: r2SecretKey,

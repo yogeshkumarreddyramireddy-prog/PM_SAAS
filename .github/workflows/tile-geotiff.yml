@@ -161,6 +161,7 @@ jobs:
               \"golf_course_id\": ${GOLF_COURSE_ID},
               \"name\": \"${COURSE_NAME} - ${TODAY}\",
               \"description\": \"Auto-tiled from uploaded TIFF\",
+              \"source_file_id\": \"${FILE_ID}\",
               \"r2_folder_path\": \"${COURSE_NAME}/tiles/${FILE_ID}\",
               \"tile_url_pattern\": \"{z}/{x}/{y}.png\",
               \"min_lat\": ${MIN_LAT},

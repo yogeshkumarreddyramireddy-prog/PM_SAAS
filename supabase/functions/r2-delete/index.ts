@@ -182,12 +182,84 @@ serve(async (req) => {
       }
     }
 
-    // If fileId was provided, also delete the database record
+    // If fileId was provided, also delete the tiles folder and database records
     if (fileId) {
       const supabaseUrl = Deno.env.get('SUPABASE_URL')!
       const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
       const supabase = createClient(supabaseUrl, supabaseServiceKey)
 
+      // --- 1. Find the associated tiles folder in golf_course_tilesets ---
+      const { data: tilesets, error: tilesetQueryError } = await supabase
+        .from('golf_course_tilesets')
+        .select('id, r2_folder_path')
+        .eq('source_file_id', fileId)
+
+      // Also try matching by folder path containing the fileId (fallback)
+      let tilesetsToDelete = tilesets || []
+      if ((!tilesetsToDelete || tilesetsToDelete.length === 0) && !tilesetQueryError) {
+        const { data: fallbackTilesets } = await supabase
+          .from('golf_course_tilesets')
+          .select('id, r2_folder_path')
+          .like('r2_folder_path', `%${fileId}%`)
+        tilesetsToDelete = fallbackTilesets || []
+      }
+
+      console.log(`Found ${tilesetsToDelete.length} tileset(s) to delete for fileId: ${fileId}`)
+
+      // --- 2. Delete all tiles from R2 for each tileset ---
+      for (const tileset of tilesetsToDelete) {
+        if (!tileset.r2_folder_path) continue
+        const tilePrefix = tileset.r2_folder_path.endsWith('/')
+          ? tileset.r2_folder_path
+          : `${tileset.r2_folder_path}/`
+
+        console.log(`Deleting tiles folder: ${tilePrefix}`)
+
+        // Paginate through all objects (R2 returns max 1000 per request)
+        let continuationToken: string | undefined = undefined
+        let tilesDeleted = 0
+        let hasMore = true
+        while (hasMore) {
+          const listResp = await s3.send(new ListObjectsV2Command({
+            Bucket: finalBucketName,
+            Prefix: tilePrefix,
+            ContinuationToken: continuationToken,
+          }))
+
+          if (listResp.Contents && listResp.Contents.length > 0) {
+            for (const obj of listResp.Contents) {
+              if (obj.Key) {
+                try {
+                  await s3.send(new DeleteObjectCommand({ Bucket: finalBucketName, Key: obj.Key }))
+                  tilesDeleted++
+                } catch (tileErr) {
+                  console.error(`Failed to delete tile ${obj.Key}:`, tileErr)
+                }
+              }
+            }
+          }
+
+          hasMore = listResp.IsTruncated === true
+          continuationToken = listResp.NextContinuationToken
+        }
+
+        console.log(`✅ Deleted ${tilesDeleted} tiles from ${tilePrefix}`)
+        deletedCount += tilesDeleted
+
+        // --- 3. Delete the golf_course_tilesets DB record ---
+        const { error: tilesetDeleteError } = await supabase
+          .from('golf_course_tilesets')
+          .delete()
+          .eq('id', tileset.id)
+
+        if (tilesetDeleteError) {
+          console.error(`Failed to delete tileset record ${tileset.id}:`, tilesetDeleteError)
+        } else {
+          console.log(`✅ Deleted golf_course_tilesets record: ${tileset.id}`)
+        }
+      }
+
+      // --- 4. Delete the content_files DB record ---
       const { error: dbDeleteError } = await supabase
         .from('content_files')
         .delete()
@@ -197,7 +269,7 @@ serve(async (req) => {
         console.error('Failed to delete database record:', dbDeleteError)
         throw new Error('Failed to delete database record')
       }
-      console.log('Database record deleted successfully')
+      console.log('✅ content_files record deleted successfully')
     }
 
     const responseData = {

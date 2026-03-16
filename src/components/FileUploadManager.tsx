@@ -73,23 +73,109 @@ export const FileUploadManagerFixed = ({
       xhr.open('PUT', presignData.uploadUrl);
       xhr.setRequestHeader('Content-Type', file.type || 'image/tiff');
       xhr.upload.onprogress = (e) => {
-        if (onProgress && e.lengthComputable) {
-          onProgress(Math.round((e.loaded / e.total) * 100));
-        }
-      };
-      xhr.onload = () => xhr.status === 200 ? resolve(null) : reject(new Error('Upload failed'));
-      xhr.onerror = reject;
-      xhr.send(file);
-    });
+    const MULTIPART_THRESHOLD = 25 * 1024 * 1024; // 25 MB
 
-    // 3. Finalize upload
-    // Force a session refresh in case the token expired during a long file upload
+    if (file.size < MULTIPART_THRESHOLD) {
+      // --- Small file: fast single PUT ---
+      await new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('PUT', presignData.uploadUrl);
+        xhr.setRequestHeader('Content-Type', file.type || 'image/tiff');
+        xhr.upload.onprogress = (e) => {
+          if (onProgress && e.lengthComputable) {
+            onProgress(Math.round((e.loaded / e.total) * 100));
+          }
+        };
+        xhr.onload = () => xhr.status === 200 ? resolve(null) : reject(new Error(`Upload failed: HTTP ${xhr.status}`));
+        xhr.onerror = reject;
+        xhr.send(file);
+      });
+    } else {
+      // --- Large file: chunked S3 multipart upload ---
+      const CHUNK_SIZE = 50 * 1024 * 1024;      // 50 MB parts
+      const PARALLEL_PARTS = 3;                  // 3 concurrent parts at a time
+      const MAX_RETRIES = 5;
+      const objectKey = presignData.objectKey;
+      const numParts = Math.ceil(file.size / CHUNK_SIZE);
+
+      console.log(`[Multipart] Starting upload: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB) in ${numParts} parts`);
+
+      // Step A: Create multipart upload session on R2
+      const { data: createData, error: createError } = await supabase.functions.invoke('r2-sign', {
+        body: { action: 'createMultipartUpload', key: objectKey }
+      });
+      if (createError || !createData?.uploadId) throw new Error(`Failed to create multipart upload: ${createError?.message || 'No uploadId'}`);
+      const uploadId = createData.uploadId;
+
+      // Step B: Get presigned URLs for all parts
+      const partNumbers = Array.from({ length: numParts }, (_, i) => i + 1);
+      const { data: urlsData, error: urlsError } = await supabase.functions.invoke('r2-sign', {
+        body: { action: 'getMultipartPutUrls', key: objectKey, uploadId, partNumbers }
+      });
+      if (urlsError || !urlsData?.urls) throw new Error(`Failed to get part URLs: ${urlsError?.message || 'No URLs'}`);
+      const partUrls: { partNumber: number; url: string }[] = urlsData.urls;
+
+      const completedParts: { PartNumber: number; ETag: string }[] = new Array(numParts);
+      let uploadedBytes = 0;
+
+      // Step C: Upload parts in parallel with retry
+      let partIndex = 0;
+      const workers = Array.from({ length: Math.min(PARALLEL_PARTS, numParts) }, async () => {
+        while (partIndex < numParts) {
+          const idx = partIndex++;
+          const start = idx * CHUNK_SIZE;
+          const end = Math.min(start + CHUNK_SIZE, file.size);
+          const chunk = file.slice(start, end);
+          const partUrlObj = partUrls.find(u => u.partNumber === idx + 1);
+          if (!partUrlObj) throw new Error(`Missing URL for part ${idx + 1}`);
+
+          let attempt = 0;
+          let etag = '';
+          while (attempt < MAX_RETRIES) {
+            try {
+              // Refresh session every 5 parts to avoid JWT expiry on very long uploads
+              if (idx % 5 === 0) await supabase.auth.getSession();
+
+              const resp = await fetch(partUrlObj.url, { method: 'PUT', body: chunk });
+              if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+              const rawEtag = resp.headers.get('ETag');
+              if (!rawEtag) throw new Error('No ETag in response');
+              etag = rawEtag;
+              break;
+            } catch (err: any) {
+              attempt++;
+              if (attempt >= MAX_RETRIES) throw new Error(`Part ${idx + 1} failed after ${MAX_RETRIES} retries: ${err.message}`);
+              const delay = 2000 * Math.pow(2, attempt - 1); // 2s, 4s, 8s, 16s back-off
+              console.warn(`[Multipart] Part ${idx + 1} attempt ${attempt} failed (${err.message}), retrying in ${delay}ms…`);
+              await new Promise(r => setTimeout(r, delay));
+            }
+          }
+
+          completedParts[idx] = { PartNumber: idx + 1, ETag: etag };
+          uploadedBytes += chunk.size;
+          onProgress?.(Math.min(99, Math.round((uploadedBytes / file.size) * 100)));
+        }
+      });
+
+      await Promise.all(workers);
+
+      // Step D: Complete multipart upload (assemble on Cloudflare's side)
+      await supabase.auth.getSession(); // ensure token is fresh
+      const { error: completeError } = await supabase.functions.invoke('r2-sign', {
+        body: { action: 'completeMultipartUpload', key: objectKey, uploadId, parts: completedParts }
+      });
+      if (completeError) throw new Error(`Failed to complete multipart upload: ${completeError.message}`);
+      console.log(`[Multipart] Upload complete: ${file.name}`);
+    }
+
+    onProgress?.(100);
+
+    // 3. Finalize: refresh session then call r2-complete to trigger tiling pipeline
     await supabase.auth.getSession();
-    
-    const { data: completeData, error: completeError } = await supabase.functions.invoke('r2-complete', {
+    const { error: completeCallError } = await supabase.functions.invoke('r2-complete', {
       body: { fileId: presignData.fileId, success: true, isZipFile: file.name.endsWith('.zip') && category === 'live_maps' }
     });
-    if (completeError) throw completeError;
+    if (completeCallError) throw completeCallError;
 
     return presignData.fileId;
   }

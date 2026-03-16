@@ -139,23 +139,64 @@ serve(async (req) => {
 
     // Build the R2 tile key from the folder path
     const normalizedPath = r2FolderPath.endsWith('/') ? r2FolderPath : `${r2FolderPath}/`
-    const tileKey = `${normalizedPath}${z}/${x}/${y}.${ext}`
+    const primaryTileKey = `${normalizedPath}${z}/${x}/${y}.${ext}`
     
-    console.log('Fetching tile from R2:', { bucket: r2BucketName, key: tileKey })
+    console.log('Fetching tile from R2:', { bucket: r2BucketName, key: primaryTileKey })
 
-    const getCommand = new GetObjectCommand({
+    const getPrimaryCommand = new GetObjectCommand({
       Bucket: r2BucketName,
-      Key: tileKey
+      Key: primaryTileKey
     })
 
+    let response
     try {
-      const response = await s3Client.send(getCommand)
-      
+      response = await s3Client.send(getPrimaryCommand)
+    } catch (s3Error: any) {
+      // TMS Fallback: If not found as XYZ, try as TMS
+      if (s3Error.name === 'NoSuchKey' || s3Error.Code === 'NoSuchKey') {
+        const n = Math.pow(2, z)
+        const flippedY = n - 1 - y
+        const fallbackTileKey = `${normalizedPath}${z}/${x}/${flippedY}.${ext}`
+        
+        console.log(`Primary tile not found. Trying TMS fallback: ${fallbackTileKey}`)
+        
+        const getFallbackCommand = new GetObjectCommand({
+          Bucket: r2BucketName,
+          Key: fallbackTileKey
+        })
+        
+        try {
+          response = await s3Client.send(getFallbackCommand)
+        } catch (innerError: any) {
+          console.error('Error fetching fallback tile from R2:', innerError)
+          return new Response(JSON.stringify({ 
+            error: 'Tile not found',
+            r2_path: primaryTileKey,
+            tms_path: fallbackTileKey,
+            details: innerError.Code || innerError.message
+          }), { 
+            status: 404, 
+            headers: { 'Content-Type': 'application/json', ...corsHeaders } 
+          })
+        }
+      } else {
+        console.error('Error fetching tile from R2:', s3Error)
+        return new Response(JSON.stringify({ 
+          error: 'R2 fetch error',
+          details: s3Error.Code || s3Error.message
+        }), { 
+          status: 500, 
+          headers: { 'Content-Type': 'application/json', ...corsHeaders } 
+        })
+      }
+    }
+
+    try {
       if (!response.Body) {
         throw new Error('Tile not found - empty response body')
       }
       
-      console.log('SUCCESS: Tile found in R2:', tileKey)
+      console.log('SUCCESS: Tile found in R2')
       const tileData = await response.Body.transformToByteArray()
       const contentType = ext === 'png' ? 'image/png' : 'image/jpeg'
 
@@ -167,14 +208,13 @@ serve(async (req) => {
         }
       })
       
-    } catch (s3Error: any) {
-      console.error('Error fetching tile from R2:', s3Error)
+    } catch (processError: any) {
+      console.error('Error processing tile data:', processError)
       return new Response(JSON.stringify({ 
-        error: 'Tile not found',
-        r2_path: tileKey,
-        details: s3Error.Code || s3Error.message
+        error: 'Tile processing error',
+        details: processError.message
       }), { 
-        status: 404, 
+        status: 500, 
         headers: { 'Content-Type': 'application/json', ...corsHeaders } 
       })
     }

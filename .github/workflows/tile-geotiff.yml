@@ -96,7 +96,6 @@ jobs:
           gdal2tiles.py \
             --zoom="${MIN_ZOOM}-${MAX_ZOOM}" \
             --processes=4 \
-            --tmscompatible \
             --webviewer=none \
             --resampling=average \
             /tmp/input.tif \

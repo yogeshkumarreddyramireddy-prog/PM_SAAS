@@ -99,6 +99,7 @@ export class TilesetService {
                 .from('golf_course_tilesets')
                 .select('*')
                 .eq('golf_course_id', golfCourseId)
+                .eq('is_active', true)
                 .order('flight_datetime', { ascending: false, nullsFirst: false })
                 .order('created_at', { ascending: false })
 

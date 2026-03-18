@@ -7,13 +7,15 @@ import NotFound from "./pages/NotFound";
 import { PMVApp } from "./pages/PMVApp";
 import ResetPassword from "./pages/ResetPassword";
 import { AuthProvider } from "@/hooks/useAuth";
+import { UploadProvider } from "@/contexts/UploadContext";
 
 const queryClient = new QueryClient();
 
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <AuthProvider>
-      <TooltipProvider>
+      <UploadProvider>
+        <TooltipProvider>
         <Toaster />
         <Sonner />
         <BrowserRouter>
@@ -26,7 +28,8 @@ const App = () => (
             <Route path="*" element={<NotFound />} />
           </Routes>
         </BrowserRouter>
-      </TooltipProvider>
+        </TooltipProvider>
+      </UploadProvider>
     </AuthProvider>
   </QueryClientProvider>
 );

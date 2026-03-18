@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
-import { MapPin, Layers, ZoomIn, ZoomOut, Maximize2, AlertCircle, Activity, ArrowRight, ArrowDown, ArrowLeft, ArrowUp, X, MoveHorizontal } from 'lucide-react';
+import { MapPin, Layers, ZoomIn, ZoomOut, Maximize2, LocateFixed, AlertCircle, Activity, ArrowRight, ArrowDown, ArrowLeft, ArrowUp, X, MoveHorizontal } from 'lucide-react';
 import { TilesetService } from '@/lib/tilesetService';
 import { supabase } from '@/integrations/supabase/client';
 import DateLayerDropdown from '@/components/DateLayerDropdown';
@@ -15,7 +15,9 @@ import DualMapSwipe from '@/components/DualMapSwipe';
 import HealthMapStack from '@/components/HealthMapStack';
 import HealthMapDropdown from '@/components/HealthMapDropdown';
 import { ScrollArea } from '@/components/ui/scroll-area';
-
+import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, DragEndEvent } from '@dnd-kit/core';
+import { arrayMove, SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy } from '@dnd-kit/sortable';
+import { SortableLayerItem } from '@/components/SortableLayerItem';
 
 import { GolfCourseTileset } from "@/lib/tilesetService";
 
@@ -50,6 +52,7 @@ const MapboxGolfCourseMap = ({
   className = '',
   onMapReady
 }: MapboxGolfCourseMapProps) => {
+  const wrapperRef = useRef<HTMLDivElement>(null);
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
   const [tilesets, setTilesets] = useState<GolfCourseTileset[]>([]);
@@ -75,16 +78,123 @@ const MapboxGolfCourseMap = ({
   const [showVectorLayerPanel, setShowVectorLayerPanel] = useState(false);
   const [vectorLayersAboveHealth, setVectorLayersAboveHealth] = useState(true);
   
-  // Raster layer control - lazy loading (starts OFF, loads when toggled ON)
-  const [showRasterLayers, setShowRasterLayers] = useState(false);
+  // Raster layer control - always shown by default
+  const [showRasterLayers, setShowRasterLayers] = useState(true);
   const [rasterOpacity, setRasterOpacity] = useState(0.85);
   const rasterLoadingRef = useRef(false);
   const [rasterLayersLoaded, setRasterLayersLoaded] = useState(false);
   
   // Layer swipe control
   const [swipeEnabled, setSwipeEnabled] = useState(false);
-  const [swipeLayerId, setSwipeLayerId] = useState<string | null>(null);
-  const lastSwipeLayerRef = useRef<string | null>(null);
+  const [swipeLeftLayerId, setSwipeLeftLayerId] = useState<string | null>(null);
+  const [swipeRightLayerId, setSwipeRightLayerId] = useState<string | null>(null);
+
+  // Unified ordered layer list (for drag-and-drop reordering)
+  const [layerOrder, setLayerOrder] = useState<string[]>([]);
+
+  // Synchronize layerOrder with available layers (add new, remove deleted)
+  useEffect(() => {
+    setLayerOrder(prev => {
+      const allPossibleIds = new Set([
+        ...tilesets.map(t => `tileset-layer-${t.id}`),
+        ...healthMapTilesets.map(h => `health-map-layer-${h.id}`),
+        ...vectorLayers.map(v => `vector-layer-${v.id}`)
+      ]);
+      const filtered = prev.filter(id => allPossibleIds.has(id));
+      const existingSet = new Set(filtered);
+      const toAdd = Array.from(allPossibleIds).filter(id => !existingSet.has(id));
+      return [...toAdd, ...filtered];
+    });
+  }, [tilesets, healthMapTilesets, vectorLayers]);
+
+  // Stable function to sync Mapbox z-index to drag order
+  const syncLayerOrder = useCallback(() => {
+    if (!map.current || !map.current.isStyleLoaded() || layerOrder.length === 0) return;
+    
+    // Debugging: Log all layers currently on the map
+    const style = map.current.getStyle();
+    if (style && style.layers) {
+        const dynamicLayers = style.layers.filter(l => 
+            l.id.startsWith('tileset-layer-') || 
+            l.id.startsWith('health-map-layer-') || 
+            l.id.startsWith('vector-layer-')
+        );
+        console.log(`🗺️ Mapbox Style Report: Found ${dynamicLayers.length} dynamic layers on map:`, 
+            dynamicLayers.map(l => `${l.id} (${ (l.layout as any)?.visibility || 'visible'})`)
+        );
+    }
+    
+    console.log('🔄 Syncing layer z-indices based on layerOrder:', layerOrder);
+    
+    // Mapbox moveLayer without beforeId puts it at the TOP.
+    // Iterating in reverse ensures the first item in layerOrder is placed last (on top).
+    const reversedOrder = [...layerOrder].reverse();
+    
+    reversedOrder.forEach(layerId => {
+      if (map.current!.getLayer(layerId)) {
+        try { 
+          // Move layer to the technical top (end of array)
+          map.current!.moveLayer(layerId); 
+          
+          // Force visibility state based on current selection
+          const isRaster = layerId.startsWith('tileset-layer-');
+          const isHealth = layerId.startsWith('health-map-layer-');
+          const isVector = layerId.startsWith('vector-layer-');
+          
+          const rawId = layerId.replace('tileset-layer-', '').replace('health-map-layer-', '').replace('vector-layer-', '');
+          
+          let shouldBeVisible = false;
+          if (isRaster) shouldBeVisible = showRasterLayers && selectedLayers.includes(rawId);
+          if (isHealth) shouldBeVisible = showHealthMaps && selectedHealthMapIds.includes(rawId);
+          if (isVector) shouldBeVisible = visibleVectorLayers.has(rawId);
+
+          // If Swipe Mode is enabled, the main map ONLY shows the leftLayerId!
+          if (swipeEnabled) {
+             shouldBeVisible = swipeLeftLayerId ? layerId === swipeLeftLayerId : false;
+          }
+
+          // Fetch current visibility to avoid redundant layout property updates (prevents infinite idle loops)
+          const currentVisibility = map.current!.getLayoutProperty(layerId, 'visibility') || 'visible';
+          const targetVisibility = shouldBeVisible ? 'visible' : 'none';
+
+          if (currentVisibility !== targetVisibility) {
+             map.current!.setLayoutProperty(layerId, 'visibility', targetVisibility);
+          }
+        } catch (e) { 
+          console.warn(`Failed to move/show layer ${layerId}:`, e);
+        }
+      } else if (layerId.startsWith('tileset-layer-') || layerId.startsWith('health-map-layer-')) {
+          console.log(`⚠️ Layer ${layerId} in order list but NOT FOUND on map style.`);
+      }
+    });
+
+  }, [layerOrder, selectedLayers, selectedHealthMapIds, visibleVectorLayers, showRasterLayers, showHealthMaps, swipeEnabled, swipeLeftLayerId]);
+
+  // Sync Mapbox z-index whenever order or selection changes
+  useEffect(() => {
+    if (!map.current) return;
+    
+    syncLayerOrder();
+
+    // Use a small delay for the idle listener to prevent loops
+    let idleTimeout: any = null;
+    const onIdle = () => {
+        if (idleTimeout) clearTimeout(idleTimeout);
+        idleTimeout = setTimeout(() => syncLayerOrder(), 100);
+    };
+    
+    map.current.on('idle', onIdle);
+    
+    return () => {
+      if (idleTimeout) clearTimeout(idleTimeout);
+      map.current?.off('idle', onIdle);
+    };
+  }, [syncLayerOrder, rasterLayersLoaded, healthMapLoaded]);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  );
 
   mapboxgl.accessToken = mapboxAccessToken;
 
@@ -117,7 +227,7 @@ const MapboxGolfCourseMap = ({
         }
 
         console.log('Loading health maps for golf_course_id:', golfCourseId);
-        const { data: healthMaps, error: healthError } = await supabase
+        const { data: healthMaps, error: healthError } = await (supabase as any)
           .from('health_map_tilesets')
           .select('*')
           .eq('golf_course_id', golfCourseId)
@@ -129,13 +239,13 @@ const MapboxGolfCourseMap = ({
           console.error('Error loading health maps:', healthError);
         } else if (healthMaps) {
           console.log('Loaded health maps:', healthMaps);
-          setHealthMapTilesets(healthMaps);
+          setHealthMapTilesets(healthMaps || []);
         } else {
           console.log('No health maps found');
         }
         
         console.log('Loading vector layers for golf_course_id:', golfCourseId);
-        const { data: vectorLayersData, error: vectorError } = await supabase
+        const { data: vectorLayersData, error: vectorError } = await (supabase as any)
           .from('vector_layers')
           .select('*')
           .eq('golf_course_id', golfCourseId)
@@ -239,9 +349,8 @@ const MapboxGolfCourseMap = ({
       });
 
       if (showControls) {
-        map.current.addControl(new mapboxgl.NavigationControl(), 'top-right');
+        // Only add ScaleControl; we use our own custom zoom/fullscreen buttons
         map.current.addControl(new mapboxgl.ScaleControl(), 'bottom-left');
-        map.current.addControl(new mapboxgl.FullscreenControl(), 'top-right');
       }
 
       map.current.on('zoom', () => {
@@ -253,10 +362,18 @@ const MapboxGolfCourseMap = ({
       map.current.on('load', async () => {
         console.log('Map loaded successfully');
         setMapReady(true);
+
+        if (!map.current!.getLayer('dynamic-layers-anchor')) {
+          const firstLayerId = map.current!.getStyle().layers?.[0]?.id;
+          map.current!.addLayer({
+            id: 'dynamic-layers-anchor',
+            type: 'background',
+            layout: { visibility: 'none' }
+          }, firstLayerId);
+        }
         
         console.log('onMapReady callback:', !!onMapReady, 'map.current:', !!map.current);
         if (onMapReady && map.current) {
-          console.log('Calling onMapReady callback');
           onMapReady(map.current);
         }
       });
@@ -276,46 +393,104 @@ const MapboxGolfCourseMap = ({
     };
   }, [tilesets, baseStyle, showControls, containerReady]);
 
-  // Load raster layers ONLY when toggle is ON (lazy loading)
+  // Auto-enable layers selected in the swipe tool so they exist on the main map
   useEffect(() => {
-    if (!map.current || !showRasterLayers || rasterLoadingRef.current || rasterLayersLoaded) {
+    if (!swipeEnabled) return;
+    
+    const forceEnableLayer = (layerId: string | null) => {
+      if (!layerId) return;
+      if (layerId.startsWith('tileset-layer-')) {
+        const id = layerId.replace('tileset-layer-', '');
+        setSelectedLayers(prev => prev.includes(id) ? prev : [...prev, id]);
+      } else if (layerId.startsWith('health-map-layer-')) {
+        const id = layerId.replace('health-map-layer-', '');
+        setSelectedHealthMapIds(prev => prev.includes(id) ? prev : [...prev, id]);
+        setShowHealthMaps(true);
+      } else if (layerId.startsWith('vector-layer-')) {
+        const id = layerId.replace('vector-layer-', '');
+        setVisibleVectorLayers(prev => {
+          if (prev.has(id)) return prev;
+          const next = new Set(prev);
+          next.add(id);
+          return next;
+        });
+      }
+    };
+    
+    forceEnableLayer(swipeLeftLayerId);
+    forceEnableLayer(swipeRightLayerId);
+  }, [swipeEnabled, swipeLeftLayerId, swipeRightLayerId]);
+
+  // Load, show, and hide raster layers dynamically
+  useEffect(() => {
+    if (!map.current) {
       return;
     }
 
-    const loadRasterTiles = async () => {
-      if (!map.current!.loaded()) {
-        map.current!.once('load', loadRasterTiles);
-        return;
-      }
+    if (!mapReady || !map.current.isStyleLoaded()) {
+      console.log('⏸️ Map style not yet loaded for raster layers, waiting...');
+      return;
+    }
 
-      rasterLoadingRef.current = true;
-      console.log(' Loading raster tiles (lazy load triggered)...');
-      
+    // If toggle is OFF, securely remove all raster layers
+    if (!showRasterLayers) {
+      tilesets.forEach(tileset => {
+        const layerId = `tileset-layer-${tileset.id}`;
+        const sourceId = `tileset-source-${tileset.id}`;
+        
+        if (map.current!.getLayer(layerId)) {
+          map.current!.removeLayer(layerId);
+        }
+        if (map.current!.getSource(sourceId)) {
+          map.current!.removeSource(sourceId);
+        }
+      });
+      setRasterLayersLoaded(false);
+      return;
+    }
+
+    // If ON, add selected and remove unselected
+    const loadSelectedRasters = async () => {
       const { data: { session } } = await supabase.auth.getSession();
-      if (!session) {
-        console.error(' No active session for tile loading');
-        rasterLoadingRef.current = false;
-        return;
-      }
-
+      if (!session) return;
       const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 
+      // 1. Remove layers that are no longer selected
+      tilesets.forEach(tileset => {
+        if (!selectedLayers.includes(tileset.id)) {
+          const layerId = `tileset-layer-${tileset.id}`;
+          const sourceId = `tileset-source-${tileset.id}`;
+          if (map.current!.getLayer(layerId)) {
+            map.current!.removeLayer(layerId);
+          }
+          if (map.current!.getSource(sourceId)) {
+            map.current!.removeSource(sourceId);
+          }
+        }
+      });
+
+      // 2. Add or update selected layers
       selectedLayers.forEach((tilesetId) => {
         const tileset = tilesets.find(t => t.id === tilesetId);
-        if (!tileset) return;
+        if (!tileset) {
+          console.warn(`⚠️ Tileset ID ${tilesetId} not found in tilesets list`);
+          return;
+        }
 
         const sourceId = `tileset-source-${tileset.id}`;
         const layerId = `tileset-layer-${tileset.id}`;
-        // Use path-based tile URL: tile-proxy reads R2 path from golf_course_tilesets using tilesetId
         const tileUrlTemplate = `${supabaseUrl}/functions/v1/tile-proxy/${encodeURIComponent(tileset.id)}/{z}/{x}/{y}.png`;
+        
+        console.log(`📍 Processing tileset: ${tileset.name} (id: ${tileset.id})`);
+        console.log(`   Source exists: ${!!map.current!.getSource(sourceId)}, Layer exists: ${!!map.current!.getLayer(layerId)}`);
 
-        console.log('Loading raster tiles:', tileset.name);
-
+        // Add source if it doesn't exist
         if (!map.current!.getSource(sourceId)) {
+          console.log(`   ➕ Adding source: ${sourceId}`);
           map.current!.addSource(sourceId, {
             type: 'raster',
             tiles: [tileUrlTemplate],
-            tileSize: tileset.tile_size || 256,
+            tileSize: 256,
             minzoom: tileset.min_zoom,
             maxzoom: tileset.max_zoom,
             bounds: [
@@ -325,25 +500,33 @@ const MapboxGolfCourseMap = ({
               tileset.max_lat
             ]
           });
+        }
 
+        // Add layer if it doesn't exist (SEPARATE from source check — source may exist but layer may be missing)
+        if (!map.current!.getLayer(layerId)) {
+          console.log(`   ➕ Adding layer: ${layerId}`);
           map.current!.addLayer({
             id: layerId,
             type: 'raster',
             source: sourceId,
+            layout: { visibility: 'visible' },
             paint: {
               'raster-opacity': rasterOpacity
             }
           });
-
-          console.log(' Raster tiles loaded:', tileset.name);
+        } else {
+          console.log(`   ✅ Layer ${layerId} already exists, ensuring visibility`);
+          map.current!.setLayoutProperty(layerId, 'visibility', 'visible');
         }
       });
 
       setRasterLayersLoaded(true);
+      // Immediately trigger reorder after adding new layers
+      setTimeout(syncLayerOrder, 100); 
     };
 
-    loadRasterTiles();
-  }, [showRasterLayers, selectedLayers, tilesets, mapReady]);
+    loadSelectedRasters();
+  }, [showRasterLayers, selectedLayers, tilesets, mapReady, syncLayerOrder]);
 
   // Update raster opacity dynamically
   useEffect(() => {
@@ -360,26 +543,6 @@ const MapboxGolfCourseMap = ({
     });
   }, [rasterOpacity, selectedLayers]);
 
-  // Control raster layer visibility (show/hide after loaded)
-  useEffect(() => {
-    if (!map.current || !rasterLayersLoaded) return;
-
-    const visibility = showRasterLayers ? 'visible' : 'none';
-    
-    selectedLayers.forEach(tilesetId => {
-      const layerId = `tileset-layer-${tilesetId}`;
-      if (map.current!.getLayer(layerId)) {
-        try {
-          map.current!.setLayoutProperty(layerId, 'visibility', visibility);
-        } catch (e) {
-          console.warn(`Could not set visibility for ${layerId}:`, e);
-        }
-      }
-    });
-    
-    console.log(`🎚️ Raster layers ${showRasterLayers ? 'shown' : 'hidden'}`);
-  }, [showRasterLayers, selectedLayers, rasterLayersLoaded]);
-
   // FIX 3: Handle health map toggle - REMOVE layers when toggling off
   useEffect(() => {
     if (!map.current) {
@@ -387,25 +550,9 @@ const MapboxGolfCourseMap = ({
       return;
     }
 
-    if (!map.current.loaded()) {
-      console.log('⏸️ Map not ready for health maps - waiting for load', {
-        hasMap: true,
-        isLoaded: false,
-        showHealthMaps
-      });
-      
-      if (!showHealthMaps) {
-        return;
-      }
-      
-      const handleMapLoad = () => {
-        console.log('✅ Map loaded, will load health maps now');
-      };
-      
-      map.current.once('idle', handleMapLoad);
-      return () => {
-        map.current?.off('idle', handleMapLoad);
-      };
+    if (!mapReady || !map.current.isStyleLoaded()) {
+      console.log('⏸️ Map style not yet loaded for health map layers, waiting...');
+      return;
     }
 
     console.log('🔍 Health map effect triggered:', {
@@ -506,9 +653,11 @@ const MapboxGolfCourseMap = ({
         }
 
         setHealthMapLoaded(true);
+        // Immediately trigger reorder after adding new health maps
+        setTimeout(syncLayerOrder, 100);
       })();
     }
-  }, [showHealthMaps, selectedHealthMapIds, healthMapTilesets, rasterLayersLoaded]);
+  }, [showHealthMaps, selectedHealthMapIds, healthMapTilesets, rasterLayersLoaded, syncLayerOrder]);
 
   // FIX 2: Load vector layers onto map (only when toggled visible)
   useEffect(() => {
@@ -678,56 +827,29 @@ const MapboxGolfCourseMap = ({
     }
   }, [selectedHealthMapIds, showHealthMaps]);
 
-  // Determine which layer to swipe (topmost layer)
+  // When swipe is enabled, pick a default left layer if none is selected
   useEffect(() => {
-    if (!swipeEnabled) {
-      setSwipeLayerId(null);
-      lastSwipeLayerRef.current = null;
-      return;
-    }
-
-    // Wait for map to be ready
-    if (!map.current || !map.current.loaded()) {
-      return;
+    if (!swipeEnabled) return;
+    
+    // Only auto-assign if `swipeLeftLayerId` is not already manually chosen
+    if (swipeLeftLayerId && map.current?.getLayer(swipeLeftLayerId)) {
+      return; 
     }
 
     let targetLayerId: string | null = null;
-
-    // Priority 1: Health maps (if enabled and selected)
+    
     if (showHealthMaps && selectedHealthMapIds.length > 0) {
-      const topHealthMapId = selectedHealthMapIds[selectedHealthMapIds.length - 1];
-      const layerId = `health-map-layer-${topHealthMapId}`;
-      if (map.current.getLayer(layerId)) {
-        targetLayerId = layerId;
-      }
+      targetLayerId = `health-map-layer-${selectedHealthMapIds[selectedHealthMapIds.length - 1]}`;
+    } else if (visibleVectorLayers.size > 0) {
+      targetLayerId = `vector-layer-${Array.from(visibleVectorLayers)[0]}`;
+    } else if (rasterLayersLoaded && selectedLayers.length > 0) {
+      targetLayerId = `tileset-layer-${selectedLayers[0]}`;
     }
 
-    // Priority 2: Visible vector layers (find first one that exists on map)
-    if (!targetLayerId && visibleVectorLayers.size > 0) {
-      for (const vectorLayerId of Array.from(visibleVectorLayers)) {
-        const layerId = `vector-layer-${vectorLayerId}`;
-        if (map.current.getLayer(layerId)) {
-          targetLayerId = layerId;
-          break;
-        }
-      }
+    if (targetLayerId) {
+      setSwipeLeftLayerId(targetLayerId);
     }
-
-    // Priority 3: Raster layers
-    if (!targetLayerId && rasterLayersLoaded && selectedLayers.length > 0) {
-      const layerId = `tileset-layer-${selectedLayers[0]}`;
-      if (map.current.getLayer(layerId)) {
-        targetLayerId = layerId;
-      }
-    }
-
-    // Only update if changed
-    if (lastSwipeLayerRef.current !== targetLayerId) {
-      lastSwipeLayerRef.current = targetLayerId;
-      setSwipeLayerId(targetLayerId);
-      console.log('🎚️ Swipe layer set to:', targetLayerId || 'none');
-    }
-  }, [swipeEnabled, showHealthMaps, selectedHealthMapIds, rasterLayersLoaded, selectedLayers, visibleVectorLayers, mapReady]);
+  }, [swipeEnabled, showHealthMaps, selectedHealthMapIds, rasterLayersLoaded, selectedLayers, visibleVectorLayers]);
 
   // Manage vector layer visibility and z-index
   useEffect(() => {
@@ -953,6 +1075,36 @@ const MapboxGolfCourseMap = ({
     });
   };
 
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  const toggleFullscreen = async () => {
+    if (!isFullscreen) {
+      if (wrapperRef.current?.requestFullscreen) {
+        await wrapperRef.current.requestFullscreen().catch(err => {
+          console.warn(`Fullscreen error: ${err.message}`);
+        });
+      }
+    } else {
+      if (document.exitFullscreen) {
+        await document.exitFullscreen().catch(err => {
+          console.warn(`Exit fullscreen error: ${err.message}`);
+        });
+      }
+    }
+  };
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+      // Ensure we resize the map after short layout shifts
+      setTimeout(() => {
+        if (map.current) map.current.resize();
+      }, 100);
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, []);
+
   if (isLoading) {
     return (
       <Card className={className}>
@@ -987,296 +1139,284 @@ const MapboxGolfCourseMap = ({
 
   const canSwipe = selectedLayers.length === 2;
 
+  // Build the unified list of all available layers for the Swipe Selector
+  const getAllAvailableLayersForSwipe = () => {
+    const options = [{ id: 'null', name: 'Base Map (Satellite)', type: 'base' }];
+    
+    if (rasterLayersLoaded) {
+      selectedLayers.forEach(id => {
+        const metadata = getLayerMetadata(`tileset-layer-${id}`);
+        if (metadata) options.push({ id: `tileset-layer-${id}`, name: metadata.name, type: metadata.type });
+      });
+    }
+
+    if (showHealthMaps) {
+      selectedHealthMapIds.forEach(id => {
+        const metadata = getLayerMetadata(`health-map-layer-${id}`);
+        if (metadata) options.push({ id: `health-map-layer-${id}`, name: metadata.name, type: metadata.type });
+      });
+    }
+
+    if (visibleVectorLayers.size > 0) {
+      Array.from(visibleVectorLayers).forEach(id => {
+         const metadata = getLayerMetadata(`vector-layer-${id}`);
+         if (metadata) options.push({ id: `vector-layer-${id}`, name: metadata.name, type: metadata.type });
+      });
+    }
+
+    return options;
+  };
+
+  const swipeOptions = getAllAvailableLayersForSwipe();
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (over && active.id !== over.id) {
+      setLayerOrder((items) => {
+        const oldIndex = items.indexOf(active.id as string);
+        const newIndex = items.indexOf(over.id as string);
+        return arrayMove(items, oldIndex, newIndex);
+      });
+    }
+  };
+
+  const unifiedLayers = layerOrder.map(id => {
+    if (id.startsWith('tileset-layer-')) {
+      const rawId = id.replace('tileset-layer-', '');
+      const layer = tilesets.find(t => t.id === rawId);
+      if (!layer) return null;
+      return { id, rawId, type: 'raster' as const, name: layer.name, isVisible: showRasterLayers && selectedLayers.includes(rawId) };
+    }
+    if (id.startsWith('health-map-layer-')) {
+      const rawId = id.replace('health-map-layer-', '');
+      const layer = healthMapTilesets.find(t => t.id === rawId);
+      if (!layer) return null;
+      return { id, rawId, type: 'health' as const, name: layer.analysis_type || layer.name || 'Health Map', isVisible: showHealthMaps && selectedHealthMapIds.includes(rawId) };
+    }
+    if (id.startsWith('vector-layer-')) {
+      const rawId = id.replace('vector-layer-', '');
+      const layer = vectorLayers.find(t => t.id === rawId);
+      if (!layer) return null;
+      return { id, rawId, type: 'vector' as const, name: layer.name, isVisible: visibleVectorLayers.has(rawId), color: getLayerColor(layer.name) };
+    }
+    return null;
+  }).filter(Boolean) as any[];
+
+  const allLayersVisible = unifiedLayers.every(l => l.isVisible);
+  const toggleAllUnifiedLayers = () => {
+    if (allLayersVisible) {
+      setShowRasterLayers(false);
+      setSelectedLayers([]);
+      setShowHealthMaps(false);
+      setSelectedHealthMapIds([]);
+      setVisibleVectorLayers(new Set());
+    } else {
+      setShowRasterLayers(true);
+      setSelectedLayers(tilesets.map(t => t.id));
+      setShowHealthMaps(true);
+      setSelectedHealthMapIds(healthMapTilesets.map(h => h.id));
+      setVisibleVectorLayers(new Set(vectorLayers.map(v => v.id)));
+    }
+  };
+
+  const handleUnifiedLayerToggle = (id: string, isVisible: boolean) => {
+    if (id.startsWith('tileset-layer-')) {
+      const rawId = id.replace('tileset-layer-', '');
+      if (isVisible && !showRasterLayers) setShowRasterLayers(true);
+      setSelectedLayers(prev => isVisible ? (prev.includes(rawId) ? prev : [...prev, rawId]) : prev.filter(x => x !== rawId));
+    }
+    else if (id.startsWith('health-map-layer-')) {
+      const rawId = id.replace('health-map-layer-', '');
+      if (isVisible && !showHealthMaps) setShowHealthMaps(true);
+      setSelectedHealthMapIds(prev => isVisible ? (prev.includes(rawId) ? prev : [...prev, rawId]) : prev.filter(x => x !== rawId));
+    }
+    else if (id.startsWith('vector-layer-')) {
+      const rawId = id.replace('vector-layer-', '');
+      setVisibleVectorLayers(prev => {
+        const next = new Set(prev);
+        if (isVisible) next.add(rawId);
+        else next.delete(rawId);
+        return next;
+      });
+    }
+  };
+
+
   return (
-    <div className="space-y-4">
-      <Card className={className}>
-        <CardHeader>
-          <CardTitle className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <MapPin className="w-5 h-5" />
-              Golf Course Map
-            </div>
-            <div className="flex items-center gap-2">
-              <Badge variant="secondary" className="text-xs">
-                Zoom: {currentZoom}
-              </Badge>
-              <Badge variant="outline" className="text-xs">
-                {selectedLayers.length} {selectedLayers.length === 1 ? 'Layer' : 'Layers'}
-              </Badge>
-            </div>
-          </CardTitle>
-
-          {showControls && (
-            <div className="flex flex-col gap-3 pt-2">
-              {/* FIX 1: Raster Layer Toggle - updated to use showRasterLayers */}
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <MapPin className="w-4 h-4 text-blue-600" />
-                  <span className="text-sm font-medium">Raster Layers (PNG Tiles)</span>
-                  <Switch
-                    checked={showRasterLayers}
-                    onCheckedChange={setShowRasterLayers}
-                  />
-                </div>
-                {rasterLayersLoaded && (
-                  <Badge variant="outline" className="text-xs">
-                    {showRasterLayers ? 'Visible' : 'Hidden'}
-                  </Badge>
-                )}
-              </div>
-              
-              {/* Zoom controls */}
-              <div className="flex items-center justify-end">
-                <div className="flex items-center gap-1">
-                  <Button variant="outline" size="sm" onClick={zoomOut}>
-                    <ZoomOut className="w-4 h-4" />
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={zoomIn}>
-                    <ZoomIn className="w-4 h-4" />
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={resetView}>
-                    <Maximize2 className="w-4 h-4" />
-                  </Button>
-                </div>
-              </div>
-              
-              {vectorLayers.length > 0 && (
-                <div className="flex items-center justify-between border-t pt-3">
-                  <div className="flex items-center gap-2">
-                    <Layers className="w-4 h-4 text-purple-600" />
-                    <span className="text-sm font-medium">Vector Layers</span>
-                    <Badge variant="secondary" className="text-xs">
-                      {visibleVectorLayers.size} / {vectorLayers.length}
-                    </Badge>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {showHealthMaps && !swipeEnabled && (
-                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                        <span>Position:</span>
-                        <Button
-                          variant={vectorLayersAboveHealth ? "default" : "outline"}
-                          size="sm"
-                          onClick={() => setVectorLayersAboveHealth(true)}
-                          className="h-7 px-2 text-xs"
-                        >
-                          Above Health
-                        </Button>
-                        <Button
-                          variant={!vectorLayersAboveHealth ? "default" : "outline"}
-                          size="sm"
-                          onClick={() => setVectorLayersAboveHealth(false)}
-                          className="h-7 px-2 text-xs"
-                        >
-                          Below Health
-                        </Button>
-                      </div>
-                    )}
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setShowVectorLayerPanel(!showVectorLayerPanel)}
-                      className="gap-2"
-                    >
-                      <Layers className="w-4 h-4" />
-                      Manage Layers
-                    </Button>
-                  </div>
-                </div>
-              )}
-              
-              <div className="flex items-center justify-between border-t pt-3">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium">Layer Comparison</span>
-                  {swipeLayerId && (
-                    <Badge variant="secondary" className="text-xs">
-                      Swipe: {swipeLayerId.replace('tileset-layer-', '').replace('vector-layer-', '').replace('health-map-layer', 'Health Map')}
-                    </Badge>
-                  )}
-                </div>
-                <Button
-                  variant={swipeEnabled ? 'default' : 'outline'}
-                  size="sm"
-                  onClick={() => setSwipeEnabled(!swipeEnabled)}
-                  className="gap-2"
-                >
-                  {swipeEnabled ? (
-                    <>
-                      <X className="w-4 h-4" />
-                      Exit Swipe
-                    </>
-                  ) : (
-                    <>
-                      <MoveHorizontal className="w-4 h-4" />
-                      Swipe Mode
-                    </>
-                  )}
-                </Button>
-              </div>
-            </div>
-          )}
-        </CardHeader>
-
-      <CardContent>
-        <div className="relative w-full h-[600px]">
-          <div 
-            ref={setMapContainerRef} 
-            className="absolute inset-0 w-full h-full rounded-lg overflow-hidden border"
-          />
-          
-          {/* Health Maps Dropdown - Floating top-left on map */}
-          {healthMapTilesets.length > 0 && (
-            <HealthMapDropdown
-              healthMaps={healthMapTilesets}
-              selectedIds={selectedHealthMapIds}
-              onSelectionChange={setSelectedHealthMapIds}
-              enabled={showHealthMaps}
-              onToggleEnabled={(enabled) => {
-                setShowHealthMaps(enabled);
-                if (!enabled) {
-                  setSelectedHealthMapIds([]);
-                }
-              }}
-              opacity={healthMapOpacity}
-              onOpacityChange={(opacity) => {
-                setHealthMapOpacity(opacity);
-                if (map.current) {
-                  selectedHealthMapIds.forEach(id => {
-                    const layerId = `health-map-layer-${id}`;
-                    if (map.current!.getLayer(layerId)) {
-                      map.current!.setPaintProperty(layerId, 'raster-opacity', opacity);
-                    }
-                  });
-                }
-              }}
-              onAnimateIn={handleHorizontalSwipe}
-              onAnimateOut={handleReverseHorizontalSwipe}
-              isAnimating={isAnimating}
-            />
-          )}
-          
-          {tilesets.length > 0 && (
-            <RasterLayerDropdown
-              tilesets={tilesets}
-              selectedIds={selectedLayers}
-              onSelectionChange={setSelectedLayers}
-              enabled={showRasterLayers}
-              onToggleEnabled={setShowRasterLayers}
-              opacity={rasterOpacity}
-              onOpacityChange={setRasterOpacity}
-            />
-          )}
-          
-          <DualMapSwipe
-            map={map.current}
-            layerId={swipeLayerId}
-            enabled={swipeEnabled}
-            onToggle={() => setSwipeEnabled(!swipeEnabled)}
-            mapboxAccessToken={mapboxAccessToken}
-            leftLayerMeta={getLayerMetadata(swipeLayerId)}
-            rightLayerMeta={getLayerMetadata(getLayerBeneath(swipeLayerId))}
-          />
-        </div>
-      </CardContent>
-    </Card>
-
-    {map.current && map.current.loaded() && (
-      <>
-        {canSwipe && swipeMode && (
-          <MapSwipeControl
-            map={map.current}
-            leftLayerId={`tileset-layer-${selectedLayers[0]}`}
-            rightLayerId={`tileset-layer-${selectedLayers[1]}`}
-            isActive={swipeMode}
-            onToggle={() => setSwipeMode(!swipeMode)}
-          />
-        )}
-        {showHealthMaps && selectedHealthMapIds.length > 0 && map.current.getLayer(`health-map-layer-${selectedHealthMapIds[selectedHealthMapIds.length - 1]}`) && (
-          <MapSwipeControl
-            map={map.current}
-            leftLayerId={`tileset-layer-${selectedLayers[0]}`}
-            rightLayerId={`health-map-layer-${selectedHealthMapIds[selectedHealthMapIds.length - 1]}`}
-            isActive={true}
-            onToggle={() => setShowHealthMaps(false)}
-          />
-        )}
-      </>
-    )}
-      
-      {vectorLayers.length > 0 && (
-        <>
+    <div className={`relative w-full ${isFullscreen ? 'fixed inset-0 z-[9999] h-screen bg-background text-foreground overflow-hidden touch-none' : 'h-[calc(100vh-140px)] min-h-[500px] border border-border rounded-lg bg-background overflow-hidden shadow-sm'}`} ref={wrapperRef}>
+        <div className="relative w-full h-full">
+          {/* Main Map Container */}
           <div
-            className={`fixed top-0 right-0 h-full w-80 bg-background border-l shadow-2xl z-50 transform transition-transform duration-300 ease-in-out ${
-              showVectorLayerPanel ? 'translate-x-0' : 'translate-x-full'
+            ref={setMapContainerRef}
+            className="absolute inset-0 w-full h-full"
+          />
+
+          {/* === Top-Right: Nav Controls + Compare Toggle === */}
+          <div className="absolute top-4 right-4 flex flex-col items-end gap-2 z-20">
+            <div className="bg-background/95 backdrop-blur shadow-md rounded-lg overflow-hidden flex flex-col border border-border">
+              <Button variant="ghost" size="icon" onClick={zoomIn} title="Zoom in" className="h-9 w-9 shrink-0 rounded-none border-b border-border hover:bg-muted focus:ring-0">
+                <ZoomIn className="w-4 h-4" />
+              </Button>
+              <Button variant="ghost" size="icon" onClick={zoomOut} title="Zoom out" className="h-9 w-9 shrink-0 rounded-none border-b border-border hover:bg-muted focus:ring-0">
+                <ZoomOut className="w-4 h-4" />
+              </Button>
+              <Button variant="ghost" size="icon" onClick={resetView} title="Reset view to course" className="h-9 w-9 shrink-0 rounded-none border-b border-border hover:bg-muted focus:ring-0">
+                <LocateFixed className="w-4 h-4" />
+              </Button>
+              <Button variant="ghost" size="icon" onClick={toggleFullscreen} title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"} className="h-9 w-9 shrink-0 rounded-none hover:bg-muted focus:ring-0">
+                <Maximize2 className="w-4 h-4" />
+              </Button>
+            </div>
+            <div
+              className={`backdrop-blur shadow-md rounded-full px-3 py-1.5 flex items-center gap-2 border cursor-pointer transition-all select-none ${swipeEnabled ? 'bg-primary text-primary-foreground border-primary' : 'bg-background/95 border-border hover:bg-muted/60'}`}
+              onClick={() => setSwipeEnabled(!swipeEnabled)}
+            >
+              <MoveHorizontal className="w-3.5 h-3.5" />
+              <span className="text-xs font-semibold whitespace-nowrap">{swipeEnabled ? 'Exit Compare' : 'Compare Maps'}</span>
+            </div>
+          </div>
+
+          {/* === Layers Toggle Button (top-left) === */}
+          <div className="absolute top-4 left-4 z-20">
+            <button
+              className="bg-background/95 backdrop-blur shadow-md border border-border rounded-lg px-3 py-2 flex items-center gap-2 text-sm font-semibold hover:bg-muted/60 transition-colors"
+              onClick={() => setShowVectorLayerPanel(v => !v)}
+            >
+              <Layers className="w-4 h-4 text-primary" />
+              <span>Layers</span>
+              {showVectorLayerPanel && <X className="w-3 h-3 opacity-60 ml-0.5" />}
+            </button>
+          </div>
+
+          {/* === Collapsible Left-Side Layer Panel (Teal Glossy Theme) === */}
+          <div
+            className={`absolute top-0 left-0 h-full bg-teal-950/95 text-teal-50 backdrop-blur-md border-r border-teal-800/60 shadow-2xl z-20 flex flex-col transition-all duration-300 ease-in-out overflow-hidden ${
+              showVectorLayerPanel ? 'w-80' : 'w-0'
             }`}
           >
-            <div className="flex flex-col h-full">
-              <div className="flex items-center justify-between p-4 border-b">
-                <div className="flex items-center gap-2">
-                  <Layers className="w-5 h-5" />
-                  <h3 className="font-semibold text-lg">Vector Layers</h3>
+            <div className="flex flex-col h-full w-80">
+              {/* Panel Header */}
+              <div className="flex items-center justify-between px-5 py-4 border-b border-teal-800/80 shrink-0 bg-teal-900/40">
+                <div className="flex items-center gap-2.5">
+                  <Layers className="w-4 h-4 text-teal-400" />
+                  <span className="font-semibold text-[15px] tracking-wide text-teal-50">Active Layers</span>
                 </div>
-                <Button
-                  variant="ghost"
-                  size="icon"
+                <button
                   onClick={() => setShowVectorLayerPanel(false)}
+                  className="p-1.5 rounded-md hover:bg-teal-800 transition-colors text-teal-400 hover:text-teal-100"
                 >
                   <X className="w-4 h-4" />
-                </Button>
+                </button>
               </div>
 
-              <div className="flex items-center justify-between p-4 border-b bg-muted/30">
-                <div className="text-sm text-muted-foreground">
-                  {visibleVectorLayers.size} of {vectorLayers.length} layers visible
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={toggleAllVectorLayers}
+              {/* Show All / Hide All */}
+              <div className="px-5 py-3 border-b border-teal-800/40 bg-teal-900/20 flex justify-between items-center shrink-0">
+                <span className="text-[11px] font-bold uppercase tracking-widest text-teal-200/60">Draw Order</span>
+                <button 
+                  onClick={toggleAllUnifiedLayers}
+                  className="text-[11px] font-bold text-teal-400 hover:text-teal-200 transition-colors uppercase tracking-wider bg-teal-900/40 hover:bg-teal-800/60 px-2 py-1 rounded"
                 >
-                  {visibleVectorLayers.size === vectorLayers.length ? 'Hide All' : 'Show All'}
-                </Button>
+                  {allLayersVisible ? 'Hide All' : 'Show All'}
+                </button>
               </div>
 
-              <ScrollArea className="flex-1 p-4">
-                <div className="space-y-3">
-                  {vectorLayers.map((layer) => (
-                    <div
-                      key={layer.id}
-                      className="flex items-center justify-between p-3 border rounded-lg hover:bg-muted/50 transition-colors bg-card"
+              <ScrollArea className="flex-1">
+                <div className="p-4 space-y-4">
+                  {unifiedLayers.length > 0 ? (
+                    <DndContext 
+                      sensors={sensors}
+                      collisionDetection={closestCenter}
+                      onDragEnd={handleDragEnd}
                     >
-                      <div className="flex items-center gap-3 flex-1">
-                        <div
-                          className="w-4 h-4 rounded border-2 border-white shadow-sm flex-shrink-0"
-                          style={{ backgroundColor: getLayerColor(layer.name) }}
-                        />
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-medium truncate">{layer.name}</p>
-                          {layer.description && (
-                            <p className="text-xs text-muted-foreground truncate">{layer.description}</p>
-                          )}
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2 flex-shrink-0">
-                        <Switch
-                          checked={visibleVectorLayers.has(layer.id)}
-                          onCheckedChange={() => toggleVectorLayer(layer.id)}
-                        />
-                      </div>
+                      <SortableContext
+                        items={unifiedLayers.map(l => l.id)}
+                        strategy={verticalListSortingStrategy}
+                      >
+                        {unifiedLayers.map((layer) => (
+                          <SortableLayerItem
+                            key={layer.id}
+                            id={layer.id}
+                            name={layer.name}
+                            isVisible={layer.isVisible}
+                            type={layer.type}
+                            color={layer.color}
+                            onToggle={handleUnifiedLayerToggle}
+                          />
+                        ))}
+                      </SortableContext>
+                    </DndContext>
+                  ) : (
+                    <div className="text-center py-8 text-teal-200/50 text-sm">
+                      No layers available for this course.
                     </div>
-                  ))}
+                  )}
+                  
+                  {/* Raster Opacity slider for all imagery */}
+                  {selectedLayers.length > 0 && showRasterLayers && (
+                    <div className="mt-6 px-3 py-3 bg-teal-900/40 rounded-lg border border-teal-800/60 border-t border-t-teal-600/20">
+                      <div className="flex justify-between text-[11px] font-semibold text-teal-300 mb-2 uppercase tracking-wide">
+                        <span>Base Imagery Opacity</span>
+                        <span className="text-teal-100">{Math.round(rasterOpacity * 100)}%</span>
+                      </div>
+                      <input
+                        type="range" min="0" max="1" step="0.05"
+                        value={rasterOpacity}
+                        onChange={e => setRasterOpacity(parseFloat(e.target.value))}
+                        className="w-full h-1.5 mt-1 accent-teal-400 bg-teal-800/80 rounded-full appearance-none cursor-pointer"
+                      />
+                    </div>
+                  )}
+
                 </div>
               </ScrollArea>
             </div>
           </div>
 
-          {showVectorLayerPanel && (
-            <div
-              className="fixed inset-0 bg-black/20 z-40 transition-opacity duration-300"
-              onClick={() => setShowVectorLayerPanel(false)}
-            />
+          {/* Swipe Selectors – bottom-center, only when active */}
+          {swipeEnabled && (
+            <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-20 flex gap-3 w-full max-w-xl px-4 sm:flex-row flex-col">
+              <div className="flex-1 bg-background/95 backdrop-blur rounded-lg border border-border p-2.5 shadow-xl">
+                <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground mb-1.5 block">
+                  Left side
+                </label>
+                <select
+                  className="w-full bg-muted/80 border border-border/50 text-sm rounded-md cursor-pointer p-1.5 text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
+                  value={swipeLeftLayerId || 'null'}
+                  onChange={(e) => setSwipeLeftLayerId(e.target.value === 'null' ? null : e.target.value)}
+                >
+                  {swipeOptions.map(opt => (
+                    <option key={'left-' + opt.id} value={opt.id}>{opt.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex-1 bg-background/95 backdrop-blur rounded-lg border border-border p-2.5 shadow-xl">
+                <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground mb-1.5 block">
+                  Right side
+                </label>
+                <select
+                  className="w-full bg-muted/80 border border-border/50 text-sm rounded-md cursor-pointer p-1.5 text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
+                  value={swipeRightLayerId || 'null'}
+                  onChange={(e) => setSwipeRightLayerId(e.target.value === 'null' ? null : e.target.value)}
+                >
+                  {swipeOptions.map(opt => (
+                    <option key={'right-' + opt.id} value={opt.id}>{opt.name}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
           )}
-        </>
-      )}
+
+          <DualMapSwipe
+            map={map.current}
+            leftLayerId={swipeLeftLayerId}
+            rightLayerId={swipeRightLayerId}
+            enabled={swipeEnabled}
+            onToggle={() => setSwipeEnabled(!swipeEnabled)}
+            mapboxAccessToken={mapboxAccessToken}
+            leftLayerMeta={getLayerMetadata(swipeLeftLayerId)}
+            rightLayerMeta={getLayerMetadata(swipeRightLayerId)}
+          />
+        </div>
     </div>
   );
 };

@@ -98,7 +98,7 @@ export const ClientContentViewer = ({
 
       {/* Map View */}
       {showMapView && (
-        <div className="w-full h-[600px] mb-6 rounded-lg overflow-hidden border border-border">
+        <div className="w-full mb-6 z-10 relative">
           <MapboxGolfCourseMap
             golfCourseId={golfCourseId.toString()}
             mapboxAccessToken={import.meta.env.VITE_MAPBOX_ACCESS_TOKEN || ''}

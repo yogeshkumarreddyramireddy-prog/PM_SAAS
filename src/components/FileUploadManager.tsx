@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge"
 import { Upload, FileType, X, CheckCircle, AlertCircle, MapPin } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { supabase } from "@/integrations/supabase/client"
+import { useUploadContext } from "@/contexts/UploadContext"
 
 interface FileUploadManagerProps {
   golfCourseId: number
@@ -16,24 +17,16 @@ interface FileUploadManagerProps {
   enableGpsCapture?: boolean
 }
 
-interface UploadingFile {
-  id: string
-  file: File
-  progress: number
-  status: 'uploading' | 'processing' | 'completed' | 'error'
-  error?: string
-  gpsCoordinates?: { lat: number, lng: number }
-}
-
 export const FileUploadManagerFixed = ({ 
   golfCourseId,
   category,
   onUploadComplete,
   maxFileSize = 500, // 500MB default
-  acceptedFormats = ['.jpg', '.jpeg', '.png', '.pdf', '.obj', '.fbx', '.gltf', '.zip', '.shp', '.shx', '.dbf', '.prj', '.geojson', '.json', '.tif', '.tiff'],
+  acceptedFormats = ['.jpg', '.jpeg', '.png', '.pdf', '.obj', '.fbx', '.gltf', '.zip', '.shp', '.shx', '.dbf', '.prj', '.geojson', '.json'],
   enableGpsCapture = false
 }: FileUploadManagerProps) => {
-  const [uploadingFiles, setUploadingFiles] = useState<UploadingFile[]>([])
+  const { setUploadingFiles, getFilesForCategory, removeFile } = useUploadContext()
+  const currentUploadingFiles = getFilesForCategory(golfCourseId, category)
   const [isDragOver, setIsDragOver] = useState(false)
   const { toast } = useToast()
 
@@ -252,7 +245,9 @@ export const FileUploadManagerFixed = ({
         file,
         progress: 0,
         status: 'uploading',
-        gpsCoordinates
+        gpsCoordinates,
+        golfCourseId,
+        category
       }])
       try {
         await uploadFileToR2({
@@ -303,7 +298,9 @@ export const FileUploadManagerFixed = ({
       id: uploadId,
       file: new File([''], `${tileFiles.length} tiles folder`, { type: 'application/folder' }),
       progress: 0,
-      status: 'uploading'
+      status: 'uploading',
+      golfCourseId,
+      category
     }])
 
     try {
@@ -389,9 +386,7 @@ export const FileUploadManagerFixed = ({
     handleFileUpload(files)
   }, [handleFileUpload])
 
-  const removeFile = (id: string) => {
-    setUploadingFiles(prev => prev.filter(f => f.id !== id))
-  }
+
 
   return (
     <Card>
@@ -468,11 +463,11 @@ export const FileUploadManagerFixed = ({
         </div>
 
         {/* Upload Progress */}
-        {uploadingFiles.length > 0 && (
+        {currentUploadingFiles.length > 0 && (
           <div className="space-y-3">
             <h4 className="font-medium text-sm">Uploading Files</h4>
             
-            {uploadingFiles.map((file) => (
+            {currentUploadingFiles.map((file) => (
               <div key={file.id} className="flex items-center gap-3 p-3 bg-muted/50 rounded border">
                 <div className="flex-1">
                   <div className="flex items-center justify-between mb-1">

@@ -59,6 +59,8 @@ const VectorLayerOverlayMap = ({
   const [courseCenter, setCourseCenter] = useState<[number, number] | null>(null);
   const [currentZoom, setCurrentZoom] = useState<number>(initialZoom);
   const [mapContainerElement, setMapContainerElement] = useState<HTMLDivElement | null>(null);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const [mapReady, setMapReady] = useState(false);
   const layersLoadedRef = useRef(false); // Prevent duplicate loading
   const mapInitializedRef = useRef(false); // Track if map has been initialized
@@ -488,13 +490,33 @@ const VectorLayerOverlayMap = ({
     map.current?.zoomOut();
   };
 
-  const toggleFullscreen = () => {
-    if (!document.fullscreenElement) {
-      mapContainer.current?.requestFullscreen();
+  const toggleFullscreen = async () => {
+    if (!isFullscreen) {
+      if (wrapperRef.current?.requestFullscreen) {
+        await wrapperRef.current.requestFullscreen().catch(err => {
+          console.warn(`Fullscreen error: ${err.message}`);
+        });
+      }
     } else {
-      document.exitFullscreen();
+      if (document.exitFullscreen) {
+        await document.exitFullscreen().catch(err => {
+          console.warn(`Exit fullscreen error: ${err.message}`);
+        });
+      }
     }
   };
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+      // Ensure we resize the map after short layout shifts
+      setTimeout(() => {
+        if (map.current) map.current.resize();
+      }, 100);
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, []);
 
   if (isLoading) {
     return (
@@ -533,8 +555,8 @@ const VectorLayerOverlayMap = ({
   }
 
   return (
-    <div className="relative">
-      <Card className={className}>
+    <div className={`relative ${isFullscreen ? 'bg-background p-4 overflow-y-auto w-full h-full text-foreground' : ''}`} ref={wrapperRef}>
+      <Card className={`${className} ${isFullscreen ? 'border-none shadow-none min-h-[90vh] flex flex-col' : ''}`}>
         <CardHeader>
           <CardTitle className="flex items-center justify-between">
             <div className="flex items-center gap-2">
@@ -574,7 +596,7 @@ const VectorLayerOverlayMap = ({
                   variant="outline"
                   size="sm"
                   onClick={toggleFullscreen}
-                  title="Fullscreen"
+                  title={isFullscreen ? "Exit Fullscreen" : "Enter Fullscreen"}
                 >
                   <Maximize2 className="w-4 h-4" />
                 </Button>

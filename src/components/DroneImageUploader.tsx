@@ -10,6 +10,7 @@ import { ImageService } from '@/lib/imageService';
 import { cn } from '@/lib/utils';
 import { useDropzone } from 'react-dropzone';
 import * as exifr from 'exifr';
+import { useUploadContext } from '@/contexts/UploadContext';
 
 interface DroneImageUploaderProps {
     golfCourseId: number;
@@ -18,14 +19,22 @@ interface DroneImageUploaderProps {
 }
 
 export function DroneImageUploader({ golfCourseId, golfCourseName, onUploadComplete }: DroneImageUploaderProps) {
-    const [flightDate, setFlightDate] = useState('');
-    const [flightTime, setFlightTime] = useState('');
+    const { droneUploadState, setDroneUploadState, clearDroneUploadState } = useUploadContext();
+    const { flightDate, flightTime, selectedFiles, isUploading, uploadProgress, uploadStatus, errorMessage } = droneUploadState;
 
-    const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
-    const [isUploading, setIsUploading] = useState(false);
-    const [uploadProgress, setUploadProgress] = useState(0);
-    const [uploadStatus, setUploadStatus] = useState<'idle' | 'uploading' | 'success' | 'error'>('idle');
-    const [errorMessage, setErrorMessage] = useState('');
+    const setFlightDate = (date: string) => setDroneUploadState(prev => ({ ...prev, flightDate: date }));
+    const setFlightTime = (time: string) => setDroneUploadState(prev => ({ ...prev, flightTime: time }));
+    const setSelectedFiles = (files: File[] | ((prev: File[]) => File[])) => {
+        if (typeof files === 'function') {
+            setDroneUploadState(prev => ({ ...prev, selectedFiles: files(prev.selectedFiles) }));
+        } else {
+            setDroneUploadState(prev => ({ ...prev, selectedFiles: files }));
+        }
+    };
+    const setIsUploading = (isUploading: boolean) => setDroneUploadState(prev => ({ ...prev, isUploading }));
+    const setUploadProgress = (progress: number) => setDroneUploadState(prev => ({ ...prev, uploadProgress: progress }));
+    const setUploadStatus = (status: 'idle' | 'uploading' | 'success' | 'error') => setDroneUploadState(prev => ({ ...prev, uploadStatus: status }));
+    const setErrorMessage = (msg: string) => setDroneUploadState(prev => ({ ...prev, errorMessage: msg }));
 
     const [isExtractingExif, setIsExtractingExif] = useState(false);
 
@@ -115,11 +124,7 @@ export function DroneImageUploader({ golfCourseId, golfCourseName, onUploadCompl
 
             // Reset form after a few seconds
             setTimeout(() => {
-                setFlightDate('');
-                setFlightTime('');
-                setSelectedFiles([]);
-                setUploadStatus('idle');
-                setUploadProgress(0);
+                clearDroneUploadState();
             }, 3000);
 
         } catch (error: any) {

@@ -84,7 +84,7 @@ serve(async (req) => {
 
       const { data: fileData, error: fileError } = await supabase
         .from('content_files')
-        .select('r2_object_key, r2_bucket_name, is_tile_map')
+        .select('r2_object_key, r2_bucket_name, is_tile_map, tile_map_id, golf_course_id, original_filename')
         .eq('id', fileId)
         .single()
 
@@ -96,7 +96,7 @@ serve(async (req) => {
       finalBucketName = fileData.r2_bucket_name || Deno.env.get('R2_BUCKET')!
       isFolder = fileData.is_tile_map || false
       
-      console.log('Retrieved from database:', { finalObjectKey, finalBucketName, isFolder })
+      console.log('Retrieved from database:', { finalObjectKey, finalBucketName, isFolder, tileMapId: fileData.tile_map_id })
     }
 
     if (!finalObjectKey || !finalBucketName) {
@@ -190,19 +190,37 @@ serve(async (req) => {
       const supabase = createClient(supabaseUrl, supabaseServiceKey)
 
       // --- 1. Find the associated tiles folder in golf_course_tilesets ---
-      const { data: tilesets, error: tilesetQueryError } = await supabase
-        .from('golf_course_tilesets')
-        .select('id, r2_folder_path')
-        .eq('source_file_id', fileId)
+      let tilesetsToDelete: any[] = []
+      
+      if (fileData.tile_map_id) {
+        const { data: tilesets, error: tilesetQueryError } = await supabase
+          .from('golf_course_tilesets')
+          .select('id, r2_folder_path')
+          .eq('id', fileData.tile_map_id)
+          
+        if (tilesets) tilesetsToDelete = [...tilesetsToDelete, ...tilesets]
+      }
 
       // Also try matching by folder path containing the fileId (fallback)
-      let tilesetsToDelete = tilesets || []
-      if ((!tilesetsToDelete || tilesetsToDelete.length === 0) && !tilesetQueryError) {
+      if (tilesetsToDelete.length === 0) {
         const { data: fallbackTilesets } = await supabase
           .from('golf_course_tilesets')
           .select('id, r2_folder_path')
           .like('r2_folder_path', `%${fileId}%`)
-        tilesetsToDelete = fallbackTilesets || []
+        
+        if (fallbackTilesets) tilesetsToDelete = [...tilesetsToDelete, ...fallbackTilesets]
+      }
+      
+      // Additional fallback checking original filename prefix or folder path naming
+      if (tilesetsToDelete.length === 0 && fileData.golf_course_id && fileData.original_filename) {
+        const baseName = fileData.original_filename.split('.')[0]
+        const { data: nameMatchTilesets } = await supabase
+          .from('golf_course_tilesets')
+          .select('id, r2_folder_path')
+          .eq('golf_course_id', fileData.golf_course_id)
+          .ilike('name', `%${baseName}%`)
+          
+        if (nameMatchTilesets) tilesetsToDelete = [...tilesetsToDelete, ...nameMatchTilesets]
       }
 
       console.log(`Found ${tilesetsToDelete.length} tileset(s) to delete for fileId: ${fileId}`)

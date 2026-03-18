@@ -91,7 +91,7 @@ export const ClientContentSection = ({
 
     {/* Map View */}
     {showMapView && contentType === 'live_maps' && (
-      <div className="w-full h-[600px] mb-6 rounded-lg overflow-hidden border border-border mx-[15px] max-w-[calc(100%-30px)]">
+      <div className="w-full mb-8 z-10 relative rounded-lg overflow-hidden border border-border mx-[15px] max-w-[calc(100%-30px)]">
         <MapboxGolfCourseMap
           golfCourseId={golfCourseId.toString()}
           mapboxAccessToken={import.meta.env.VITE_MAPBOX_ACCESS_TOKEN || ''}

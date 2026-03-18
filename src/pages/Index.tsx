@@ -46,6 +46,7 @@ export const ResponsiveMapboxViewer = ({
   contentFiles,
   mapboxConfig
 }: MapboxViewerProps) => {
+  const wrapperRef = useRef<HTMLDivElement>(null);
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
@@ -169,8 +170,11 @@ export const ResponsiveMapboxViewer = ({
         
         // Try native fullscreen API for supported browsers
         try {
+          const wrapper = wrapperRef.current;
           const mapElement = mapContainer.current;
-          if (mapElement && mapElement.requestFullscreen) {
+          if (wrapper && wrapper.requestFullscreen) {
+            await wrapper.requestFullscreen();
+          } else if (mapElement && mapElement.requestFullscreen) {
             await mapElement.requestFullscreen();
           } else if (document.documentElement.requestFullscreen) {
             await document.documentElement.requestFullscreen();
@@ -189,7 +193,10 @@ export const ResponsiveMapboxViewer = ({
       } else {
         // For desktop, use browser fullscreen API
         try {
-          if (document.documentElement.requestFullscreen) {
+          const wrapper = wrapperRef.current;
+          if (wrapper && wrapper.requestFullscreen) {
+            await wrapper.requestFullscreen();
+          } else if (document.documentElement.requestFullscreen) {
             await document.documentElement.requestFullscreen();
           }
           setIsFullscreen(true);
@@ -536,7 +543,7 @@ export const ResponsiveMapboxViewer = ({
   );
 
   return (
-    <div className={`${isFullscreen && isMobile ? 'fixed inset-0 z-[9999] w-screen h-screen overflow-hidden touch-none' : isFullscreen ? 'fixed inset-0 z-50 bg-background' : 'space-y-2 sm:space-y-4'}`}>
+    <div className={`${isFullscreen && isMobile ? 'fixed inset-0 z-[9999] w-screen h-screen overflow-hidden touch-none' : isFullscreen ? 'fixed inset-0 z-50 bg-background' : 'space-y-2 sm:space-y-4'}`} ref={wrapperRef}>
       {isFullscreen && isMobile ? (
         // Mobile fullscreen: Direct map container without Card wrapper
         <div className="w-full h-full relative">

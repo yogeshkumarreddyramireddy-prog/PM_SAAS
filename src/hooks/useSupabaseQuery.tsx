@@ -330,7 +330,7 @@ export const useDeleteContentFile = () => {
   const { toast } = useToast()
 
   return useMutation({
-    mutationFn: async (fileId: string) => {
+    mutationFn: async ({ fileId, objectKey, bucketName, deleteFolder }: { fileId: string, objectKey?: string, bucketName?: string, deleteFolder?: boolean }) => {
       console.log('Delete mutation called with fileId:', fileId)
 
       // Force session refresh before getting the token
@@ -350,7 +350,7 @@ export const useDeleteContentFile = () => {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${session.access_token}`,
           },
-          body: JSON.stringify({ fileId }),
+          body: JSON.stringify({ fileId, objectKey, bucketName, deleteFolder }),
         })
 
         console.log('Delete response status:', response.status)

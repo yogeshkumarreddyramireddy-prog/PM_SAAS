@@ -209,7 +209,7 @@ serve(async (req) => {
 
     const file = formData.get('file') as File
     const golfCourseId = formData.get('golf_course_id') as string
-    const courseName = formData.get('course_name') as string
+    let courseName = formData.get('course_name') as string
     const name = formData.get('name') as string
     const description = formData.get('description') as string
 
@@ -225,17 +225,48 @@ serve(async (req) => {
       name: name
     })
 
-    if (!file || !golfCourseId || !courseName || !name) {
+    if (!file || !golfCourseId || !name) {
       console.error('Missing fields:', {
         hasFile: !!file,
         hasGolfCourseId: !!golfCourseId,
-        hasCourseName: !!courseName,
         hasName: !!name
       })
       return new Response(
-        JSON.stringify({ error: 'Missing required fields: file, golf_course_id, course_name, and name are required' }),
+        JSON.stringify({ error: 'Missing required fields: file, golf_course_id, and name are required' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       )
+    }
+
+    // Auto-derive course_name from the golf course if not provided
+    if (!courseName) {
+      // First try to get it from an existing tileset's r2_folder_path
+      const { data: tilesetData } = await supabaseAdmin
+        .from('golf_course_tilesets')
+        .select('r2_folder_path')
+        .eq('golf_course_id', golfCourseId)
+        .eq('is_active', true)
+        .limit(1)
+        .single()
+
+      if (tilesetData?.r2_folder_path) {
+        courseName = tilesetData.r2_folder_path.split('/')[0]
+        console.log('Derived course_name from tileset r2_folder_path:', courseName)
+      } else {
+        // Fallback: look up from active_golf_courses table
+        const { data: courseData } = await supabaseAdmin
+          .from('active_golf_courses')
+          .select('name')
+          .eq('id', golfCourseId)
+          .single()
+
+        if (courseData?.name) {
+          courseName = courseData.name.replace(/[^a-zA-Z0-9_-]/g, '_')
+          console.log('Derived course_name from active_golf_courses:', courseName)
+        } else {
+          courseName = `course_${golfCourseId}`
+          console.log('Using fallback course_name:', courseName)
+        }
+      }
     }
 
     // Generate file path using new structure: {course_name}/Vector_Layers/{layer_name}.{ext}

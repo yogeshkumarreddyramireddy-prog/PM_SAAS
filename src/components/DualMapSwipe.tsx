@@ -476,19 +476,7 @@ export const DualMapSwipe = ({
         }}
       />
 
-      {/* Date Labels - Bottom corners */}
-      {leftLayerMeta && (
-        <div className="absolute bottom-4 left-4 bg-black/75 text-white px-4 py-2 rounded-lg shadow-xl text-sm pointer-events-none" style={{ zIndex: 9 }}>
-          <div className="font-semibold">{leftLayerMeta.name}</div>
-          <div className="text-xs opacity-90">{leftLayerMeta.date}</div>
-        </div>
-      )}
-      {rightLayerMeta && (
-        <div className="absolute bottom-4 right-4 bg-black/75 text-white px-4 py-2 rounded-lg shadow-xl text-sm pointer-events-none" style={{ zIndex: 9 }}>
-          <div className="font-semibold">{rightLayerMeta.name}</div>
-          <div className="text-xs opacity-90">{rightLayerMeta.date}</div>
-        </div>
-      )}
+
 
       {/* Slider UI */}
       <div
@@ -498,7 +486,7 @@ export const DualMapSwipe = ({
       >
             {/* Vertical slider line */}
             <div
-              className="absolute top-0 bottom-0 w-1 bg-white/90 shadow-[0_0_15px_rgba(0,0,0,0.6)] pointer-events-auto cursor-ew-resize"
+              className="absolute top-0 bottom-0 w-1 bg-white shadow-[0_0_15px_rgba(0,0,0,0.4)] pointer-events-auto cursor-ew-resize hover:bg-white/90 transition-colors"
               style={{
                 left: `${sliderPosition}%`,
                 transform: 'translateX(-50%)',
@@ -507,22 +495,8 @@ export const DualMapSwipe = ({
               onTouchStart={onTouchStart}
             >
               {/* Slider handle */}
-              <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-14 h-28 bg-white rounded-2xl shadow-2xl flex flex-col items-center justify-center gap-2 border-2 border-gray-300">
-                {/* Grip dots */}
-                <div className="flex flex-col gap-1.5">
-                  {[...Array(3)].map((_, i) => (
-                    <div key={i} className="flex gap-1.5">
-                      <div className="w-1.5 h-1.5 bg-gray-400 rounded-full"></div>
-                      <div className="w-1.5 h-1.5 bg-gray-400 rounded-full"></div>
-                    </div>
-                  ))}
-                </div>
-                
-                {/* Arrows */}
-                <div className="flex items-center gap-1 text-gray-600 text-sm font-bold">
-                  <span>◀</span>
-                  <span>▶</span>
-                </div>
+              <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-10 h-10 bg-white rounded-full shadow-lg flex items-center justify-center border border-gray-200 transition-transform hover:scale-105 active:scale-95">
+                <MoveHorizontal className="w-5 h-5 text-gray-700" />
               </div>
             </div>
 
@@ -537,13 +511,7 @@ export const DualMapSwipe = ({
               {Math.round(sliderPosition)}%
             </div>
 
-            {/* Instructions */}
-            <div className="absolute bottom-8 left-1/2 transform -translate-x-1/2 bg-black/75 text-white px-6 py-3 rounded-lg shadow-xl text-sm pointer-events-none">
-              <div className="flex items-center gap-2">
-                <MoveHorizontal className="w-4 h-4" />
-                <span>Drag slider to compare layers</span>
-              </div>
-            </div>
+
           </div>
     </>
   );

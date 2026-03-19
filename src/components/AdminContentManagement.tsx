@@ -11,6 +11,7 @@ import { Building2, Upload, Eye, Trash2, Download, Calendar, Map, FileText, Imag
 import { useToast } from "@/hooks/use-toast"
 import { useGolfCourses, useContentFiles, useDeleteContentFile } from "@/hooks/useSupabaseQuery"
 import { supabase } from "@/integrations/supabase/client"
+import { VectorLayerManager } from "@/components/VectorLayerManager"
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 
@@ -287,11 +288,15 @@ export const AdminContentManagement = () => {
           </CardHeader>
           <CardContent>
             {viewMode === 'map' ? (
-              <div className="w-full mb-6 z-10 relative">
+              <div className="flex flex-col gap-6 w-full relative z-10">
                 <MapboxGolfCourseMap
                   golfCourseId={selectedClient.id.toString()}
                   mapboxAccessToken={import.meta.env.VITE_MAPBOX_ACCESS_TOKEN || ''}
-                  className="w-full h-full"
+                  className="w-full"
+                />
+                <VectorLayerManager 
+                  golfCourseId={selectedClient.id.toString()} 
+                  isAdmin={true} 
                 />
               </div>
             ) : (

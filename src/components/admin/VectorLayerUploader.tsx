@@ -1,12 +1,9 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useDropzone } from 'react-dropzone'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import { Loader2, UploadCloud, X } from 'lucide-react'
 import { useToast } from '@/components/ui/use-toast'
 import { supabase } from '@/integrations/supabase/client'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 
 interface VectorLayerUploaderProps {
   golfCourseId: string
@@ -28,49 +25,8 @@ export function VectorLayerUploader({
     featureCount: number
     bounds: [number, number, number, number]
   }>>([])
-  const [courses, setCourses] = useState<Array<{ id: string; name: string; r2_folder_path: string }>>([])
-  const [selectedCourse, setSelectedCourse] = useState<string>('')
-  const [isLoadingCourses, setIsLoadingCourses] = useState(true)
   
   const { toast } = useToast()
-
-  // Fetch available courses for this golf club
-  useEffect(() => {
-    const fetchCourses = async () => {
-      if (!golfCourseId) return
-      
-      setIsLoadingCourses(true)
-      try {
-        const { data, error } = await supabase
-          .from('golf_course_tilesets')
-          .select('id, name, r2_folder_path')
-          .eq('golf_course_id', golfCourseId)
-          .eq('is_active', true)
-          .order('name')
-        
-        if (error) throw error
-        
-        if (data && data.length > 0) {
-          setCourses(data)
-          // Auto-select first course if only one exists
-          if (data.length === 1) {
-            setSelectedCourse(data[0].id)
-          }
-        }
-      } catch (error) {
-        console.error('Error fetching courses:', error)
-        toast({
-          title: 'Error',
-          description: 'Failed to load courses',
-          variant: 'destructive',
-        })
-      } finally {
-        setIsLoadingCourses(false)
-      }
-    }
-    
-    fetchCourses()
-  }, [golfCourseId, toast])
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     accept: {
@@ -101,7 +57,6 @@ export function VectorLayerUploader({
               
               const processCoords = (coords: any[]) => {
                 if (Array.isArray(coords[0]) && typeof coords[0][0] === 'number') {
-                  // Handle [lng, lat] or [lng, lat, ...]
                   coords.forEach(coord => {
                     const [lng, lat] = coord
                     minLng = Math.min(minLng, lng)
@@ -110,7 +65,6 @@ export function VectorLayerUploader({
                     maxLat = Math.max(maxLat, lat)
                   })
                 } else if (Array.isArray(coords[0])) {
-                  // Handle nested arrays (e.g., polygons, multi-linestrings)
                   coords.forEach(processCoords)
                 }
               }
@@ -147,45 +101,18 @@ export function VectorLayerUploader({
     e.preventDefault()
     if (files.length === 0) return
 
-    // Validate golfCourseId
     if (!golfCourseId) {
       toast({
         title: 'Error',
-        description: 'Golf club ID is missing. Please select a golf course.',
+        description: 'Golf course ID is missing.',
         variant: 'destructive',
       })
       return
     }
-
-    // Validate course selection
-    if (!selectedCourse) {
-      toast({
-        title: 'Error',
-        description: 'Please select a golf course for this vector layer.',
-        variant: 'destructive',
-      })
-      return
-    }
-
-    // Get course name from r2_folder_path (e.g., "test20/tiles" -> "test20")
-    const course = courses.find(c => c.id === selectedCourse)
-    if (!course) {
-      toast({
-        title: 'Error',
-        description: 'Selected course not found.',
-        variant: 'destructive',
-      })
-      return
-    }
-    
-    // Extract course name from r2_folder_path
-    // r2_folder_path format: "test20/tiles" or "test20/2024-11-05/14-30/tiles"
-    const courseName = course.r2_folder_path.split('/')[0]
 
     try {
       setIsUploading(true)
       
-      // Get the current user's session token
       const { data: { session }, error: sessionError } = await supabase.auth.getSession()
       
       if (sessionError || !session) {
@@ -197,13 +124,11 @@ export function VectorLayerUploader({
       let failCount = 0
       const errors: string[] = []
 
-      // Upload each file
       for (const preview of previews) {
         try {
           const formData = new FormData()
           formData.append('file', preview.file)
           formData.append('golf_course_id', golfCourseId)
-          formData.append('course_name', courseName)
           formData.append('name', preview.name)
           formData.append('description', `${preview.type} layer with ${preview.featureCount} features`)
 
@@ -236,7 +161,6 @@ export function VectorLayerUploader({
         }
       }
 
-      // Show results
       if (successCount > 0) {
         toast({
           title: 'Upload Complete',
@@ -257,7 +181,6 @@ export function VectorLayerUploader({
         setFiles([])
         setPreviews([])
       }
-      // Don't reset selectedCourse - keep it for next upload
     } catch (error) {
       console.error('Upload failed:', error)
       toast({
@@ -280,7 +203,7 @@ export function VectorLayerUploader({
       <div>
         <h3 className="text-lg font-medium">Upload Vector Layer</h3>
         <p className="text-sm text-muted-foreground">
-          Upload a GeoJSON file containing your vector data
+          Upload a GeoJSON file containing your vector data (boundaries, zones, etc.)
         </p>
       </div>
 
@@ -336,28 +259,7 @@ export function VectorLayerUploader({
             ))}
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="course">Golf Course</Label>
-              <Select value={selectedCourse} onValueChange={setSelectedCourse} disabled={isLoadingCourses || courses.length === 0}>
-                <SelectTrigger>
-                  <SelectValue placeholder={isLoadingCourses ? "Loading courses..." : courses.length === 0 ? "No courses available" : "Select a course"} />
-                </SelectTrigger>
-                <SelectContent>
-                  {courses.map((course) => (
-                    <SelectItem key={course.id} value={course.id}>
-                      {course.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {selectedCourse && previews.length > 0 && (
-                <p className="text-xs text-muted-foreground">
-                  R2 Path: {courses.find(c => c.id === selectedCourse)?.r2_folder_path.split('/')[0]}/Vector_Layers/[layer_name].geojson
-                </p>
-              )}
-            </div>
-
+          <form onSubmit={handleSubmit}>
             <Button type="submit" className="w-full" disabled={isUploading}>
               {isUploading ? (
                 <>

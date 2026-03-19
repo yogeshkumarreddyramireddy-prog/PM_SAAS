@@ -159,7 +159,12 @@ export const FileDownloader = ({
 
     try {
       // Use the enhanced delete function that handles both R2 and database
-      deleteFileMutation.mutate(file.id, {
+      deleteFileMutation.mutate({
+        fileId: file.id,
+        objectKey: file.r2_object_key,
+        bucketName: file.r2_bucket_name,
+        deleteFolder: !!file.is_tile_map
+      }, {
         onSuccess: () => {
           onDelete?.()
           toast({

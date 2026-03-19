@@ -75,6 +75,7 @@ serve(async (req) => {
     let finalObjectKey = objectKey
     let finalBucketName = bucketName
     let isFolder = deleteFolder || false
+    let fileData: any = null
 
     // If fileId is provided, get file details from database
     if (fileId) {
@@ -82,21 +83,35 @@ serve(async (req) => {
       const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
       const supabase = createClient(supabaseUrl, supabaseServiceKey)
 
-      const { data: fileData, error: fileError } = await supabase
+      const { data, error: fileError } = await supabase
         .from('content_files')
         .select('r2_object_key, r2_bucket_name, is_tile_map, tile_map_id, golf_course_id, original_filename')
         .eq('id', fileId)
         .single()
 
-      if (fileError || !fileData) {
-        throw new Error('File not found in database')
-      }
+      // If error is just 'No rows found' (PGRST116), we can gracefully proceed if we have objectKey from frontend
+      if (fileError) {
+        if (fileError.code === 'PGRST116') { // No rows found
+          if (!finalObjectKey || !finalBucketName) {
+            console.log('File not found in database and no fallback keys provided');
+            throw new Error('File not found in database')
+          } else {
+            console.log('File not found in DB, but fallback keys were provided by client. Proceeding with client-provided keys.');
+            // fileData remains null, proceed with finalObjectKey/finalBucketName from requestBody
+          }
+        } else { // Other database error
+          console.error('Database error fetching file:', fileError);
+          throw new Error('Database error fetching file details');
+        }
+      } else if (data) { // Data was found
+        fileData = data
 
-      finalObjectKey = fileData.r2_object_key
-      finalBucketName = fileData.r2_bucket_name || Deno.env.get('R2_BUCKET')!
-      isFolder = fileData.is_tile_map || false
-      
-      console.log('Retrieved from database:', { finalObjectKey, finalBucketName, isFolder, tileMapId: fileData.tile_map_id })
+        finalObjectKey = fileData.r2_object_key
+        finalBucketName = fileData.r2_bucket_name || Deno.env.get('R2_BUCKET')!
+        isFolder = fileData.is_tile_map || false
+        
+        console.log('Retrieved from database:', { finalObjectKey, finalBucketName, isFolder, tileMapId: fileData.tile_map_id })
+      }
     }
 
     if (!finalObjectKey || !finalBucketName) {
@@ -131,39 +146,46 @@ serve(async (req) => {
       const folderPrefix = finalObjectKey.endsWith('/') ? finalObjectKey : `${finalObjectKey}/`
       console.log(`Deleting tile map folder with prefix: ${folderPrefix}`)
       
-      // List all objects in the folder
-      const listCommand = new ListObjectsV2Command({
-        Bucket: finalBucketName,
-        Prefix: folderPrefix,
-      })
-
-      const listResponse = await s3.send(listCommand)
+      // List all objects in the folder using pagination
+      let continuationToken: string | undefined = undefined
+      let hasMore = true
+      let folderTokensDeleted = 0
       
-      if (listResponse.Contents && listResponse.Contents.length > 0) {
-        console.log(`Found ${listResponse.Contents.length} objects to delete in folder`)
+      while (hasMore) {
+        const listCommand = new ListObjectsV2Command({
+          Bucket: finalBucketName,
+          Prefix: folderPrefix,
+          ContinuationToken: continuationToken,
+        })
+
+        const listResponse = await s3.send(listCommand)
         
-        // Delete each object in the folder
-        for (const object of listResponse.Contents) {
-          if (object.Key) {
-            try {
-              const deleteCommand = new DeleteObjectCommand({
-                Bucket: finalBucketName,
-                Key: object.Key,
-              })
-              await s3.send(deleteCommand)
-              deletedCount++
-              console.log(`✅ Deleted: ${object.Key}`)
-            } catch (deleteError) {
-              console.error(`❌ Failed to delete ${object.Key}:`, deleteError)
-              // Continue with other files even if one fails
+        if (listResponse.Contents && listResponse.Contents.length > 0) {
+          console.log(`Found ${listResponse.Contents.length} objects to delete in this batch for folder`)
+          
+          // Delete each object in the folder
+          for (const object of listResponse.Contents) {
+            if (object.Key) {
+              try {
+                const deleteCommand = new DeleteObjectCommand({
+                  Bucket: finalBucketName,
+                  Key: object.Key,
+                })
+                await s3.send(deleteCommand)
+                folderTokensDeleted++
+              } catch (deleteError) {
+                console.error(`❌ Failed to delete ${object.Key}:`, deleteError)
+              }
             }
           }
         }
-        console.log(`✅ Successfully deleted ${deletedCount}/${listResponse.Contents.length} files from folder`)
-      } else {
-        console.log(`⚠️ No objects found in folder with prefix: ${folderPrefix}`)
-        // This might not be an error - the folder might already be empty
+        
+        hasMore = listResponse.IsTruncated === true
+        continuationToken = listResponse.NextContinuationToken
       }
+      
+      deletedCount += folderTokensDeleted
+      console.log(`✅ Successfully deleted ${folderTokensDeleted} total files from folder ${folderPrefix}`)
     } else {
       // For single files, delete the specific file
       console.log(`Deleting single file: ${finalObjectKey}`)
@@ -183,8 +205,8 @@ serve(async (req) => {
       }
     }
 
-    // If fileId was provided, also delete the tiles folder and database records
-    if (fileId) {
+    // If fileData was found in database, also delete the tiles folder and database records
+    if (fileId && fileData) {
       const supabaseUrl = Deno.env.get('SUPABASE_URL')!
       const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
       const supabase = createClient(supabaseUrl, supabaseServiceKey)

@@ -32,3 +32,9 @@ verify_jwt = false
 
 [functions.r2-sign]
 verify_jwt = false
+
+[functions.upload-vector-layer]
+verify_jwt = false
+
+[functions.get-vector-layers]
+verify_jwt = false

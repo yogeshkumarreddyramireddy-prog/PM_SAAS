@@ -131,37 +131,50 @@ const MapboxGolfCourseMap = ({
     const reversedOrder = [...layerOrder].reverse();
     
     reversedOrder.forEach(layerId => {
-      if (map.current!.getLayer(layerId)) {
-        try { 
-          // Move layer to the technical top (end of array)
-          map.current!.moveLayer(layerId); 
-          
-          // Force visibility state based on current selection
-          const isRaster = layerId.startsWith('tileset-layer-');
-          const isHealth = layerId.startsWith('health-map-layer-');
-          const isVector = layerId.startsWith('vector-layer-');
-          
-          const rawId = layerId.replace('tileset-layer-', '').replace('health-map-layer-', '').replace('vector-layer-', '');
-          
-          let shouldBeVisible = false;
-          if (isRaster) shouldBeVisible = showRasterLayers && selectedLayers.includes(rawId);
-          if (isHealth) shouldBeVisible = showHealthMaps && selectedHealthMapIds.includes(rawId);
-          if (isVector) shouldBeVisible = visibleVectorLayers.has(rawId);
-
-          // If Swipe Mode is enabled, the main map ONLY shows the leftLayerId!
-          if (swipeEnabled) {
-             shouldBeVisible = swipeLeftLayerId ? layerId === swipeLeftLayerId : false;
-          }
-
-          // Fetch current visibility to avoid redundant layout property updates (prevents infinite idle loops)
-          const currentVisibility = map.current!.getLayoutProperty(layerId, 'visibility') || 'visible';
-          const targetVisibility = shouldBeVisible ? 'visible' : 'none';
-
+      const applyLayerState = (id: string, isVisible: boolean) => {
+        if (!map.current!.getLayer(id)) return;
+        try {
+          map.current!.moveLayer(id);
+          const currentVisibility = map.current!.getLayoutProperty(id, 'visibility') || 'visible';
+          const targetVisibility = isVisible ? 'visible' : 'none';
           if (currentVisibility !== targetVisibility) {
-             map.current!.setLayoutProperty(layerId, 'visibility', targetVisibility);
+             map.current!.setLayoutProperty(id, 'visibility', targetVisibility);
           }
-        } catch (e) { 
-          console.warn(`Failed to move/show layer ${layerId}:`, e);
+        } catch (e) {
+          console.warn(`Failed to move/show layer ${id}:`, e);
+        }
+      };
+
+      if (map.current!.getLayer(layerId)) {
+        // Force visibility state based on current selection
+        const isRaster = layerId.startsWith('tileset-layer-');
+        const isHealth = layerId.startsWith('health-map-layer-');
+        const isVector = layerId.startsWith('vector-layer-');
+        
+        const rawId = layerId.replace('tileset-layer-', '').replace('health-map-layer-', '').replace('vector-layer-', '');
+        
+        let shouldBeVisible = false;
+        if (isRaster) shouldBeVisible = showRasterLayers && selectedLayers.includes(rawId);
+        if (isHealth) shouldBeVisible = showHealthMaps && selectedHealthMapIds.includes(rawId);
+        if (isVector) shouldBeVisible = visibleVectorLayers.has(rawId);
+
+        // If Swipe Mode is enabled, the main map ONLY shows the leftLayerId!
+        if (swipeEnabled) {
+           shouldBeVisible = swipeLeftLayerId ? layerId === swipeLeftLayerId : false;
+        }
+
+        if (isVector) {
+          // Vector layer visibility is managed by syncVectorVisibility, not here
+          // Just move the layers to their correct z-index position
+          const layerIds = [layerId, `${layerId}-outline`, `${layerId}-line`, `${layerId}-point`];
+          layerIds.forEach(id => {
+            if (map.current!.getLayer(id)) {
+              try { map.current!.moveLayer(id); } catch(e) {}
+            }
+          });
+        } else {
+          // Standard Raster or Health Map layers
+          applyLayerState(layerId, shouldBeVisible);
         }
       } else if (layerId.startsWith('tileset-layer-') || layerId.startsWith('health-map-layer-')) {
           console.log(`⚠️ Layer ${layerId} in order list but NOT FOUND on map style.`);
@@ -244,22 +257,6 @@ const MapboxGolfCourseMap = ({
           console.log('No health maps found');
         }
         
-        console.log('Loading vector layers for golf_course_id:', golfCourseId);
-        const { data: vectorLayersData, error: vectorError } = await (supabase as any)
-          .from('vector_layers')
-          .select('*')
-          .eq('golf_course_id', golfCourseId)
-          .eq('is_active', true)
-          .order('z_index', { ascending: true });
-
-        if (vectorError) {
-          console.error('Error loading vector layers:', vectorError);
-        } else if (vectorLayersData && vectorLayersData.length > 0) {
-          console.log('Loaded vector layers:', vectorLayersData);
-          setVectorLayers(vectorLayersData);
-        } else {
-          console.log('No vector layers found');
-        }
       } catch (err) {
         console.error('Failed to load tilesets:', err);
         setError('Failed to load map data');
@@ -268,7 +265,62 @@ const MapboxGolfCourseMap = ({
       }
     };
 
+    const fetchVectorLayers = async () => {
+      console.log('Loading vector layers for golf_course_id:', golfCourseId);
+      const { data: vectorLayersData, error: vectorError } = await (supabase as any)
+        .from('vector_layers')
+        .select('*')
+        .eq('golf_course_id', golfCourseId)
+        .eq('is_active', true)
+        .order('z_index', { ascending: true });
+
+      if (vectorError) {
+        console.error('Error loading vector layers:', vectorError);
+      } else if (vectorLayersData && vectorLayersData.length > 0) {
+        console.log('Loaded vector layers:', vectorLayersData);
+        setVectorLayers(vectorLayersData);
+        
+        // When dynamically fetching layers, don't brutally reset visible layers if some already existed
+        setVisibleVectorLayers(prev => {
+           if (prev.size === 0 && !mapInitializedRef.current) return new Set();
+           const next = new Set(prev);
+           // Keep only still active ones
+           for (const p of Array.from(prev)) {
+               if (!vectorLayersData.find((v: any) => v.id === p)) {
+                   next.delete(p);
+               }
+           }
+           return next;
+        });
+      } else {
+        console.log('No vector layers found');
+        setVectorLayers([]);
+      }
+    };
+
     loadTilesets();
+    fetchVectorLayers();
+    
+    // Subscribe to realtime changes on vector_layers table
+    const channel = supabase.channel('vector_layers_changes')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'vector_layers',
+          filter: `golf_course_id=eq.${golfCourseId}`
+        },
+        (payload) => {
+          console.log('🔔 Vector layer changed, refreshing...', payload);
+          fetchVectorLayers();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [golfCourseId]);
 
   // Initialize map
@@ -659,148 +711,154 @@ const MapboxGolfCourseMap = ({
     }
   }, [showHealthMaps, selectedHealthMapIds, healthMapTilesets, rasterLayersLoaded, syncLayerOrder]);
 
-  // FIX 2: Load vector layers onto map (only when toggled visible)
-  useEffect(() => {
-    if (!map.current || !mapInitializedRef.current || vectorLayers.length === 0) {
-      return;
-    }
 
-    if (!map.current.loaded() || !map.current.isStyleLoaded()) {
-      return;
+  // A ref to guard against concurrent preloads
+  const vectorPreloadRunningRef = useRef(false);
+  const vectorLayersLengthRef = useRef(0);
+
+  // Reset the preload guard whenever the list of vector layers changes,
+  // so newly uploaded layers get properly preloaded.
+  useEffect(() => {
+    if (vectorLayers.length !== vectorLayersLengthRef.current) {
+      vectorLayersLengthRef.current = vectorLayers.length;
+      vectorPreloadRunningRef.current = false;
     }
+  }, [vectorLayers.length]);
+
+  // VISIBILITY: Synchronously flip visibility when visibleVectorLayers state changes.
+  // Defined here (before preload effect) so preloadAll() can call it without a stale closure.
+  const syncVectorVisibility = useCallback(() => {
+    if (!map.current || !map.current.isStyleLoaded()) return;
+
+    vectorLayers.forEach(layer => {
+      const vid = `vector-layer-${layer.id}`;
+      const ids = [vid, `${vid}-outline`, `${vid}-line`, `${vid}-point`];
+      const visibility = visibleVectorLayers.has(layer.id) ? 'visible' : 'none';
+
+      ids.forEach(id => {
+        if (map.current!.getLayer(id)) {
+          map.current!.setLayoutProperty(id, 'visibility', visibility);
+        }
+      });
+    });
+  }, [vectorLayers, visibleVectorLayers]);
+
+  useEffect(() => {
+    syncVectorVisibility();
+  }, [syncVectorVisibility]);
+
+  // PRELOAD: Load ALL vector layers onto the map once, all hidden.
+  // Visibility toggling is then handled separately and synchronously.
+  useEffect(() => {
+    if (!map.current || !mapReady || !map.current.isStyleLoaded()) return;
+    if (vectorLayers.length === 0) return;
+    if (vectorPreloadRunningRef.current) return; // prevent re-entrant runs
 
     const r2PublicUrl = import.meta.env.VITE_R2_PUBLIC_URL;
 
-    // Load only visible vector layers
-    visibleVectorLayers.forEach(async (layerId) => {
-      const layer = vectorLayers.find(l => l.id === layerId);
-      if (!layer) return;
+    const preloadAll = async () => {
+      vectorPreloadRunningRef.current = true;
+      console.log(`🚀 Preloading ${vectorLayers.length} vector layers...`);
 
-      const sourceId = `vector-source-${layer.id}`;
-      const vectorLayerId = `vector-layer-${layer.id}`;
+      for (const layer of vectorLayers) {
+        if (!map.current) break;
 
-      // Skip if already loaded
-      if (map.current!.getSource(sourceId)) {
-        return;
-      }
+        const sourceId = `vector-source-${layer.id}`;
+        const vectorLayerId = `vector-layer-${layer.id}`;
 
-      console.log(`🔄 Loading vector layer: ${layer.name}`);
-
-      try {
-        let geojsonData;
-        
-        if (r2PublicUrl) {
-          const geojsonUrl = `${r2PublicUrl}/${layer.r2_key}`;
-          const response = await fetch(geojsonUrl);
-          if (!response.ok) {
-            throw new Error(`Failed to fetch ${layer.name}: ${response.statusText}`);
-          }
-          geojsonData = await response.json();
-        } else {
-          const { data: { session } } = await supabase.auth.getSession();
-          if (!session) throw new Error('No session');
-          
-          const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-          const response = await fetch(
-            `${supabaseUrl}/functions/v1/get-vector-layers?golf_course_id=${golfCourseId}`,
-            {
-              headers: {
-                'Authorization': `Bearer ${session.access_token}`,
-                'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY
-              }
-            }
-          );
-          
-          if (!response.ok) throw new Error('Failed to fetch layers');
-          const result = await response.json();
-          const layerData = result.data.find((l: any) => l.id === layer.id);
-          if (!layerData) throw new Error(`Layer ${layer.name} not found`);
-          
-          const geoResponse = await fetch(layerData.urlWithCache || layerData.url);
-          if (!geoResponse.ok) throw new Error('Failed to fetch GeoJSON');
-          geojsonData = await geoResponse.json();
+        // Already loaded — skip
+        if (map.current.getSource(sourceId)) {
+          console.log(`⏭️ Already loaded: ${layer.name}`);
+          continue;
         }
 
-        map.current!.addSource(sourceId, {
-          type: 'geojson',
-          data: geojsonData
-        });
-
-        const geometryType = geojsonData.features[0]?.geometry?.type;
-        const layerColor = getLayerColor(layer.name);
-        
-        if (geometryType === 'Polygon' || geometryType === 'MultiPolygon') {
-          map.current!.addLayer({
-            id: vectorLayerId,
-            type: 'fill',
-            source: sourceId,
-            paint: {
-              'fill-color': layerColor,
-              'fill-opacity': 0.5
-            },
-            layout: {
-              'visibility': 'visible'
-            }
-          });
-
-          map.current!.addLayer({
-            id: `${vectorLayerId}-outline`,
-            type: 'line',
-            source: sourceId,
-            paint: {
-              'line-color': layerColor,
-              'line-width': 2
-            },
-            layout: {
-              'visibility': 'visible'
-            }
-          });
-        } else if (geometryType === 'LineString' || geometryType === 'MultiLineString') {
-          map.current!.addLayer({
-            id: vectorLayerId,
-            type: 'line',
-            source: sourceId,
-            paint: {
-              'line-color': layerColor,
-              'line-width': 3
-            },
-            layout: {
-              'visibility': 'visible'
-            }
-          });
-        } else if (geometryType === 'Point' || geometryType === 'MultiPoint') {
-          map.current!.addLayer({
-            id: vectorLayerId,
-            type: 'circle',
-            source: sourceId,
-            paint: {
-              'circle-radius': 6,
-              'circle-color': layerColor,
-              'circle-stroke-width': 2,
-              'circle-stroke-color': '#ffffff'
-            },
-            layout: {
-              'visibility': 'visible'
-            }
-          });
-        }
-        
-        // Move vector layers to top
+        console.log(`🔄 Preloading: ${layer.name}`);
         try {
-          map.current!.moveLayer(vectorLayerId);
-          if (map.current!.getLayer(`${vectorLayerId}-outline`)) {
-            map.current!.moveLayer(`${vectorLayerId}-outline`);
-          }
-        } catch (e) {
-          console.warn(`Could not move layer ${vectorLayerId} to top:`, e);
-        }
+          let geojsonData;
 
-        console.log(`✅ Loaded: ${layer.name}`);
-      } catch (error) {
-        console.error(`❌ Failed to load ${layer.name}:`, error);
+          if (r2PublicUrl) {
+            const response = await fetch(`${r2PublicUrl}/${layer.r2_key}`);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            geojsonData = await response.json();
+          } else {
+            const { data: { session } } = await supabase.auth.getSession();
+            if (!session) throw new Error('No session');
+
+            const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+            const response = await fetch(
+              `${supabaseUrl}/functions/v1/get-vector-layers?golf_course_id=${golfCourseId}`,
+              { headers: { 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY } }
+            );
+            if (!response.ok) throw new Error('Failed to fetch layers');
+            const result = await response.json();
+            const layerData = result.data?.find((l: any) => l.id === layer.id);
+            if (!layerData) throw new Error(`Layer not found`);
+            const geoRes = await fetch(layerData.urlWithCache || layerData.url);
+            if (!geoRes.ok) throw new Error('Failed to fetch GeoJSON');
+            geojsonData = await geoRes.json();
+          }
+
+          if (!map.current) break;
+
+          map.current.addSource(sourceId, { type: 'geojson', data: geojsonData });
+
+          const layerColor = getLayerColor(layer.name);
+
+          const layerDefs = [
+            {
+              id: vectorLayerId,
+              type: 'fill' as const,
+              source: sourceId,
+              filter: ['in', ['geometry-type'], ['literal', ['Polygon', 'MultiPolygon']]],
+              paint: { 'fill-color': layerColor, 'fill-opacity': 0.5 }
+            },
+            {
+              id: `${vectorLayerId}-outline`,
+              type: 'line' as const,
+              source: sourceId,
+              filter: ['in', ['geometry-type'], ['literal', ['Polygon', 'MultiPolygon']]],
+              paint: { 'line-color': layerColor, 'line-width': 2 }
+            },
+            {
+              id: `${vectorLayerId}-line`,
+              type: 'line' as const,
+              source: sourceId,
+              filter: ['in', ['geometry-type'], ['literal', ['LineString', 'MultiLineString']]],
+              paint: { 'line-color': layerColor, 'line-width': 3 }
+            },
+            {
+              id: `${vectorLayerId}-point`,
+              type: 'circle' as const,
+              source: sourceId,
+              filter: ['in', ['geometry-type'], ['literal', ['Point', 'MultiPoint']]],
+              paint: { 'circle-radius': 6, 'circle-color': layerColor, 'circle-stroke-width': 2, 'circle-stroke-color': '#ffffff' }
+            }
+          ];
+
+          for (const def of layerDefs) {
+            if (map.current && !map.current.getLayer(def.id)) {
+              map.current.addLayer({
+                ...def,
+                layout: { visibility: 'none' }  // hidden by default; toggle controls it
+              } as any);
+            }
+          }
+
+          console.log(`✅ Preloaded: ${layer.name}`);
+        } catch (err) {
+          console.error(`❌ Failed to preload ${layer.name}:`, err);
+        }
       }
-    });
-  }, [visibleVectorLayers, vectorLayers, golfCourseId, mapReady]);
+
+      vectorPreloadRunningRef.current = false;
+
+      // After ALL layers are loaded, apply current visibility state
+      syncVectorVisibility();
+    };
+
+    preloadAll();
+  }, [mapReady, vectorLayers, golfCourseId]);
+
 
   // Track if user has ever selected a health map (to avoid auto-off on initial toggle)
   const hasEverSelectedHealthMap = useRef(false);
@@ -851,38 +909,7 @@ const MapboxGolfCourseMap = ({
     }
   }, [swipeEnabled, showHealthMaps, selectedHealthMapIds, rasterLayersLoaded, selectedLayers, visibleVectorLayers]);
 
-  // Manage vector layer visibility and z-index
-  useEffect(() => {
-    if (!map.current || !map.current.loaded() || !mapInitializedRef.current) return;
 
-    vectorLayers.forEach(layer => {
-      const layerId = `vector-layer-${layer.id}`;
-      const outlineLayerId = `${layerId}-outline`;
-      
-      const isVisible = visibleVectorLayers.has(layer.id);
-      const visibility = isVisible ? 'visible' : 'none';
-      
-      if (map.current!.getLayer(layerId)) {
-        map.current!.setLayoutProperty(layerId, 'visibility', visibility);
-        
-        if (isVisible) {
-          try {
-            map.current!.moveLayer(layerId);
-            if (map.current!.getLayer(outlineLayerId)) {
-              map.current!.moveLayer(outlineLayerId);
-            }
-            console.log(`📌 Moved ${layer.name} to top`);
-          } catch (e) {
-            console.warn('Could not move layer to top:', e);
-          }
-        }
-      }
-      
-      if (map.current!.getLayer(outlineLayerId)) {
-        map.current!.setLayoutProperty(outlineLayerId, 'visibility', visibility);
-      }
-    });
-  }, [visibleVectorLayers, vectorLayers]);
 
   const getLayerMetadata = (layerId: string | null) => {
     if (!layerId) return undefined;
@@ -1374,13 +1401,10 @@ const MapboxGolfCourseMap = ({
 
           {/* Swipe Selectors – bottom-center, only when active */}
           {swipeEnabled && (
-            <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-20 flex gap-3 w-full max-w-xl px-4 sm:flex-row flex-col">
-              <div className="flex-1 bg-background/95 backdrop-blur rounded-lg border border-border p-2.5 shadow-xl">
-                <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground mb-1.5 block">
-                  Left side
-                </label>
+            <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 flex gap-4 w-auto max-w-2xl px-4 flex-row pointer-events-none">
+              <div className="flex-1 bg-white/95 backdrop-blur-md rounded-full border border-gray-200/50 py-1.5 px-4 shadow-lg flex items-center gap-3 pointer-events-auto transition-transform hover:scale-[1.02]">
                 <select
-                  className="w-full bg-muted/80 border border-border/50 text-sm rounded-md cursor-pointer p-1.5 text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
+                  className="bg-transparent text-sm cursor-pointer outline-none text-gray-800 font-medium truncate max-w-[180px]"
                   value={swipeLeftLayerId || 'null'}
                   onChange={(e) => setSwipeLeftLayerId(e.target.value === 'null' ? null : e.target.value)}
                 >
@@ -1389,12 +1413,9 @@ const MapboxGolfCourseMap = ({
                   ))}
                 </select>
               </div>
-              <div className="flex-1 bg-background/95 backdrop-blur rounded-lg border border-border p-2.5 shadow-xl">
-                <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground mb-1.5 block">
-                  Right side
-                </label>
+              <div className="flex-1 bg-white/95 backdrop-blur-md rounded-full border border-gray-200/50 py-1.5 px-4 shadow-lg flex items-center gap-3 pointer-events-auto transition-transform hover:scale-[1.02]">
                 <select
-                  className="w-full bg-muted/80 border border-border/50 text-sm rounded-md cursor-pointer p-1.5 text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
+                  className="bg-transparent text-sm cursor-pointer outline-none text-gray-800 font-medium truncate max-w-[180px]"
                   value={swipeRightLayerId || 'null'}
                   onChange={(e) => setSwipeRightLayerId(e.target.value === 'null' ? null : e.target.value)}
                 >

@@ -16,6 +16,13 @@ interface UserProfile {
     name: string
     location: string
   } | null
+  client_golf_courses?: {
+    active_golf_courses: {
+      id: number
+      name: string
+      location: string
+    } | null
+  }[]
 }
 
 interface AuthContextType {
@@ -69,6 +76,13 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
             id,
             name,
             location
+          ),
+          client_golf_courses (
+            active_golf_courses (
+              id,
+              name,
+              location
+            )
           )
         `)
         .eq('id', userId)
@@ -97,7 +111,8 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         full_name: data.full_name,
         created_at: data.created_at,
         updated_at: data.updated_at,
-        active_golf_courses: activeGolfCourse
+        active_golf_courses: activeGolfCourse,
+        client_golf_courses: data.client_golf_courses as any
       }
       
       console.log('✅ Final user profile:', profile)

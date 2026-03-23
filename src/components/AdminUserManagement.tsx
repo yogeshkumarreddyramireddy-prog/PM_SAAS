@@ -2,69 +2,159 @@ import { useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { Input } from "@/components/ui/input"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Users, Clock, CheckCircle, XCircle, Mail, Building2, Ban, AlertTriangle } from "lucide-react"
-import { useUserProfiles, useUserApproval } from "@/hooks/useSupabaseQuery"
-import { AccessRequestsTab } from "@/components/admin/AccessRequestsTab"
+import { 
+  Users, Clock, Ban, CheckCircle, XCircle, Building2, 
+  Search, UserPlus, AlertTriangle, RefreshCw, Mail
+} from "lucide-react"
+import { useUserProfiles, useUserApproval, useApproveUser } from "@/hooks/useSupabaseQuery"
 import { UserSuspensionDialog } from "@/components/admin/UserSuspensionDialog"
 import { UserManageDialog } from "@/components/admin/UserManageDialog"
+import { AccessRequestsTab } from "@/components/admin/AccessRequestsTab"
+
+const getUserCourses = (user: any): string => {
+  if (user.client_golf_courses?.length > 0) {
+    return user.client_golf_courses.map((c: any) => c.active_golf_courses?.name).filter(Boolean).join(", ")
+  }
+  return user.active_golf_courses?.name || "No course assigned"
+}
+
+const formatDate = (dateStr: string | null) => {
+  if (!dateStr) return "—"
+  return new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+const StatusBadge = ({ user }: { user: any }) => {
+  if (user.access_suspended) return <Badge variant="destructive" className="text-xs">Suspended</Badge>
+  if (!user.approved) return <Badge variant="outline" className="border-amber-500 text-amber-600 text-xs">Pending</Badge>
+  return <Badge className="bg-emerald-500 text-white text-xs">Active</Badge>
+}
+
+const UserRow = ({ user, onApprove, onReject, approving }: {
+  user: any
+  onApprove?: () => void
+  onReject?: () => void
+  approving?: boolean
+}) => (
+  <tr className="border-b last:border-0 hover:bg-muted/30 transition-colors">
+    <td className="px-4 py-3">
+      <div>
+        <p className="font-medium text-sm">{user.full_name || "—"}</p>
+        <p className="text-xs text-muted-foreground flex items-center gap-1">
+          <Mail className="h-3 w-3" />{user.email}
+        </p>
+      </div>
+    </td>
+    <td className="px-4 py-3 hidden md:table-cell">
+      <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+        <Building2 className="h-3.5 w-3.5 shrink-0" />
+        <span className="truncate max-w-[160px]">{getUserCourses(user)}</span>
+      </div>
+    </td>
+    <td className="px-4 py-3 hidden lg:table-cell">
+      <p className="text-xs text-muted-foreground">{formatDate(user.created_at)}</p>
+    </td>
+    <td className="px-4 py-3">
+      <StatusBadge user={user} />
+    </td>
+    <td className="px-4 py-3">
+      <div className="flex items-center gap-1.5 justify-end">
+        {onApprove && (
+          <Button variant="teal" size="sm" onClick={onApprove} disabled={approving} className="h-7 px-2.5 text-xs">
+            <CheckCircle className="h-3.5 w-3.5 mr-1" />Approve
+          </Button>
+        )}
+        {onReject && (
+          <Button variant="outline" size="sm" onClick={onReject} className="h-7 px-2.5 text-xs">
+            <XCircle className="h-3.5 w-3.5 mr-1" />Reject
+          </Button>
+        )}
+        {!onApprove && (
+          <>
+            <UserSuspensionDialog
+              userId={user.id}
+              userName={user.full_name || user.email}
+              isCurrentlySuspended={!!user.access_suspended}
+            >
+              <Button variant="ghost" size="sm" className="h-7 px-2 text-xs">
+                {user.access_suspended ? (
+                  <><AlertTriangle className="h-3.5 w-3.5 mr-1 text-emerald-500" />Restore</>
+                ) : (
+                  <><Ban className="h-3.5 w-3.5 mr-1" />Suspend</>
+                )}
+              </Button>
+            </UserSuspensionDialog>
+            <UserManageDialog
+              userId={user.id}
+              userName={user.full_name || user.email}
+              currentRole={user.role || 'client'}
+              assignedCourseIds={user.client_golf_courses ? user.client_golf_courses.map((c: any) => c.active_golf_courses?.id).filter(Boolean) : []}
+            >
+              <Button variant="outline" size="sm" className="h-7 px-2.5 text-xs">Manage</Button>
+            </UserManageDialog>
+          </>
+        )}
+      </div>
+    </td>
+  </tr>
+)
+
+const UserTable = ({ users, children, emptyIcon, emptyText }: {
+  users: any[]
+  children: (user: any) => React.ReactNode
+  emptyIcon: React.ReactNode
+  emptyText: string
+}) => (
+  <div className="overflow-x-auto">
+    <table className="w-full">
+      <thead>
+        <tr className="border-b bg-muted/40">
+          <th className="px-4 py-2.5 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">User</th>
+          <th className="px-4 py-2.5 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider hidden md:table-cell">Golf Course</th>
+          <th className="px-4 py-2.5 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider hidden lg:table-cell">Joined</th>
+          <th className="px-4 py-2.5 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Status</th>
+          <th className="px-4 py-2.5 text-right text-xs font-semibold text-muted-foreground uppercase tracking-wider">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {users.map(children)}
+      </tbody>
+    </table>
+    {users.length === 0 && (
+      <div className="py-12 text-center text-muted-foreground">
+        <div className="flex justify-center mb-3 opacity-30">{emptyIcon}</div>
+        <p>{emptyText}</p>
+      </div>
+    )}
+  </div>
+)
 
 export const AdminUserManagement = () => {
-  const [selectedUsers, setSelectedUsers] = useState<string[]>([])
-  
-  const { data: userProfiles = [], isLoading } = useUserProfiles()
+  const [search, setSearch] = useState("")
+  const { data: userProfiles = [], isLoading, refetch } = useUserProfiles()
   const userApprovalMutation = useUserApproval()
+  const approveUserMutation = useApproveUser()
 
-  const activeUsers = userProfiles.filter(user => user.approved && !user.access_suspended)
-  const pendingUsers = userProfiles.filter(user => !user.approved)
-  const suspendedUsers = userProfiles.filter(user => user.access_suspended)
+  const filterBySearch = (users: any[]) =>
+    search.trim()
+      ? users.filter(u =>
+          u.full_name?.toLowerCase().includes(search.toLowerCase()) ||
+          u.email?.toLowerCase().includes(search.toLowerCase()) ||
+          getUserCourses(u).toLowerCase().includes(search.toLowerCase())
+        )
+      : users
 
-  const formatDate = (dateStr: string) => {
-    return new Date(dateStr).toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    })
-  }
-
-  const handleUserSelect = (userId: string) => {
-    setSelectedUsers(prev => 
-      prev.includes(userId) 
-        ? prev.filter(id => id !== userId)
-        : [...prev, userId]
-    )
-  }
-
-  const handleBulkApprove = () => {
-    selectedUsers.forEach(userId => {
-      userApprovalMutation.mutate({ userId, approved: true })
-    })
-    setSelectedUsers([])
-  }
-
-  const handleBulkReject = () => {
-    selectedUsers.forEach(userId => {
-      userApprovalMutation.mutate({ userId, approved: false })
-    })
-    setSelectedUsers([])
-  }
-
-  const handleApproveUser = (userId: string) => {
-    userApprovalMutation.mutate({ userId, approved: true })
-  }
-
-  const handleRejectUser = (userId: string) => {
-    userApprovalMutation.mutate({ userId, approved: false })
-  }
+  const activeUsers = filterBySearch(userProfiles.filter(u => u.approved && !u.access_suspended))
+  const pendingUsers = filterBySearch(userProfiles.filter(u => !u.approved && !u.access_suspended))
+  const suspendedUsers = filterBySearch(userProfiles.filter(u => u.access_suspended))
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center p-8">
+      <div className="flex items-center justify-center h-48">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-teal mx-auto mb-4"></div>
-          <p className="text-muted-foreground">Loading users...</p>
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-teal mx-auto mb-3" />
+          <p className="text-muted-foreground text-sm">Loading users...</p>
         </div>
       </div>
     )
@@ -72,317 +162,155 @@ export const AdminUserManagement = () => {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold text-foreground">User Management</h1>
-          <p className="text-muted-foreground">Manage user access and permissions</p>
+          <h1 className="text-2xl font-bold text-foreground">User Management</h1>
+          <p className="text-muted-foreground text-sm mt-0.5">{userProfiles.length} total users across all golf courses</p>
+        </div>
+        <div className="flex gap-2 w-full sm:w-auto">
+          <div className="relative flex-1 sm:w-64">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input 
+              placeholder="Search users, courses..." 
+              className="pl-9 h-9"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+            />
+          </div>
+          <Button variant="ghost" size="sm" onClick={() => refetch()} className="h-9 px-2.5" title="Refresh">
+            <RefreshCw className="h-4 w-4" />
+          </Button>
         </div>
       </div>
 
+      {/* Stats Strip */}
+      <div className="grid grid-cols-3 gap-3">
+        <div className="rounded-lg border bg-card p-3 flex items-center gap-3">
+          <div className="h-8 w-8 rounded-full bg-emerald-100 flex items-center justify-center">
+            <Users className="h-4 w-4 text-emerald-600" />
+          </div>
+          <div>
+            <p className="text-xs text-muted-foreground">Active</p>
+            <p className="text-lg font-bold">{userProfiles.filter(u => u.approved && !u.access_suspended).length}</p>
+          </div>
+        </div>
+        <div className="rounded-lg border bg-card p-3 flex items-center gap-3">
+          <div className="h-8 w-8 rounded-full bg-amber-100 flex items-center justify-center">
+            <Clock className="h-4 w-4 text-amber-600" />
+          </div>
+          <div>
+            <p className="text-xs text-muted-foreground">Pending</p>
+            <p className="text-lg font-bold">{userProfiles.filter(u => !u.approved && !u.access_suspended).length}</p>
+          </div>
+        </div>
+        <div className="rounded-lg border bg-card p-3 flex items-center gap-3">
+          <div className="h-8 w-8 rounded-full bg-red-100 flex items-center justify-center">
+            <Ban className="h-4 w-4 text-red-600" />
+          </div>
+          <div>
+            <p className="text-xs text-muted-foreground">Suspended</p>
+            <p className="text-lg font-bold">{userProfiles.filter(u => u.access_suspended).length}</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Tabs */}
       <Tabs defaultValue="active" className="w-full">
-        <TabsList className="grid w-full grid-cols-4">
-          <TabsTrigger value="active">Active Users ({activeUsers.length})</TabsTrigger>
-          <TabsTrigger value="pending">Pending Approval ({pendingUsers.length})</TabsTrigger>
-          <TabsTrigger value="suspended">Suspended ({suspendedUsers.length})</TabsTrigger>
-          <TabsTrigger value="requests">Access Requests</TabsTrigger>
+        <TabsList className="grid grid-cols-4 w-full">
+          <TabsTrigger value="active" className="gap-1.5">
+            <Users className="h-3.5 w-3.5" />
+            Active <span className="text-xs opacity-60">({activeUsers.length})</span>
+          </TabsTrigger>
+          <TabsTrigger value="pending" className="gap-1.5">
+            <Clock className="h-3.5 w-3.5" />
+            Pending <span className="text-xs opacity-60">({pendingUsers.length})</span>
+          </TabsTrigger>
+          <TabsTrigger value="suspended" className="gap-1.5">
+            <Ban className="h-3.5 w-3.5" />
+            Suspended <span className="text-xs opacity-60">({suspendedUsers.length})</span>
+          </TabsTrigger>
+          <TabsTrigger value="requests" className="gap-1.5">
+            <UserPlus className="h-3.5 w-3.5" />
+            Requests
+          </TabsTrigger>
         </TabsList>
-        
-        <TabsContent value="active" className="mt-6">
+
+        <TabsContent value="active" className="mt-4">
           <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Users className="h-5 w-5 text-primary-teal" />
-                Active Users by Golf Course
-              </CardTitle>
+            <CardHeader className="pb-2 pt-4 px-4">
+              <CardTitle className="text-base">Active Users</CardTitle>
             </CardHeader>
-            <CardContent>
-              <div className="space-y-4">
-                {activeUsers.map((user) => (
-                  <div
-                    key={user.id}
-                    className="flex items-center justify-between p-4 border rounded-lg"
-                  >
-                    <div className="flex-1">
-                      <div className="flex items-center gap-3">
-                        <h3 className="font-semibold">{user.full_name || user.email}</h3>
-                        <Badge variant="default" className="bg-success-green">Active</Badge>
-                      </div>
-                      <p className="text-sm text-muted-foreground">{user.email}</p>
-                      <div className="flex items-center gap-2 mt-1">
-                        <Building2 className="h-3 w-3 text-muted-foreground" />
-                        <p className="text-sm text-muted-foreground">
-                          {user.active_golf_courses?.name || 'No golf course assigned'}
-                        </p>
-                      </div>
-                    </div>
-                    
-                    <div className="text-right">
-                      <p className="text-sm font-medium">Role: {user.role}</p>
-                      <p className="text-sm text-muted-foreground">
-                        Joined: {formatDate(user.created_at)}
-                      </p>
-                    </div>
-                    
-                    <div className="flex gap-2 ml-4">
-                      <UserSuspensionDialog
-                        userId={user.id}
-                        userName={user.full_name || user.email}
-                        isCurrentlySuspended={false}
-                      >
-                        <Button variant="outline" size="sm">
-                          <Ban className="h-4 w-4 mr-1" />
-                          Suspend
-                        </Button>
-                      </UserSuspensionDialog>
-                      <UserManageDialog
-                        userId={user.id}
-                        userName={user.full_name || user.email}
-                        currentRole={user.role || 'client'}
-                      >
-                        <Button variant="outline" size="sm">
-                          Manage
-                        </Button>
-                      </UserManageDialog>
-                    </div>
-                  </div>
-                ))}
-                
-                {activeUsers.length === 0 && (
-                  <div className="text-center p-8">
-                    <Users className="h-12 w-12 mx-auto mb-4 text-muted-foreground opacity-50" />
-                    <p className="text-muted-foreground">No active users found</p>
-                  </div>
+            <CardContent className="p-0">
+              <UserTable 
+                users={activeUsers} 
+                emptyIcon={<Users className="h-10 w-10" />}
+                emptyText={search ? "No users match your search" : "No active users"}
+              >
+                {(user) => (
+                  <UserRow key={user.id} user={user} />
                 )}
-              </div>
+              </UserTable>
             </CardContent>
           </Card>
         </TabsContent>
-        
-        <TabsContent value="pending" className="mt-6">
+
+        <TabsContent value="pending" className="mt-4">
           <Card>
-            <CardHeader className="flex flex-row items-center justify-between">
-              <div>
-                <CardTitle className="flex items-center gap-2">
-                  <Clock className="h-5 w-5 text-warning-amber" />
-                  Pending Approval Requests
-                </CardTitle>
-                <p className="text-sm text-muted-foreground">
-                  Review and approve new user access requests
-                </p>
-              </div>
-              {selectedUsers.length > 0 && (
-                <div className="flex gap-2">
-                  <Button 
-                    variant="teal" 
-                    size="sm" 
-                    onClick={handleBulkApprove}
-                    disabled={userApprovalMutation.isPending}
-                  >
-                    <CheckCircle className="h-4 w-4 mr-2" />
-                    Approve Selected ({selectedUsers.length})
-                  </Button>
-                  <Button 
-                    variant="destructive" 
-                    size="sm" 
-                    onClick={handleBulkReject}
-                    disabled={userApprovalMutation.isPending}
-                  >
-                    <XCircle className="h-4 w-4 mr-2" />
-                    Reject Selected
-                  </Button>
-                </div>
+            <CardHeader className="pb-2 pt-4 px-4 flex-row items-center justify-between">
+              <CardTitle className="text-base">Pending Approval</CardTitle>
+              {pendingUsers.length > 0 && (
+                <Button
+                  variant="teal"
+                  size="sm"
+                  className="h-8 text-xs"
+                  onClick={() => pendingUsers.forEach(u => approveUserMutation.mutate(u.id))}
+                  disabled={approveUserMutation.isPending}
+                >
+                  <CheckCircle className="h-3.5 w-3.5 mr-1" />
+                  Approve All ({pendingUsers.length})
+                </Button>
               )}
             </CardHeader>
-            <CardContent>
-              <div className="space-y-4">
-                {pendingUsers.map((user) => (
-                  <div
+            <CardContent className="p-0">
+              <UserTable 
+                users={pendingUsers} 
+                emptyIcon={<Clock className="h-10 w-10" />}
+                emptyText={search ? "No pending users match your search" : "No pending approvals"}
+              >
+                {(user) => (
+                  <UserRow
                     key={user.id}
-                    className="flex items-start justify-between p-4 border rounded-lg"
-                  >
-                    <div className="flex items-start gap-3">
-                      <input
-                        type="checkbox"
-                        checked={selectedUsers.includes(user.id)}
-                        onChange={() => handleUserSelect(user.id)}
-                        className="mt-1"
-                      />
-                      <div className="flex-1">
-                        <h3 className="font-semibold">{user.full_name || user.email}</h3>
-                        <p className="text-sm text-muted-foreground">{user.email}</p>
-                        <div className="flex items-center gap-2 mt-1">
-                          <Building2 className="h-3 w-3 text-muted-foreground" />
-                          <p className="text-sm text-muted-foreground">
-                            {user.active_golf_courses?.name || 'No golf course assigned'}
-                          </p>
-                        </div>
-                        {user.request_reason && (
-                          <p className="text-sm mt-2 p-2 bg-muted rounded">
-                            <strong>Reason:</strong> {user.request_reason}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                    
-                    <div className="text-right">
-                      <p className="text-sm text-muted-foreground mb-2">
-                        Requested: {formatDate(user.requested_at || user.created_at)}
-                      </p>
-                      <div className="flex gap-2">
-                        <Button 
-                          variant="teal" 
-                          size="sm"
-                          onClick={() => handleApproveUser(user.id)}
-                          disabled={userApprovalMutation.isPending}
-                        >
-                          <CheckCircle className="h-4 w-4 mr-1" />
-                          Approve
-                        </Button>
-                        <Button 
-                          variant="outline" 
-                          size="sm"
-                          onClick={() => handleRejectUser(user.id)}
-                          disabled={userApprovalMutation.isPending}
-                        >
-                          <XCircle className="h-4 w-4 mr-1" />
-                          Reject
-                        </Button>
-                        <Button variant="outline" size="sm">
-                          <Mail className="h-4 w-4 mr-1" />
-                          Contact
-                        </Button>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-                
-                {pendingUsers.length === 0 && (
-                  <div className="text-center p-8">
-                    <Clock className="h-12 w-12 mx-auto mb-4 text-muted-foreground opacity-50" />
-                    <p className="text-muted-foreground">No pending approval requests</p>
-                  </div>
+                    user={user}
+                    onApprove={() => approveUserMutation.mutate(user.id)}
+                    onReject={() => userApprovalMutation.mutate({ userId: user.id, approved: false })}
+                    approving={approveUserMutation.isPending}
+                  />
                 )}
-              </div>
+              </UserTable>
             </CardContent>
           </Card>
         </TabsContent>
-        
-        <TabsContent value="suspended" className="mt-6">
+
+        <TabsContent value="suspended" className="mt-4">
           <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Ban className="h-5 w-5 text-destructive" />
-                Suspended Users
-              </CardTitle>
-              <p className="text-sm text-muted-foreground">
-                Users with temporarily suspended access
-              </p>
+            <CardHeader className="pb-2 pt-4 px-4">
+              <CardTitle className="text-base">Suspended Users</CardTitle>
             </CardHeader>
-            <CardContent>
-              <div className="space-y-4">
-                {suspendedUsers.map((user) => (
-                  <div
-                    key={user.id}
-                    className="flex items-start justify-between p-4 border rounded-lg"
-                  >
-                    <div className="flex-1">
-                      <div className="flex items-center gap-3 mb-2">
-                        <h3 className="font-semibold">{user.full_name || user.email}</h3>
-                        <Badge variant="destructive">Suspended</Badge>
-                        {user.access_request_pending && (
-                          <Badge variant="outline" className="text-warning-amber border-warning-amber">
-                            Request Pending
-                          </Badge>
-                        )}
-                      </div>
-                      
-                      <p className="text-sm text-muted-foreground mb-1">{user.email}</p>
-                      
-                      {user.active_golf_courses && (
-                        <div className="flex items-center gap-2 mb-2">
-                          <Building2 className="h-3 w-3 text-muted-foreground" />
-                          <p className="text-sm text-muted-foreground">
-                            {user.active_golf_courses.name}
-                          </p>
-                        </div>
-                      )}
-                      
-                      {user.suspension_reason && (
-                        <div className="mt-2 p-2 bg-muted rounded">
-                          <p className="text-sm font-medium">Suspension Reason:</p>
-                          <p className="text-sm">{user.suspension_reason}</p>
-                        </div>
-                      )}
-                      
-                      <p className="text-xs text-muted-foreground mt-2">
-                        Suspended: {user.suspended_at ? formatDate(user.suspended_at) : 'Unknown'}
-                      </p>
-                    </div>
-                    
-                    <div className="flex gap-2 ml-4">
-                      <UserSuspensionDialog
-                        userId={user.id}
-                        userName={user.full_name || user.email}
-                        isCurrentlySuspended={true}
-                      >
-                        <Button variant="teal" size="sm">
-                          <AlertTriangle className="h-4 w-4 mr-1" />
-                          Restore Access
-                        </Button>
-                      </UserSuspensionDialog>
-                    </div>
-                  </div>
-                ))}
-                
-                {suspendedUsers.length === 0 && (
-                  <div className="text-center p-8">
-                    <Ban className="h-12 w-12 mx-auto mb-4 text-muted-foreground opacity-50" />
-                    <p className="text-muted-foreground">No suspended users</p>
-                  </div>
-                )}
-              </div>
+            <CardContent className="p-0">
+              <UserTable 
+                users={suspendedUsers} 
+                emptyIcon={<Ban className="h-10 w-10" />}
+                emptyText={search ? "No suspended users match your search" : "No suspended users"}
+              >
+                {(user) => <UserRow key={user.id} user={user} />}
+              </UserTable>
             </CardContent>
           </Card>
         </TabsContent>
-        
-        <TabsContent value="requests" className="mt-6">
+
+        <TabsContent value="requests" className="mt-4">
           <AccessRequestsTab />
-        </TabsContent>
-        
-        <TabsContent value="activity" className="mt-6">
-          <Card>
-            <CardHeader>
-              <CardTitle>User Activity Logs</CardTitle>
-              <p className="text-sm text-muted-foreground">
-                Monitor user login activity and access patterns
-              </p>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-3">
-                {userProfiles.slice(0, 10).map((user, index) => (
-                  <div key={user.id} className="flex items-center justify-between p-3 border rounded">
-                    <div>
-                      <p className="font-medium">
-                        {user.approved ? 'User approved' : 'User registered'}: {user.full_name || user.email}
-                      </p>
-                      <p className="text-sm text-muted-foreground">
-                        {user.active_golf_courses?.name || 'No golf course assigned'}
-                      </p>
-                    </div>
-                    <p className="text-sm text-muted-foreground">
-                      {formatDate(user.updated_at || user.created_at)}
-                    </p>
-                  </div>
-                ))}
-                
-                {userProfiles.length === 0 && (
-                  <div className="text-center p-8">
-                    <p className="text-muted-foreground">No activity logs available</p>
-                  </div>
-                )}
-              </div>
-            </CardContent>
-          </Card>
         </TabsContent>
       </Tabs>
     </div>

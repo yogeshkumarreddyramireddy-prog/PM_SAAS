@@ -27,6 +27,7 @@ export const PMVApp = () => {
   const navigate = useNavigate()
   const { user, loading, signOut } = useAuth()
   const [userProfile, setUserProfile] = useState<any>(null)
+  const [activeCourseId, setActiveCourseId] = useState<number | null>(null)
 
   const [appState, setAppState] = useState<AppState>(() => {
     // Determine initial state based on URL
@@ -47,10 +48,17 @@ export const PMVApp = () => {
           .from('user_profiles')
           .select(`
             *,
-            active_golf_courses (
+            active_golf_courses:golf_course_id (
               id,
               name,
               location
+            ),
+            client_golf_courses (
+              active_golf_courses (
+                id,
+                name,
+                location
+              )
             )
           `)
           .eq('id', user.id)
@@ -58,6 +66,14 @@ export const PMVApp = () => {
 
         if (!error && data) {
           setUserProfile(data)
+          // Default to the first course in client_golf_courses if available
+          const clientCourses = data.client_golf_courses as any[];
+          const firstCourse = clientCourses?.[0]?.active_golf_courses?.id;
+          if (firstCourse) {
+            setActiveCourseId(firstCourse);
+          } else if (data.golf_course_id) {
+            setActiveCourseId(data.golf_course_id);
+          }
         }
       }
       fetchUserProfile()
@@ -171,6 +187,12 @@ export const PMVApp = () => {
     setAppState({ view: 'client-dashboard' })
   }
 
+  // Get all assigned courses
+  const assignedCourses = userProfile?.client_golf_courses?.map((c: any) => c.active_golf_courses).filter(Boolean) || []
+  
+  // Find the exact active course object based on activeCourseId
+  const currentActiveCourse = assignedCourses.find((c: any) => c.id === activeCourseId) || userProfile?.active_golf_courses
+
   // Render based on current state
   switch (appState.view) {
     case 'landing':
@@ -246,17 +268,19 @@ export const PMVApp = () => {
           onLogout={handleLogout}
           onTileClick={handleTileClick}
           userFullName={userProfile?.full_name || userProfile?.email || "User"}
-          golfCourseName={userProfile?.active_golf_courses?.name || "Golf Course"}
-          golfCourseLocation={userProfile?.active_golf_courses?.location}
-          golfCourseId={userProfile?.golf_course_id || userProfile?.active_golf_courses?.id}
+          golfCourseName={currentActiveCourse?.name || "Golf Course"}
+          golfCourseLocation={currentActiveCourse?.location}
+          golfCourseId={activeCourseId || 1}
+          assignedCourses={assignedCourses}
+          onCourseChange={setActiveCourseId}
         />
       )
 
     case 'client-content':
       return (
         <ClientContentViewer
-          golfCourseId={userProfile?.golf_course_id || 1}
-          golfCourseName={userProfile?.active_golf_courses?.name || "Golf Course"}
+          golfCourseId={activeCourseId || 1}
+          golfCourseName={currentActiveCourse?.name || "Golf Course"}
           onBack={handleBackToDashboard}
         />
       )
@@ -264,8 +288,8 @@ export const PMVApp = () => {
     case 'client-section':
       return (
         <ClientContentSection
-          golfCourseId={userProfile?.golf_course_id || 1}
-          golfCourseName={userProfile?.active_golf_courses?.name || "Golf Course"}
+          golfCourseId={activeCourseId || 1}
+          golfCourseName={currentActiveCourse?.name || "Golf Course"}
           contentType={appState.contentType}
           onBack={handleBackToDashboard}
         />

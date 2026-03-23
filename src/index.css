@@ -203,4 +203,9 @@ All colors MUST be HSL.
   .text-responsive-lg {
     @apply text-base sm:text-lg lg:text-xl;
   }
+
+  /* Hide default Mapbox geolocate button completely */
+  .mapboxgl-ctrl-bottom-right .mapboxgl-ctrl-group {
+    display: none !important;
+  }
 }

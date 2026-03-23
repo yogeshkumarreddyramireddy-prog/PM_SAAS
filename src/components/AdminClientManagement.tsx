@@ -38,16 +38,15 @@ export const AdminClientManagement = () => {
   }
 
   const handleAddClient = async ({ email, password, firstName, lastName, golfCourseName }: { email: string; password: string; firstName: string; lastName: string; golfCourseName: string }) => {
-    try {
-      // Call the secure edge function to create the user
-      const { data, error } = await supabase.functions.invoke('create-client-user', {
-        body: { email, password, firstName, lastName, golfCourseName },
-      })
-      if (error || !data?.success) throw new Error(data?.error || error?.message || 'User creation failed')
-      toast({ title: 'Client Added', description: `User ${email} created and assigned to golf club.`, variant: 'default' })
-    } catch (err: any) {
-      toast({ title: 'Error', description: err.message || 'Failed to add client', variant: 'destructive' })
+    const { data, error } = await supabase.functions.invoke('create-client-user', {
+      body: { email, password, firstName, lastName, golfCourseName },
+    })
+    if (error || !data?.success) {
+      const msg = data?.error || error?.message || 'User creation failed'
+      toast({ title: 'Error', description: msg, variant: 'destructive' })
+      throw new Error(msg)
     }
+    toast({ title: 'Client Added', description: `User ${email} created successfully.` })
   }
 
   if (activeView === 'content' && selectedClient) {

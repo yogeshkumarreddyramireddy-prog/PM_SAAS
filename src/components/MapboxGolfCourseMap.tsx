@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
-import { MapPin, Layers, ZoomIn, ZoomOut, Maximize2, LocateFixed, AlertCircle, Activity, ArrowRight, ArrowDown, ArrowLeft, ArrowUp, X, MoveHorizontal } from 'lucide-react';
+import { MapPin, Layers, ZoomIn, ZoomOut, Maximize2, LocateFixed, AlertCircle, Activity, ArrowRight, ArrowDown, ArrowLeft, ArrowUp, X, MoveHorizontal, Tag } from 'lucide-react';
 import { TilesetService } from '@/lib/tilesetService';
 import { supabase } from '@/integrations/supabase/client';
 import DateLayerDropdown from '@/components/DateLayerDropdown';
@@ -60,6 +60,8 @@ const MapboxGolfCourseMap = ({
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [currentZoom, setCurrentZoom] = useState<number>(16);
+  const [showVectorLabels, setShowVectorLabels] = useState(true);
+  const geolocateControlRef = useRef<mapboxgl.GeolocateControl | null>(null);
   const [swipeMode, setSwipeMode] = useState(false);
   const [showHealthMaps, setShowHealthMaps] = useState(false);
   const [healthMapTilesets, setHealthMapTilesets] = useState<any[]>([]);
@@ -228,14 +230,8 @@ const MapboxGolfCourseMap = ({
       try {
         const tilesetsData = await TilesetService.getTilesetsForGolfClub(golfCourseId);
         
-        if (!tilesetsData || tilesetsData.length === 0) {
-          setError('No tilesets found for this golf course');
-          setIsLoading(false);
-          return;
-        }
-
-        setTilesets(tilesetsData);
-        if (tilesetsData.length > 0) {
+        setTilesets(tilesetsData || []);
+        if (tilesetsData && tilesetsData.length > 0) {
           setSelectedLayers([tilesetsData[0].id]);
         }
 
@@ -401,9 +397,9 @@ const MapboxGolfCourseMap = ({
       });
 
       if (showControls) {
-        // Only add ScaleControl; we use our own custom zoom/fullscreen buttons
         map.current.addControl(new mapboxgl.ScaleControl(), 'bottom-left');
       }
+
 
       map.current.on('zoom', () => {
         if (map.current) {
@@ -740,8 +736,14 @@ const MapboxGolfCourseMap = ({
           map.current!.setLayoutProperty(id, 'visibility', visibility);
         }
       });
+      
+      const labelId = `${vid}-label`;
+      const labelVisibility = (visibleVectorLayers.has(layer.id) && showVectorLabels) ? 'visible' : 'none';
+      if (map.current!.getLayer(labelId)) {
+        map.current!.setLayoutProperty(labelId, 'visibility', labelVisibility);
+      }
     });
-  }, [vectorLayers, visibleVectorLayers]);
+  }, [vectorLayers, visibleVectorLayers, showVectorLabels]);
 
   useEffect(() => {
     syncVectorVisibility();
@@ -835,12 +837,63 @@ const MapboxGolfCourseMap = ({
             }
           ];
 
+          // Label (symbol) layer – added separately to preserve full layout
+          const labelLayer = {
+            id: `${vectorLayerId}-label`,
+            type: 'symbol' as const,
+            source: sourceId,
+            layout: {
+              'visibility': 'none',
+              'text-field': [
+                'case',
+                ['has', 'label'],
+                ['get', 'label'],
+                ['has', 'name'],
+                ['get', 'name'],
+                ['has', 'Name'],
+                ['get', 'Name'],
+                ['has', 'title'],
+                ['get', 'title'],
+                ['has', 'Title'],
+                ['get', 'Title'],
+                ['has', 'description'],
+                ['get', 'description'],
+                ['has', 'id'],
+                ['to-string', ['get', 'id']],
+                ['has', 'type'],
+                ['get', 'type'],
+                ''
+              ],
+              'text-font': ['Open Sans Bold', 'Arial Unicode MS Bold'],
+              'text-size': 14,
+              'text-anchor': 'center',
+              'text-allow-overlap': true,
+              'text-ignore-placement': true,
+              'text-padding': 2
+            } as any,
+            paint: {
+              'text-color': '#ffffff',
+              'text-halo-color': '#000000',
+              'text-halo-width': 3,
+              'text-halo-blur': 0
+            }
+          };
+
           for (const def of layerDefs) {
             if (map.current && !map.current.getLayer(def.id)) {
               map.current.addLayer({
                 ...def,
-                layout: { visibility: 'none' }  // hidden by default; toggle controls it
+                layout: { ...(def.layout || {}), visibility: 'none' }
               } as any);
+            }
+          }
+
+          // Add label layer separately so its full layout is preserved
+          if (map.current && !map.current.getLayer(labelLayer.id)) {
+            try {
+              map.current.addLayer(labelLayer as any);
+            } catch (err) {
+              console.error(`❌ Failed to add label layer for ${layer.name}:`, err);
             }
           }
 
@@ -1102,6 +1155,24 @@ const MapboxGolfCourseMap = ({
     });
   };
 
+  const centerOnCurrentLocation = () => {
+    if (geolocateControlRef.current) {
+      geolocateControlRef.current.trigger();
+    } else if (navigator.geolocation && map.current) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          map.current?.flyTo({
+            center: [position.coords.longitude, position.coords.latitude],
+            zoom: 16,
+            essential: true
+          });
+        },
+        (error) => console.error("Error getting location", error),
+        { enableHighAccuracy: true }
+      );
+    }
+  };
+
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   const toggleFullscreen = async () => {
@@ -1146,7 +1217,7 @@ const MapboxGolfCourseMap = ({
     );
   }
 
-  if (error || tilesets.length === 0) {
+  if (error) {
     return (
       <Card className={className}>
         <CardContent className="p-8 text-center">
@@ -1287,7 +1358,13 @@ const MapboxGolfCourseMap = ({
               <Button variant="ghost" size="icon" onClick={zoomOut} title="Zoom out" className="h-9 w-9 shrink-0 rounded-none border-b border-border hover:bg-muted focus:ring-0">
                 <ZoomOut className="w-4 h-4" />
               </Button>
-              <Button variant="ghost" size="icon" onClick={resetView} title="Reset view to course" className="h-9 w-9 shrink-0 rounded-none border-b border-border hover:bg-muted focus:ring-0">
+              <Button variant="ghost" size="icon" onClick={() => setShowVectorLabels(!showVectorLabels)} title={showVectorLabels ? "Hide all labels" : "Show all labels"} className="h-9 w-9 shrink-0 rounded-none border-b border-border hover:bg-muted focus:ring-0">
+                <Tag className={`w-4 h-4 ${showVectorLabels ? 'text-primary' : 'text-muted-foreground'}`} />
+              </Button>
+              <Button variant="ghost" size="icon" onClick={resetView} title="Reset view to map tiles" className="h-9 w-9 shrink-0 rounded-none border-b border-border hover:bg-muted focus:ring-0">
+                <MapPin className="w-4 h-4" />
+              </Button>
+              <Button variant="ghost" size="icon" onClick={centerOnCurrentLocation} title="Center to current location" className="h-9 w-9 shrink-0 rounded-none border-b border-border hover:bg-muted focus:ring-0">
                 <LocateFixed className="w-4 h-4" />
               </Button>
               <Button variant="ghost" size="icon" onClick={toggleFullscreen} title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"} className="h-9 w-9 shrink-0 rounded-none hover:bg-muted focus:ring-0">

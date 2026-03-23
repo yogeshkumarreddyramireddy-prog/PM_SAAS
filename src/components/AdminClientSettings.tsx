@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { ArrowLeft, Save, Trash2, Users, Settings } from "lucide-react"
-import { useUserProfiles } from "@/hooks/useSupabaseQuery"
+import { useUserProfiles, useUpdateGolfCourse, useDeleteGolfCourse, useContentFiles } from "@/hooks/useSupabaseQuery"
 import { useToast } from "@/hooks/use-toast"
 
 interface AdminClientSettingsProps {
@@ -26,6 +26,9 @@ export const AdminClientSettings = ({ client, onBack }: AdminClientSettingsProps
   const [isEditing, setIsEditing] = useState(false)
   
   const { data: userProfiles = [] } = useUserProfiles()
+  const { data: contentFiles = [] } = useContentFiles(client.id)
+  const updateCourse = useUpdateGolfCourse()
+  const deleteCourse = useDeleteGolfCourse()
   const { toast } = useToast()
 
   const clientUsers = userProfiles.filter(user => user.golf_course_id === client.id)
@@ -33,23 +36,34 @@ export const AdminClientSettings = ({ client, onBack }: AdminClientSettingsProps
   const pendingUsers = clientUsers.filter(user => !user.approved)
 
   const handleSave = async () => {
-    // In a real implementation, you would update the golf course settings here
-    toast({
-      title: "Settings Updated",
-      description: "Client settings have been updated successfully.",
-    })
-    setIsEditing(false)
+    try {
+      await updateCourse.mutateAsync({
+        id: client.id,
+        updates: { max_users: maxUsers, signup_enabled: signupEnabled }
+      })
+      setIsEditing(false)
+    } catch (error) {
+      console.error("Failed to update course:", error)
+    }
   }
 
-  const handleDeleteClient = () => {
-    if (window.confirm(`Are you sure you want to delete ${client.name}? This action cannot be undone.`)) {
-      // In a real implementation, you would delete the client here
-      toast({
-        title: "Client Deleted",
-        description: "Client has been removed from the system.",
-        variant: "destructive"
-      })
-      onBack()
+  const handleDeleteClient = async () => {
+    const userCount = clientUsers.length;
+    const contentCount = contentFiles.length;
+
+    let warningMessage = `Are you sure you want to delete ${client.name}? This action cannot be undone.`;
+
+    if (userCount > 0 || contentCount > 0) {
+      warningMessage = `⚠️ WARNING: This course contains ${userCount} users and ${contentCount} content files.\n\nDeleting this course will permanently delete all associated data and remove access for these users. Are you sure you want to proceed?`;
+    }
+
+    if (window.confirm(warningMessage)) {
+      try {
+        await deleteCourse.mutateAsync(client.id)
+        onBack()
+      } catch (error) {
+        console.error("Failed to delete course:", error)
+      }
     }
   }
 

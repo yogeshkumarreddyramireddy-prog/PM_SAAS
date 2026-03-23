@@ -68,25 +68,47 @@ export const ClientContentSection = ({
   }
   return <div className="space-y-6">
     {/* Header */}
-    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-      <div className="flex items-center gap-4">
-        {onBack && <Button variant="outline" onClick={onBack} size="sm" className="mx-[10px]">
-          <ArrowLeft className="h-4 w-4" />
-        </Button>}
-        <div>
-          <div className="flex items-center gap-3 mb-2">
-            <Icon className={`h-6 w-6 ${config.color}`} />
-            <h1 className="font-bold my-[10px] text-5xl text-slate-50">{config.name}</h1>
+    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-6 mb-8 px-4 sm:px-6 py-6 sm:py-8 bg-white/10 rounded-2xl mx-4 sm:mx-6 shadow-sm border border-white/20 backdrop-blur-md">
+      <div className="flex items-center gap-4 sm:gap-6">
+        {onBack && (
+          <Button 
+            variant="ghost" 
+            onClick={onBack} 
+            size="icon" 
+            className="h-10 w-10 shrink-0 rounded-full bg-white/20 text-white hover:bg-white/30 hover:text-white transition-all shadow-sm"
+          >
+            <ArrowLeft className="h-5 w-5" />
+          </Button>
+        )}
+        <div className="flex flex-row items-center gap-4 sm:gap-5">
+          <div className="flex h-12 w-12 sm:h-14 sm:w-14 items-center justify-center rounded-2xl bg-white shadow-md shrink-0">
+            <Icon className={`h-6 w-6 sm:h-7 sm:w-7 ${config.color}`} />
           </div>
-
-
+          <div className="flex flex-col gap-1">
+            <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight text-white drop-shadow-sm leading-none">
+              {config.name}
+            </h1>
+            <p className="text-sm sm:text-base font-medium text-white/90">
+              {config.description}
+            </p>
+          </div>
         </div>
       </div>
 
-      {contentType === 'live_maps' && <Button variant={showMapView ? "teal" : "outline"} onClick={() => setShowMapView(!showMapView)} className="gap-2 mx-[10px]">
-        <Map className="h-4 w-4" />
-        {showMapView ? 'Hide Map' : 'Show Map'}
-      </Button>}
+      {contentType === 'live_maps' && (
+        <Button 
+          variant={showMapView ? "outline" : "teal"} 
+          onClick={() => setShowMapView(!showMapView)} 
+          className={`h-10 sm:h-11 px-6 rounded-full font-semibold shadow-md transition-all whitespace-nowrap ${
+            showMapView 
+              ? 'bg-white/20 text-white border-white/30 hover:bg-white/30 hover:text-white' 
+              : 'hover:shadow-lg'
+          }`}
+        >
+          <Map className="h-4 w-4 mr-2" />
+          {showMapView ? 'Hide Map View' : 'Show Map View'}
+        </Button>
+      )}
     </div>
 
     {/* Map View */}

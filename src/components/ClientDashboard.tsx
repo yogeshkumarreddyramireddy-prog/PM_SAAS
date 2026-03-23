@@ -2,8 +2,7 @@ import { useState } from "react";
 import { ClientHeader } from "@/components/ClientHeader";
 import { DashboardTile } from "@/components/DashboardTile";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Map, FileText, Image, Box, Calendar, Activity, TrendingUp } from "lucide-react";
+import { Map, FileText, Image, Box, TrendingUp } from "lucide-react";
 import { useContentFiles } from "@/hooks/useSupabaseQuery";
 import { DroneImageUploader } from "@/components/DroneImageUploader";
 import { RecentUploads } from "@/components/RecentUploads";
@@ -14,6 +13,8 @@ interface ClientDashboardProps {
   golfCourseName: string;
   userFullName?: string;
   golfCourseLocation?: string;
+  assignedCourses?: any[];
+  onCourseChange?: (id: number) => void;
 }
 export const ClientDashboard = ({
   onLogout,
@@ -21,44 +22,77 @@ export const ClientDashboard = ({
   golfCourseId,
   golfCourseName,
   userFullName,
-  golfCourseLocation
+  golfCourseLocation,
+  assignedCourses,
+  onCourseChange
 }: ClientDashboardProps) => {
   const [uploadRefreshTrigger, setUploadRefreshTrigger] = useState(0);
   const {
     data: contentFiles = [],
     isLoading
   } = useContentFiles(golfCourseId);
-  const getDashboardData = () => [{
-    title: "Live Maps",
-    description: "Interactive course mapping",
-    icon: Map,
-    count: isLoading ? 0 : contentFiles.filter(f => f.file_category === 'live_maps' && f.status === 'published').length,
-    badge: contentFiles.filter(f => f.file_category === 'live_maps' && new Date(f.created_at || '').getTime() > Date.now() - 7 * 24 * 60 * 60 * 1000).length > 0 ? `${contentFiles.filter(f => f.file_category === 'live_maps' && new Date(f.created_at || '').getTime() > Date.now() - 7 * 24 * 60 * 60 * 1000).length} New` : undefined,
-    section: "live-maps",
-    status: "active"
-  }, {
-    title: "Reports",
-    description: "Analysis & documentation",
-    icon: FileText,
-    count: isLoading ? 0 : contentFiles.filter(f => f.file_category === 'reports' && f.status === 'published').length,
-    section: "reports",
-    status: "active"
-  }, {
-    title: "HD Maps",
-    description: "High-resolution imagery",
-    icon: Image,
-    count: isLoading ? 0 : contentFiles.filter(f => f.file_category === 'hd_maps' && f.status === 'published').length,
-    section: "hd-maps",
-    status: "active"
-  }, {
-    title: "3D Models",
-    description: "Three-dimensional views",
-    icon: Box,
-    count: isLoading ? 0 : contentFiles.filter(f => f.file_category === '3d_models' && f.status === 'published').length,
-    section: "3d-models",
-    status: "active"
-  }];
+  const getNewFilesCount = (category: string, sectionAlias: string) => {
+    const lastVisitedStr = localStorage.getItem(`last_visited_${sectionAlias}_${golfCourseId}`);
+    const lastVisited = lastVisitedStr ? parseInt(lastVisitedStr, 10) : 0;
+    
+    return contentFiles.filter(f => {
+      if (f.file_category !== category || f.status !== 'published') return false;
+      const createdAt = new Date(f.created_at || '').getTime();
+      return createdAt > (Date.now() - 7 * 24 * 60 * 60 * 1000) && createdAt > lastVisited;
+    }).length;
+  };
+
+  const getDashboardData = () => {
+    const liveMapsNew = getNewFilesCount('live_maps', 'live-maps');
+    const reportsNew = getNewFilesCount('reports', 'reports');
+    const hdMapsNew = getNewFilesCount('hd_maps', 'hd-maps');
+    const modelsNew = getNewFilesCount('3d_models', '3d-models');
+
+    return [
+      {
+        title: "Live Maps",
+        description: "Interactive course mapping",
+        icon: Map,
+        count: isLoading ? 0 : contentFiles.filter(f => f.file_category === 'live_maps' && f.status === 'published').length,
+        badge: liveMapsNew > 0 ? `${liveMapsNew} New` : undefined,
+        section: "live-maps",
+        status: "active"
+      },
+      {
+        title: "Reports",
+        description: "Analysis & documentation",
+        icon: FileText,
+        count: isLoading ? 0 : contentFiles.filter(f => f.file_category === 'reports' && f.status === 'published').length,
+        badge: reportsNew > 0 ? `${reportsNew} New` : undefined,
+        section: "reports",
+        status: "active"
+      },
+      {
+        title: "HD Maps",
+        description: "High-resolution imagery",
+        icon: Image,
+        count: isLoading ? 0 : contentFiles.filter(f => f.file_category === 'hd_maps' && f.status === 'published').length,
+        badge: hdMapsNew > 0 ? `${hdMapsNew} New` : undefined,
+        section: "hd-maps",
+        status: "active"
+      },
+      {
+        title: "3D Models",
+        description: "Three-dimensional views",
+        icon: Box,
+        count: isLoading ? 0 : contentFiles.filter(f => f.file_category === '3d_models' && f.status === 'published').length,
+        badge: modelsNew > 0 ? `${modelsNew} New` : undefined,
+        section: "3d-models",
+        status: "active"
+      }
+    ];
+  };
   const dashboardData = getDashboardData();
+  
+  const handleTileClick = (section: string) => {
+    localStorage.setItem(`last_visited_${section}_${golfCourseId}`, Date.now().toString());
+    onTileClick(section);
+  };
   const totalFiles = contentFiles.filter(f => f.status === 'published').length;
   const totalSize = contentFiles.reduce((sum, file) => sum + (file.file_size || 0), 0);
   const formatSize = (bytes: number) => {
@@ -68,38 +102,24 @@ export const ClientDashboard = ({
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + sizes[i];
   };
   return <div className="min-h-screen bg-gradient-to-br from-background to-muted/30">
-    <ClientHeader golfCourseName={golfCourseName} userName={userFullName} onLogout={onLogout} />
+    <ClientHeader 
+      golfCourseName={golfCourseName} 
+      userName={userFullName} 
+      onLogout={onLogout} 
+      activeCourseId={golfCourseId}
+      assignedCourses={assignedCourses}
+      onCourseChange={onCourseChange}
+    />
 
     <main className="container mx-auto px-4 sm:px-6 py-4 sm:py-8">
-      {/* Welcome Section */}
-      <div className="mb-6 sm:mb-8">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-4 gap-3 sm:gap-0">
-          <div>
-            <h1 className="text-xl sm:text-2xl lg:text-3xl font-bold text-foreground mb-2">
-              Welcome to {golfCourseName}
-            </h1>
-            <p className="text-sm sm:text-base lg:text-lg text-gray-950">
-              Last updated {contentFiles.length > 0 ? new Date(Math.max(...contentFiles.map(f => new Date(f.created_at || '').getTime()))).toLocaleDateString() : 'Never'}
-            </p>
-          </div>
-          <Badge variant="default" className="bg-success-green self-start sm:self-auto">
-            <Activity className="h-3 w-3 mr-1" />
-            <span className="text-xs sm:text-sm">All Systems Active</span>
-          </Badge>
-        </div>
-        <p className="text-sm sm:text-base text-gray-950">
-          Access your course mapping data, analysis reports, and 3D visualizations
-        </p>
-      </div>
-
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 sm:gap-8">
+      <div className="grid grid-cols-1 gap-6 sm:gap-8">
         {/* Main Content Area */}
-        <div className="xl:col-span-2 space-y-6 sm:space-y-8">
+        <div className="space-y-6 sm:space-y-8">
           {/* 4-Tile Grid Navigation */}
           <div>
             <h2 className="text-lg sm:text-xl font-semibold text-foreground mb-3 sm:mb-4">Course Data Access</h2>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-6">
-              {dashboardData.map(tile => <DashboardTile key={tile.section} title={tile.title} description={tile.description} icon={tile.icon} count={tile.count} badge={tile.badge} onClick={() => onTileClick(tile.section)} />)}
+              {dashboardData.map(tile => <DashboardTile key={tile.section} title={tile.title} description={tile.description} icon={tile.icon} count={tile.count} badge={tile.badge} onClick={() => handleTileClick(tile.section)} />)}
             </div>
           </div>
 
@@ -152,62 +172,6 @@ export const ClientDashboard = ({
           </div>
         </div>
 
-        {/* Sidebar */}
-        <div className="space-y-4 sm:space-y-6">
-          {/* Recent Activity */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base sm:text-lg">Recent Activity</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-4">
-                {contentFiles.slice(0, 4).map((file, index) => <div key={index} className="flex items-start gap-3 p-3 bg-background/50 rounded-lg">
-                  <div className="p-2 rounded-full bg-primary-teal/10">
-                    {file.file_category === 'live_maps' && <Map className="h-4 w-4 text-primary-teal" />}
-                    {file.file_category === 'reports' && <FileText className="h-4 w-4 text-success-green" />}
-                    {file.file_category === 'hd_maps' && <Image className="h-4 w-4 text-accent-teal" />}
-                    {file.file_category === '3d_models' && <Box className="h-4 w-4 text-warning-amber" />}
-                  </div>
-                  <div className="flex-1">
-                    <p className="text-sm font-medium">{file.filename}</p>
-                    <p className="text-xs text-muted-foreground flex items-center gap-1">
-                      <Calendar className="h-3 w-3" />
-                      {file.created_at ? new Date(file.created_at).toLocaleDateString() : 'Recently'}
-                    </p>
-                  </div>
-                </div>)}
-                {contentFiles.length === 0 && <p className="text-sm text-muted-foreground text-center py-4">No recent activity</p>}
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* System Status */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg">System Status</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm">Live Maps</span>
-                  <Badge className="bg-success-green">Online</Badge>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm">Report System</span>
-                  <Badge className="bg-success-green">Online</Badge>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm">3D Renderer</span>
-                  <Badge className="bg-success-green">Online</Badge>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm">Data Sync</span>
-                  <Badge className="bg-success-green">Active</Badge>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
       </div>
     </main>
   </div>;

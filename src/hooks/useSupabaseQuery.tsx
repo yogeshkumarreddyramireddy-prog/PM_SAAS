@@ -18,7 +18,230 @@ export const useGolfCourses = () => {
   })
 }
 
-// Hook for fetching user profiles with golf course info
+// Hook for updating a golf course
+export const useUpdateGolfCourse = () => {
+  const queryClient = useQueryClient()
+  const { toast } = useToast()
+
+  return useMutation({
+    mutationFn: async ({ id, updates }: { id: number, updates: any }) => {
+      const { error } = await supabase
+        .from('active_golf_courses')
+        .update(updates)
+        .eq('id', id)
+
+      if (error) throw error
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['golf-courses'] })
+      toast({
+        title: 'Settings Saved',
+        description: 'Golf course settings updated successfully.',
+      })
+    },
+    onError: () => {
+      toast({
+        title: 'Error',
+        description: 'Failed to update golf course settings.',
+        variant: 'destructive'
+      })
+    }
+  })
+}
+
+// Hook for creating a new golf course
+export const useCreateGolfCourse = () => {
+  const queryClient = useQueryClient()
+  const { toast } = useToast()
+
+  return useMutation({
+    mutationFn: async ({ name, max_users = 5, signup_enabled = true }: { name: string, max_users?: number, signup_enabled?: boolean }) => {
+      const { error } = await supabase
+        .from('active_golf_courses')
+        .insert({ name, max_users, signup_enabled })
+
+      if (error) throw error
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['golf-courses'] })
+      toast({
+        title: 'Golf Course Created',
+        description: 'New active golf course has been added successfully.',
+      })
+    },
+    onError: (err: any) => {
+      toast({
+        title: 'Error',
+        description: err.message || 'Failed to create golf course.',
+        variant: 'destructive'
+      })
+    }
+  })
+}
+
+export const useDeleteGolfCourse = () => {
+  const queryClient = useQueryClient()
+  const { toast } = useToast()
+
+  return useMutation({
+    mutationFn: async (id: number) => {
+      const { data, error } = await supabase.functions.invoke('manage-client-courses', {
+        body: { action: 'delete-course', courseId: id }
+      })
+
+      if (error) throw error
+      if (data?.error) throw new Error(data.error)
+      return data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['golf-courses'] })
+      queryClient.invalidateQueries({ queryKey: ['user-profiles'] })
+      queryClient.invalidateQueries({ queryKey: ['all-golf-courses'] })
+      toast({
+        title: 'Golf Course Deleted',
+        description: 'The golf course has been permanently deleted.',
+      })
+    },
+    onError: (err: any) => {
+      toast({
+        title: 'Error Deleting Course',
+        description: err.message || 'Failed to delete golf course.',
+        variant: 'destructive'
+      })
+    }
+  })
+}
+
+// Hook for assigning a golf course to a client
+export const useAssignGolfCourse = () => {
+  const queryClient = useQueryClient()
+  const { toast } = useToast()
+
+  return useMutation({
+    mutationFn: async ({ clientId, golfCourseId }: { clientId: string, golfCourseId: number }) => {
+      const { data, error } = await supabase.functions.invoke('manage-client-courses', {
+        body: { action: 'assign', clientId, golfCourseId }
+      })
+
+      if (error) throw error
+      if (data.error) throw new Error(data.error)
+      return data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['user-profiles'] })
+      queryClient.invalidateQueries({ queryKey: ['golf-courses'] })
+      toast({
+        title: 'Course Assigned',
+        description: 'Successfully assigned golf course to user.',
+      })
+    },
+    onError: (err: any) => {
+      toast({
+        title: 'Error Assinging Course',
+        description: err.message || 'Failed to assign course to user.',
+        variant: 'destructive'
+      })
+    }
+  })
+}
+
+// Hook for removing a golf course from a client
+export const useRemoveGolfCourse = () => {
+  const queryClient = useQueryClient()
+  const { toast } = useToast()
+
+  return useMutation({
+    mutationFn: async ({ clientId, golfCourseId }: { clientId: string, golfCourseId: number }) => {
+      const { data, error } = await supabase.functions.invoke('manage-client-courses', {
+        body: { action: 'remove', clientId, golfCourseId }
+      })
+
+      if (error) throw error
+      if (data.error) throw new Error(data.error)
+      return data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['user-profiles'] })
+      queryClient.invalidateQueries({ queryKey: ['golf-courses'] })
+      toast({
+        title: 'Course Removed',
+        description: 'Successfully removed golf course from user.',
+      })
+    },
+    onError: (err: any) => {
+      toast({
+        title: 'Error Removing Course',
+        description: err.message || 'Failed to remove course from user.',
+        variant: 'destructive'
+      })
+    }
+  })
+}
+
+// Hook for completely deleting a user
+export const useDeleteUser = () => {
+  const queryClient = useQueryClient()
+  const { toast } = useToast()
+
+  return useMutation({
+    mutationFn: async (userId: string) => {
+      const { data, error } = await supabase.functions.invoke('delete-user', {
+        body: { userId }
+      })
+
+      if (error) throw error
+      if (data.error) throw new Error(data.error)
+      return data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['user-profiles'] })
+      toast({
+        title: 'User Deleted',
+        description: 'Successfully deleted the user and all associated records.',
+      })
+    },
+    onError: (err: any) => {
+      toast({
+        title: 'Deletion Failed',
+        description: err.message || 'Failed to totally delete user.',
+        variant: 'destructive'
+      })
+    }
+  })
+}
+
+// Hook for approving a pending user and creating/assigning their active golf course
+export const useApproveUser = () => {
+  const queryClient = useQueryClient()
+  const { toast } = useToast()
+
+  return useMutation({
+    mutationFn: async (userId: string) => {
+      const { data, error } = await supabase.functions.invoke('approve-user', {
+        body: { userId }
+      })
+
+      if (error) throw error
+      if (data.error) throw new Error(data.error)
+      return data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['user-profiles'] })
+      queryClient.invalidateQueries({ queryKey: ['golf-courses'] })
+      toast({
+        title: 'User Approved',
+        description: 'Successfully approved user and synced their golf courses.',
+      })
+    },
+    onError: (err: any) => {
+      toast({
+        title: 'Approval Failed',
+        description: err.message || 'Failed to approve user.',
+        variant: 'destructive'
+      })
+    }
+  })
+}
 export const useUserProfiles = () => {
   return useQuery({
     queryKey: ['user-profiles'],
@@ -27,10 +250,14 @@ export const useUserProfiles = () => {
         .from('user_profiles')
         .select(`
           *,
-          active_golf_courses (
-            id,
-            name,
-            location
+          active_golf_courses:golf_course_id (
+            *
+          ),
+          client_golf_courses (
+            active_golf_courses (
+              id,
+              name
+            )
           )
         `)
         .order('created_at', { ascending: false })

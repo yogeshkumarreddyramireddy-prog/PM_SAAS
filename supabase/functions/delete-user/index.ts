@@ -27,12 +27,13 @@ serve(async (req) => {
     const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
 
-    // Verify the requesting user is an admin
-    const userClient = createClient(supabaseUrl, supabaseAnonKey, {
-      global: { headers: { Authorization: authHeader } }
+    const supabaseAnon = createClient(supabaseUrl, supabaseAnonKey, {
+      auth: { autoRefreshToken: false, persistSession: false }
     })
 
-    const { data: { user: requestingUser }, error: authError } = await userClient.auth.getUser()
+    const token = authHeader.replace('Bearer ', '')
+    const { data: { user: requestingUser }, error: authError } = await supabaseAnon.auth.getUser(token)
+    
     if (authError || !requestingUser) {
       return new Response(
         JSON.stringify({ error: 'Unauthorized' }),
@@ -40,14 +41,18 @@ serve(async (req) => {
       )
     }
 
+    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
+      auth: { autoRefreshToken: false, persistSession: false }
+    })
+
     // Check if requesting user is admin
-    const { data: adminCheck } = await userClient
+    const { data: adminCheck } = await supabaseAdmin
       .from('user_profiles')
-      .select('role, is_admin')
+      .select('role')
       .eq('id', requestingUser.id)
       .single()
 
-    if (adminCheck?.role !== 'admin' && !adminCheck?.is_admin) {
+    if (adminCheck?.role !== 'admin') {
       return new Response(
         JSON.stringify({ error: 'Only admins can delete users' }),
         { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -71,13 +76,7 @@ serve(async (req) => {
       )
     }
 
-    // Create admin client with service role key
-    const adminClient = createClient(supabaseUrl, supabaseServiceKey, {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false
-      }
-    })
+    const adminClient = supabaseAdmin
 
     console.log(`🗑️ Deleting user ${userId} and all related data...`)
 

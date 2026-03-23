@@ -6,20 +6,6 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-interface AssignCourseRequest {
-  clientId: string
-  golfCourseId: string
-}
-
-interface RemoveCourseRequest {
-  clientId: string
-  golfCourseId: string
-}
-
-interface GetClientCoursesRequest {
-  clientId: string
-}
-
 serve(async (req) => {
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
@@ -27,31 +13,40 @@ serve(async (req) => {
   }
 
   try {
-    const supabaseClient = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_ANON_KEY') ?? '',
-      {
-        global: {
-          headers: { Authorization: req.headers.get('Authorization')! },
-        },
-      }
-    )
+    const authHeader = req.headers.get('Authorization')
+    if (!authHeader) {
+      return new Response(
+        JSON.stringify({ error: 'Missing Authorization header' }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      )
+    }
 
-    // Verify user is authenticated and is admin
-    const {
-      data: { user },
-      error: authError,
-    } = await supabaseClient.auth.getUser()
+    const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
+    const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY') ?? ''
+    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
 
+    const supabaseAnon = createClient(supabaseUrl, supabaseAnonKey, {
+      auth: { autoRefreshToken: false, persistSession: false }
+    })
+    
+    // Verify user is authenticated
+    const token = authHeader.replace('Bearer ', '')
+    const { data: { user }, error: authError } = await supabaseAnon.auth.getUser(token)
+    
     if (authError || !user) {
+      console.error("Auth error:", authError)
       return new Response(
         JSON.stringify({ error: 'Unauthorized' }),
         { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       )
     }
 
-    // Check if user is admin
-    const { data: userData, error: userError } = await supabaseClient
+    // Check if user is admin using service role
+    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
+      auth: { autoRefreshToken: false, persistSession: false }
+    })
+    
+    const { data: userData, error: userError } = await supabaseAdmin
       .from('user_profiles')
       .select('role')
       .eq('id', user.id)
@@ -64,12 +59,16 @@ serve(async (req) => {
       )
     }
 
-    const url = new URL(req.url)
-    const action = url.searchParams.get('action')
+    // Use adminClient for all actual operations
+    const adminClient = supabaseAdmin
+
+    // Parse the body — action is now in the body, NOT query params
+    const body = await req.json()
+    const { action } = body
 
     switch (action) {
       case 'assign': {
-        const { clientId, golfCourseId }: AssignCourseRequest = await req.json()
+        const { clientId, golfCourseId } = body
 
         if (!clientId || !golfCourseId) {
           return new Response(
@@ -78,14 +77,31 @@ serve(async (req) => {
           )
         }
 
-        // Call the assign function
-        const { data, error } = await supabaseClient.rpc('assign_client_to_course', {
-          p_client_id: clientId,
-          p_golf_course_id: golfCourseId,
-          p_assigned_by: user.id,
-        })
+        // Check if already assigned
+        const { data: existing } = await adminClient
+          .from('client_golf_courses')
+          .select('id')
+          .eq('client_id', clientId)
+          .eq('golf_course_id', golfCourseId)
+          .maybeSingle()
+
+        if (existing) {
+          return new Response(
+            JSON.stringify({ success: true, message: 'Already assigned' }),
+            { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          )
+        }
+
+        const { error } = await adminClient
+          .from('client_golf_courses')
+          .insert({
+            client_id: clientId,
+            golf_course_id: parseInt(String(golfCourseId)),
+            assigned_by: user.id
+          })
 
         if (error) {
+          console.error('Assign error:', error)
           return new Response(
             JSON.stringify({ error: error.message }),
             { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -93,13 +109,13 @@ serve(async (req) => {
         }
 
         return new Response(
-          JSON.stringify({ success: true, assignmentId: data }),
+          JSON.stringify({ success: true }),
           { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         )
       }
 
       case 'remove': {
-        const { clientId, golfCourseId }: RemoveCourseRequest = await req.json()
+        const { clientId, golfCourseId } = body
 
         if (!clientId || !golfCourseId) {
           return new Response(
@@ -108,13 +124,14 @@ serve(async (req) => {
           )
         }
 
-        // Call the remove function
-        const { data, error } = await supabaseClient.rpc('remove_client_from_course', {
-          p_client_id: clientId,
-          p_golf_course_id: golfCourseId,
-        })
+        const { error } = await adminClient
+          .from('client_golf_courses')
+          .delete()
+          .eq('client_id', clientId)
+          .eq('golf_course_id', golfCourseId)
 
         if (error) {
+          console.error('Remove error:', error)
           return new Response(
             JSON.stringify({ error: error.message }),
             { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -122,13 +139,42 @@ serve(async (req) => {
         }
 
         return new Response(
-          JSON.stringify({ success: true, removed: data }),
+          JSON.stringify({ success: true }),
           { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         )
       }
 
-      case 'get-client-courses': {
-        const { clientId }: GetClientCoursesRequest = await req.json()
+      case 'delete-course': {
+        const { courseId } = body
+
+        if (!courseId) {
+          return new Response(
+            JSON.stringify({ error: 'Missing courseId' }),
+            { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          )
+        }
+
+        const { error } = await adminClient
+          .from('active_golf_courses')
+          .delete()
+          .eq('id', courseId)
+
+        if (error) {
+          console.error('Delete course error:', error)
+          return new Response(
+            JSON.stringify({ error: error.message }),
+            { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          )
+        }
+
+        return new Response(
+          JSON.stringify({ success: true }),
+          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        )
+      }
+
+      case 'list': {
+        const { clientId } = body
 
         if (!clientId) {
           return new Response(
@@ -137,65 +183,10 @@ serve(async (req) => {
           )
         }
 
-        // Get all courses for this client
-        const { data, error } = await supabaseClient.rpc('get_client_golf_courses', {
-          user_id: clientId,
-        })
-
-        if (error) {
-          return new Response(
-            JSON.stringify({ error: error.message }),
-            { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-          )
-        }
-
-        return new Response(
-          JSON.stringify({ courses: data }),
-          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        )
-      }
-
-      case 'get-all-assignments': {
-        // Get all client-course assignments
-        const { data, error } = await supabaseClient
+        const { data, error } = await adminClient
           .from('client_golf_courses')
-          .select(`
-            id,
-            client_id,
-            golf_course_id,
-            assigned_at,
-            is_active,
-            user_profiles:client_id (
-              id,
-              email,
-              full_name
-            ),
-            active_golf_courses:golf_course_id (
-              id,
-              name
-            )
-          `)
-          .eq('is_active', true)
-          .order('assigned_at', { ascending: false })
-
-        if (error) {
-          return new Response(
-            JSON.stringify({ error: error.message }),
-            { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-          )
-        }
-
-        return new Response(
-          JSON.stringify({ assignments: data }),
-          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        )
-      }
-
-      case 'get-courses-for-client': {
-        // Get courses for the authenticated client user
-        const { data, error } = await supabaseClient.rpc('get_client_golf_courses', {
-          user_id: user.id,
-        })
+          .select('*, active_golf_courses(*)')
+          .eq('client_id', clientId)
 
         if (error) {
           return new Response(
@@ -212,13 +203,15 @@ serve(async (req) => {
 
       default:
         return new Response(
-          JSON.stringify({ error: 'Invalid action parameter' }),
+          JSON.stringify({ error: `Invalid action: ${action}` }),
           { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         )
     }
+
   } catch (error) {
+    console.error('manage-client-courses error:', error)
     return new Response(
-      JSON.stringify({ error: error.message }),
+      JSON.stringify({ error: error.message || 'Internal server error' }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     )
   }

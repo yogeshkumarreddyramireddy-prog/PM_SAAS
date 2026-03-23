@@ -178,6 +178,7 @@ export const FilePreviewModal = ({
           "max-w-7xl max-h-[95vh] p-0 gap-0",
           isFullscreen && "max-w-full max-h-full h-screen w-screen"
         )}
+        aria-describedby={undefined}
       >
         {/* Header */}
         <DialogHeader className="p-4 border-b bg-background/95 backdrop-blur-sm">

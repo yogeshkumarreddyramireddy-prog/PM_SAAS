@@ -83,7 +83,13 @@ export const FileDownloader = ({
       
       // Create blob and download
       let blob: Blob
-      if (data instanceof ArrayBuffer) {
+      
+      if (data?.downloadUrl) {
+        // Fetch the actual file content from the signed URL
+        const response = await fetch(data.downloadUrl)
+        if (!response.ok) throw new Error('Failed to fetch file from signed URL')
+        blob = await response.blob()
+      } else if (data instanceof ArrayBuffer) {
         blob = new Blob([data], { type: file.mime_type || 'application/octet-stream' })
       } else if (data instanceof Uint8Array) {
         blob = new Blob([data as unknown as BlobPart], { type: file.mime_type || 'application/octet-stream' })
@@ -96,7 +102,7 @@ export const FileDownloader = ({
           blob = new Blob([data], { type: file.mime_type || 'text/plain' })
         }
       } else {
-        // Handle object data (convert to JSON)
+        // Handle object data (convert to JSON) as a fallback
         const jsonString = JSON.stringify(data)
         blob = new Blob([jsonString], { type: 'application/json' })
       }

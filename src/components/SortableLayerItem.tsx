@@ -12,6 +12,13 @@ interface SortableLayerItemProps {
   color?: string; // For vector dots
 }
 
+/** Convert raw DB/file names to a human-friendly display label.
+ *  Replaces underscores with spaces. The original name is always kept
+ *  as the `title` tooltip so users can see the full untruncated value. */
+function toDisplayName(name: string): string {
+  return name.replace(/_/g, ' ');
+}
+
 export function SortableLayerItem({ id, name, isVisible, onToggle, type, color }: SortableLayerItemProps) {
   const {
     attributes,
@@ -27,6 +34,8 @@ export function SortableLayerItem({ id, name, isVisible, onToggle, type, color }
     transition,
     zIndex: isDragging ? 50 : 1,
   };
+
+  const displayName = toDisplayName(name);
 
   return (
     <div
@@ -46,7 +55,13 @@ export function SortableLayerItem({ id, name, isVisible, onToggle, type, color }
           {type === 'raster' && <div className="w-2.5 h-2.5 rounded-sm bg-blue-400 shrink-0 shadow-[0_0_8px_rgba(96,165,250,0.6)]" />}
           {type === 'health' && <div className="w-2.5 h-2.5 rounded-sm bg-green-400 shrink-0 shadow-[0_0_8px_rgba(74,222,128,0.6)]" />}
           {type === 'vector' && <div className="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm" style={{ backgroundColor: color || '#a855f7' }} />}
-          <span className={`text-[13px] truncate cursor-pointer ${isVisible ? 'font-semibold text-teal-50' : 'font-medium text-teal-100/60'}`}>{name}</span>
+          {/* title shows the full original name on hover; displayName replaces _ with spaces */}
+          <span
+            title={displayName}
+            className={`text-[13px] truncate cursor-pointer ${isVisible ? 'font-semibold text-teal-50' : 'font-medium text-teal-100/60'}`}
+          >
+            {displayName}
+          </span>
         </div>
       </div>
       <Switch

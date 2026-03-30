@@ -1007,6 +1007,17 @@ const MapboxGolfCourseMap = ({
 
 
 
+  // Helper: convert YYYY-MM-DD → DD/MM/YYYY for display
+  const formatLayerDate = (dateStr: string): string => {
+    const parts = dateStr.split('-');
+    if (parts.length === 3) return `${parts[2]}/${parts[1]}/${parts[0]}`;
+    return dateStr;
+  };
+
+  // Helper: strip file extension (e.g. "NDVI.tif" → "NDVI")
+  const stripExtension = (filename: string): string =>
+    filename.replace(/\.[^.]+$/, '');
+
   const getLayerMetadata = (layerId: string | null) => {
     if (!layerId) return undefined;
 
@@ -1331,17 +1342,6 @@ const MapboxGolfCourseMap = ({
       });
     }
   };
-
-  // Helper: convert YYYY-MM-DD → DD/MM/YYYY for display
-  const formatLayerDate = (dateStr: string): string => {
-    const parts = dateStr.split('-');
-    if (parts.length === 3) return `${parts[2]}/${parts[1]}/${parts[0]}`;
-    return dateStr;
-  };
-
-  // Helper: strip file extension (e.g. "NDVI.tif" → "NDVI")
-  const stripExtension = (filename: string): string =>
-    filename.replace(/\.[^.]+$/, '');
 
   const unifiedLayers = layerOrder.map(id => {
     if (id.startsWith('tileset-layer-')) {

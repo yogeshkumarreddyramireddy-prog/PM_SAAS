@@ -50,7 +50,8 @@ export const FilePreviewModal = ({
   const [initialPinchZoom, setInitialPinchZoom] = useState(1)
   const imageRef = useRef<HTMLImageElement>(null)
   
-  const [excelHtml, setExcelHtml] = useState<string | null>(null)
+  const [excelSheets, setExcelSheets] = useState<{name: string, html: string}[]>([])
+  const [activeSheetIndex, setActiveSheetIndex] = useState(0)
   const [isLoadingExcel, setIsLoadingExcel] = useState(false)
   
   const isExcel = file?.mime_type?.includes('spreadsheet') || file?.mime_type?.includes('excel') || file?.filename?.endsWith('.xls') || file?.filename?.endsWith('.xlsx')
@@ -62,18 +63,21 @@ export const FilePreviewModal = ({
         .then(res => res.arrayBuffer())
         .then(ab => {
           const workbook = read(ab, { type: 'array' });
-          const firstSheetName = workbook.SheetNames[0];
-          const worksheet = workbook.Sheets[firstSheetName];
-          const html = utils.sheet_to_html(worksheet, { id: 'excel-table' });
-          setExcelHtml(html);
+          const sheets = workbook.SheetNames.map(name => ({
+            name,
+            html: utils.sheet_to_html(workbook.Sheets[name], { id: 'excel-table' })
+          }));
+          setExcelSheets(sheets);
+          setActiveSheetIndex(0);
         })
         .catch(err => {
           console.error("Failed to parse Excel file", err);
-          setExcelHtml("<div class='p-4 text-center text-destructive'>Failed to render Excel file</div>");
+          setExcelSheets([]);
         })
         .finally(() => setIsLoadingExcel(false));
     } else {
-      setExcelHtml(null);
+      setExcelSheets([]);
+      setActiveSheetIndex(0);
     }
   }, [isOpen, previewUrl, file, isExcel]);
 
@@ -318,16 +322,39 @@ export const FilePreviewModal = ({
               allow="autoplay"
             />
           ) : isExcel ? (
-            <div className="w-full h-full bg-white p-4 overflow-auto">
+            <div className="w-full h-full bg-white flex flex-col">
               {isLoadingExcel ? (
-                <div className="flex items-center justify-center h-full">
+                <div className="flex items-center justify-center flex-1">
                   <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-teal"></div>
                 </div>
+              ) : excelSheets.length > 0 ? (
+                <>
+                  <div className="flex-1 overflow-auto p-4">
+                    <div 
+                      className="excel-table-container max-w-full"
+                      dangerouslySetInnerHTML={{ __html: excelSheets[activeSheetIndex]?.html || "" }} 
+                    />
+                  </div>
+                  {excelSheets.length > 1 && (
+                    <div className="flex overflow-x-auto border-t bg-muted/10 p-2 gap-2 shrink-0">
+                      {excelSheets.map((sheet, idx) => (
+                        <Button
+                          key={sheet.name}
+                          variant={idx === activeSheetIndex ? "default" : "outline"}
+                          size="sm"
+                          onClick={() => setActiveSheetIndex(idx)}
+                          className="whitespace-nowrap"
+                        >
+                          {sheet.name}
+                        </Button>
+                      ))}
+                    </div>
+                  )}
+                </>
               ) : (
-                <div 
-                  className="excel-table-container max-w-full"
-                  dangerouslySetInnerHTML={{ __html: excelHtml || "" }} 
-                />
+                <div className="flex items-center justify-center flex-1 p-4 text-center text-destructive">
+                  Failed to render Excel file
+                </div>
               )}
             </div>
           ) : (

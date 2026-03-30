@@ -169,7 +169,7 @@ const MapboxGolfCourseMap = ({
 
         if (isVector) {
           // Vector layer visibility is managed by syncVectorVisibility, not here
-          // Just move the layers to their correct z-index position
+          // Just move the non-label sub-layers; labels are hoisted in the second pass below.
           const layerIds = [layerId, `${layerId}-outline`, `${layerId}-line`, `${layerId}-point`];
           layerIds.forEach(id => {
             if (map.current!.getLayer(id)) {
@@ -182,6 +182,18 @@ const MapboxGolfCourseMap = ({
         }
       } else if (layerId.startsWith('tileset-layer-') || layerId.startsWith('health-map-layer-')) {
           console.log(`⚠️ Layer ${layerId} in order list but NOT FOUND on map style.`);
+      }
+    });
+
+    // ── Second pass: always float ALL vector label layers to the very top ──
+    // Labels are symbol layers and must render above every raster/health layer.
+    // We move them AFTER the main loop so no raster layer can end up above them.
+    // Reversed order keeps the highest-priority vector's label topmost.
+    [...layerOrder].reverse().forEach(layerId => {
+      if (!layerId.startsWith('vector-layer-')) return;
+      const labelId = `${layerId}-label`;
+      if (map.current!.getLayer(labelId)) {
+        try { map.current!.moveLayer(labelId); } catch(e) {}
       }
     });
 

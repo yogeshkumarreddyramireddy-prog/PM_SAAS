@@ -6,7 +6,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import phytoMapsLogo from "/lovable-uploads/b377485b-420a-475e-81d5-4cb44b625614.png"
+import phytoMapsLogo from "/assets/b377485b-420a-475e-81d5-4cb44b625614.png"
 
 interface PMVHeaderProps {
   userType?: 'admin' | 'client'

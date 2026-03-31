@@ -2,7 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Sun, Moon } from "lucide-react";
-import phytoMapsLogo from "/lovable-uploads/b377485b-420a-475e-81d5-4cb44b625614.png";
+import phytoMapsLogo from "/assets/b377485b-420a-475e-81d5-4cb44b625614.png";
 import { useTheme } from "@/contexts/ThemeContext";
 
 interface AdminHeaderProps {

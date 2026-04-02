@@ -39,40 +39,39 @@ export const ClientDashboard = ({
   const t = useT();
 
   useEffect(() => {
-    const fetchMapCounts = async () => {
-      let count = 0;
-      
-      const { count: rasterCount } = await supabase
-        .from('golf_course_tilesets')
-        .select('*', { count: 'exact', head: true })
-        .eq('golf_course_id', golfCourseId)
-        .eq('is_active', true);
-        
-      const { count: healthCount } = await supabase
-        .from('health_map_tilesets')
-        .select('*', { count: 'exact', head: true })
-        .eq('golf_course_id', golfCourseId)
-        .eq('is_active', true);
-        
-      const { count: vectorCount } = await supabase
-        .from('vector_layers')
-        .select('*', { count: 'exact', head: true })
-        .eq('golf_course_id', golfCourseId)
-        .eq('is_active', true);
+    // Reset immediately so we never show stale data from the previous course
+    setLiveMapCount(0);
 
-      count += (rasterCount || 0) + (healthCount || 0) + (vectorCount || 0);
-      
-      // Also include any 'live_maps' in content_files
-      const fileCount = contentFiles.filter(f => f.file_category === 'live_maps' && f.status === 'published').length;
-      count += fileCount;
-      
-      setLiveMapCount(count);
+    const fetchMapCounts = async () => {
+      // Count ONLY from the dedicated map tables.
+      // content_files with file_category='live_maps' are mirror records created
+      // alongside golf_course_tilesets entries (same data, stored twice).
+      // Adding them here would double-count every map layer.
+      const [{ count: rasterCount }, { count: healthCount }, { count: vectorCount }] =
+        await Promise.all([
+          supabase
+            .from('golf_course_tilesets')
+            .select('*', { count: 'exact', head: true })
+            .eq('golf_course_id', golfCourseId)
+            .eq('is_active', true),
+          supabase
+            .from('health_map_tilesets')
+            .select('*', { count: 'exact', head: true })
+            .eq('golf_course_id', golfCourseId)
+            .eq('is_active', true),
+          supabase
+            .from('vector_layers')
+            .select('*', { count: 'exact', head: true })
+            .eq('golf_course_id', golfCourseId)
+            .eq('is_active', true),
+        ]);
+
+      setLiveMapCount((rasterCount || 0) + (healthCount || 0) + (vectorCount || 0));
     };
-    
-    if (!isLoading) {
-      fetchMapCounts();
-    }
-  }, [golfCourseId, isLoading, contentFiles]);
+
+    fetchMapCounts();
+  // Only re-run when the selected course changes — not on every contentFiles update
+  }, [golfCourseId]);
 
   const getNewFilesCount = (category: string, sectionAlias: string) => {
     const lastVisitedStr = localStorage.getItem(`last_visited_${sectionAlias}_${golfCourseId}`);
@@ -138,8 +137,14 @@ export const ClientDashboard = ({
     onTileClick(section);
   };
 
-  const totalFiles = contentFiles.filter(f => f.status === 'published').length;
-  const totalSize = contentFiles.reduce((sum, file) => sum + (file.file_size || 0), 0);
+  // Exclude live_maps from content_files total-file count:
+  // those are mirror records of the golf_course_tilesets entries and are
+  // already reflected in liveMapCount, so counting them here would inflate totals.
+  const nonMapFiles = contentFiles.filter(
+    f => f.status === 'published' && f.file_category !== 'live_maps'
+  );
+  const totalFiles = nonMapFiles.length;
+  const totalSize = nonMapFiles.reduce((sum, file) => sum + (file.file_size || 0), 0);
   const formatSize = (bytes: number) => {
     const k = 1024;
     const sizes = ['Bytes', 'KB', 'MB', 'GB'];
@@ -205,7 +210,7 @@ export const ClientDashboard = ({
                     <div className="text-xs sm:text-sm text-muted-foreground">{t.dashboard.statsDataSize}</div>
                   </div>
                   <div className="text-center">
-                    <div className="text-xl sm:text-2xl lg:text-3xl font-bold text-warning-amber mb-1">{totalFiles > 0 ? '100%' : '0%'}</div>
+                    <div className="text-xl sm:text-2xl lg:text-3xl font-bold text-warning-amber mb-1">{(totalFiles > 0 || liveMapCount > 0) ? '100%' : '0%'}</div>
                     <div className="text-xs sm:text-sm text-muted-foreground">{t.dashboard.statsAvailable}</div>
                   </div>
                 </div>

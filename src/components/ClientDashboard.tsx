@@ -137,14 +137,17 @@ export const ClientDashboard = ({
     onTileClick(section);
   };
 
-  // Exclude live_maps from content_files total-file count:
-  // those are mirror records of the golf_course_tilesets entries and are
-  // already reflected in liveMapCount, so counting them here would inflate totals.
+  // Exclude live_maps from the COUNT to avoid double-counting with liveMapCount
+  // (those entries are mirror records of golf_course_tilesets).
+  // But include ALL published files in the SIZE — the live_maps source files
+  // (drone imagery, GeoTIFFs, etc.) represent the bulk of actual data volume.
   const nonMapFiles = contentFiles.filter(
     f => f.status === 'published' && f.file_category !== 'live_maps'
   );
   const totalFiles = nonMapFiles.length;
-  const totalSize = nonMapFiles.reduce((sum, file) => sum + (file.file_size || 0), 0);
+  const totalSize = contentFiles
+    .filter(f => f.status === 'published')
+    .reduce((sum, file) => sum + (file.file_size || 0), 0);
   const formatSize = (bytes: number) => {
     const k = 1024;
     const sizes = ['Bytes', 'KB', 'MB', 'GB'];

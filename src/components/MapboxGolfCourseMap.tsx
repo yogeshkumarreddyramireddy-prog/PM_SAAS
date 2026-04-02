@@ -442,7 +442,16 @@ const MapboxGolfCourseMap = ({
       });
 
       if (showControls) {
-        map.current.addControl(new mapboxgl.ScaleControl(), 'bottom-left');
+        // Scale bar – bottom-right, compact metric+imperial
+        map.current.addControl(
+          new mapboxgl.ScaleControl({ maxWidth: 100, unit: 'metric' }),
+          'bottom-right'
+        );
+        // North arrow / compass – bottom-right, compass only (no duplicate zoom buttons)
+        map.current.addControl(
+          new mapboxgl.NavigationControl({ showCompass: true, showZoom: false }),
+          'bottom-right'
+        );
       }
 
 

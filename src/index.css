@@ -215,8 +215,35 @@ All colors MUST be HSL.
     @apply text-base sm:text-lg lg:text-xl;
   }
 
-  /* Hide default Mapbox geolocate button completely */
-  .mapboxgl-ctrl-bottom-right .mapboxgl-ctrl-group {
+  /* Hide only the geolocate button group, not scale/compass */
+  .mapboxgl-ctrl-bottom-right .mapboxgl-ctrl-geolocate {
     display: none !important;
+  }
+
+  /* Scale bar – keep it compact and semi-transparent */
+  .mapboxgl-ctrl-scale {
+    font-size: 10px !important;
+    line-height: 1.2 !important;
+    padding: 1px 4px !important;
+    background: rgba(255, 255, 255, 0.75) !important;
+    backdrop-filter: blur(4px) !important;
+    border-radius: 3px !important;
+    border-color: rgba(0, 0, 0, 0.3) !important;
+    color: #111 !important;
+    margin-bottom: 6px !important;
+    margin-right: 6px !important;
+    max-width: 90px !important;
+  }
+
+  /* Compass / north arrow – keep it small */
+  .mapboxgl-ctrl-bottom-right .mapboxgl-ctrl-compass {
+    width: 28px !important;
+    height: 28px !important;
+    margin-bottom: 6px !important;
+    margin-right: 6px !important;
+    opacity: 0.85;
+  }
+  .mapboxgl-ctrl-bottom-right .mapboxgl-ctrl-compass:hover {
+    opacity: 1;
   }
 }

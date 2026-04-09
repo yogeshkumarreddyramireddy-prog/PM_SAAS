@@ -192,15 +192,18 @@ export const FileDownloader = ({
 
   const logFileAccess = async (accessType: 'download' | 'preview' | 'view') => {
     try {
+      const { data: { user } } = await supabase.auth.getUser()
       await supabase
         .from('file_access_logs')
         .insert({
           file_id: file.id,
+          user_id: user?.id ?? null,
           access_type: accessType,
           user_agent: navigator.userAgent,
           metadata: {
             timestamp: new Date().toISOString(),
-            file_name: file.filename
+            file_name: file.filename,
+            golf_course_id: file.golf_course_id
           }
         })
     } catch (error) {

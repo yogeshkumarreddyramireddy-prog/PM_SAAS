@@ -869,7 +869,38 @@ export type Database = {
         }
         Relationships: []
       }
+      user_login_logs: {
+        Row: {
+          id: string
+          ip_address: unknown
+          logged_in_at: string
+          metadata: Json | null
+          portal_type: string | null
+          user_agent: string | null
+          user_id: string | null
+        }
+        Insert: {
+          id?: string
+          ip_address?: unknown
+          logged_in_at?: string
+          metadata?: Json | null
+          portal_type?: string | null
+          user_agent?: string | null
+          user_id?: string | null
+        }
+        Update: {
+          id?: string
+          ip_address?: unknown
+          logged_in_at?: string
+          metadata?: Json | null
+          portal_type?: string | null
+          user_agent?: string | null
+          user_id?: string | null
+        }
+        Relationships: []
+      }
       user_profiles: {
+
         Row: {
           access_request_message: string | null
           access_request_pending: boolean | null

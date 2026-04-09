@@ -80,21 +80,13 @@ serve(async (req) => {
       const pathParts = files[0].relativePath.split('/')
       console.log(`Debug: Path parts: ${JSON.stringify(pathParts)}`)
       
-      // Find the root folder name (should be before any numeric zoom levels)
-      for (let i = 0; i < pathParts.length; i++) {
-        const part = pathParts[i]
-        // If this part is NOT a number (zoom level), it's likely the folder name
-        if (part && !(/^\d+$/.test(part))) {
-          actualFolderName = part
-          console.log(`Debug: Found folder name at index ${i}: ${actualFolderName}`)
-          break
-        }
-      }
-      
-      // Fallback: if all parts are numeric or empty, use the first non-empty part
-      if (actualFolderName === 'tiles' && pathParts.length > 0) {
-        actualFolderName = pathParts[0] || 'tiles'
-        console.log(`Debug: Using fallback folder name: ${actualFolderName}`)
+      // Use the strict topmost folder name. If it implies direct tiled file upload (pathParts.length <= 1), use fallback or append timestamp.
+      if (pathParts.length > 1) {
+        actualFolderName = pathParts[0]
+        console.log(`Debug: Using top-level folder name: ${actualFolderName}`)
+      } else {
+        actualFolderName = `tiles_${timestamp}`
+        console.log(`Debug: Using fallback unique folder name: ${actualFolderName}`)
       }
     }
     

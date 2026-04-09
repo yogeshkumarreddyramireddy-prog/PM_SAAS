@@ -39,29 +39,48 @@ serve(async (req) => {
     
     console.log('Listing R2 objects with prefix:', prefix)
 
-    // List objects in R2 bucket
-    const listCommand = new ListObjectsV2Command({
-      Bucket: r2BucketName,
-      Prefix: prefix,
-      Delimiter: delimiter,
-      MaxKeys: 1000
-    })
+    // List objects in R2 bucket with pagination
+    let isTruncated = true;
+    let continuationToken = undefined;
+    const allCommonPrefixes: any[] = [];
+    const allContents: any[] = [];
 
-    const response = await s3Client.send(listCommand)
-    
+    while (isTruncated) {
+      const listCommand = new ListObjectsV2Command({
+        Bucket: r2BucketName,
+        Prefix: prefix,
+        Delimiter: delimiter,
+        MaxKeys: 1000,
+        ContinuationToken: continuationToken
+      })
+
+      const response = await s3Client.send(listCommand)
+      
+      if (response.CommonPrefixes) {
+        allCommonPrefixes.push(...response.CommonPrefixes)
+      }
+      
+      if (response.Contents) {
+        allContents.push(...response.Contents)
+      }
+      
+      isTruncated = response.IsTruncated || false;
+      continuationToken = response.NextContinuationToken;
+    }
+
     // DEBUG: Log what we actually found
     console.log('=== R2 SCAN DEBUG ===')
     console.log('Prefix used:', prefix)
-    console.log('Found CommonPrefixes:', response.CommonPrefixes?.map(p => p.Prefix))
-    console.log('Found Contents (first 5):', response.Contents?.slice(0, 5).map(obj => obj.Key))
-    console.log('Total objects found:', response.Contents?.length || 0)
+    console.log('Found CommonPrefixes:', allCommonPrefixes.map(p => p.Prefix))
+    console.log('Found Contents (first 5):', allContents.slice(0, 5).map(obj => obj.Key))
+    console.log('Total objects found:', allContents.length || 0)
     
     // Process the response to extract folder structure
-    const folders = response.CommonPrefixes?.map(prefix => ({
-      name: prefix.Prefix?.replace(/\/$/, '').split('/').pop() || '',
-      fullPath: prefix.Prefix || '',
+    const folders = allCommonPrefixes.map(prefixObj => ({
+      name: prefixObj.Prefix?.replace(/\/$/, '').split('/').pop() || '',
+      fullPath: prefixObj.Prefix || '',
       type: 'folder'
-    })) || []
+    }))
 
     const files = response.Contents?.map(obj => ({
       name: obj.Key?.split('/').pop() || '',
@@ -113,19 +132,29 @@ serve(async (req) => {
       
       console.log(`Scanning folder: ${folderPath} at depth ${depth}`)
       
-      const scanCommand = new ListObjectsV2Command({
-        Bucket: r2BucketName,
-        Prefix: folderPath,
-        Delimiter: '/',
-        MaxKeys: 100
-      })
+      let scanTruncated = true;
+      let scanToken = undefined;
+      const allSubFolders: string[] = [];
       
-      const scanResponse = await s3Client.send(scanCommand)
-      const subFolders = scanResponse.CommonPrefixes?.map(p => p.Prefix || '') || []
+      while (scanTruncated) {
+        const scanCommand = new ListObjectsV2Command({
+          Bucket: r2BucketName,
+          Prefix: folderPath,
+          Delimiter: '/',
+          MaxKeys: 1000,
+          ContinuationToken: scanToken
+        })
+        const scanResponse = await s3Client.send(scanCommand)
+        if (scanResponse.CommonPrefixes) {
+          allSubFolders.push(...scanResponse.CommonPrefixes.map(p => p.Prefix || ''))
+        }
+        scanTruncated = scanResponse.IsTruncated || false;
+        scanToken = scanResponse.NextContinuationToken;
+      }
       
-      console.log(`Found ${subFolders.length} subfolders in ${folderPath}:`, subFolders)
+      console.log(`Found ${allSubFolders.length} subfolders in ${folderPath}`)
       
-      for (const subFolder of subFolders) {
+      for (const subFolder of allSubFolders) {
         const pathParts = subFolder.split('/').filter(p => p)
         
         // Check if this is a live_maps folder
@@ -133,17 +162,27 @@ serve(async (req) => {
           console.log(`Found live_maps folder: ${subFolder}`)
           
           // Scan for tile folders inside live_maps
-          const liveMapsCommand = new ListObjectsV2Command({
-            Bucket: r2BucketName,
-            Prefix: subFolder,
-            Delimiter: '/',
-            MaxKeys: 100
-          })
+          let liveMapsTruncated = true;
+          let liveMapsToken = undefined;
+          const allTileFolders: string[] = [];
+
+          while (liveMapsTruncated) {
+            const liveMapsCommand = new ListObjectsV2Command({
+              Bucket: r2BucketName,
+              Prefix: subFolder,
+              Delimiter: '/',
+              MaxKeys: 1000,
+              ContinuationToken: liveMapsToken
+            })
+            const liveMapsResponse = await s3Client.send(liveMapsCommand)
+            if (liveMapsResponse.CommonPrefixes) {
+              allTileFolders.push(...liveMapsResponse.CommonPrefixes.map(p => p.Prefix || ''))
+            }
+            liveMapsTruncated = liveMapsResponse.IsTruncated || false;
+            liveMapsToken = liveMapsResponse.NextContinuationToken;
+          }
           
-          const liveMapsResponse = await s3Client.send(liveMapsCommand)
-          const tileFolders = liveMapsResponse.CommonPrefixes?.map(p => p.Prefix || '') || []
-          
-          for (const tileFolder of tileFolders) {
+          for (const tileFolder of allTileFolders) {
             await checkTileFolder(tileFolder, pathParts)
           }
         } else {
@@ -177,15 +216,26 @@ serve(async (req) => {
         }
         
         // Check if this looks like a tile map folder by examining its structure
-        const subListCommand = new ListObjectsV2Command({
-          Bucket: r2BucketName,
-          Prefix: tileFolder,
-          Delimiter: '/',
-          MaxKeys: 50
-        })
-        
-        const subResponse = await s3Client.send(subListCommand)
-        const subFolders = subResponse.CommonPrefixes?.map(p => p.Prefix?.replace(/\/$/, '').split('/').pop()) || []
+        let subListTruncated = true;
+        let subListToken = undefined;
+        const subFolders: (string | undefined)[] = [];
+
+        while (subListTruncated) {
+          const subListCommand = new ListObjectsV2Command({
+            Bucket: r2BucketName,
+            Prefix: tileFolder,
+            Delimiter: '/',
+            MaxKeys: 1000,
+            ContinuationToken: subListToken
+          })
+          
+          const subResponse = await s3Client.send(subListCommand)
+          if (subResponse.CommonPrefixes) {
+            subFolders.push(...subResponse.CommonPrefixes.map(p => p.Prefix?.replace(/\/$/, '').split('/').pop()))
+          }
+          subListTruncated = subResponse.IsTruncated || false;
+          subListToken = subResponse.NextContinuationToken;
+        }
         
         // Check if subfolder names are numeric (zoom levels)
         const numericFolders = subFolders.filter(name => /^\d+$/.test(name || ''))
@@ -435,8 +485,8 @@ serve(async (req) => {
       files,
       tileMaps,
       prefix,
-      isTruncated: response.IsTruncated || false,
-      nextContinuationToken: response.NextContinuationToken
+      isTruncated: false, // Overall request is fully paginated now
+      nextContinuationToken: undefined
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     })

@@ -322,7 +322,7 @@ export const FilePreviewModal = ({
               allow="autoplay"
             />
           ) : isExcel ? (
-            <div className="w-full h-full bg-white flex flex-col">
+            <div className="w-full h-full bg-white text-black flex flex-col">
               {isLoadingExcel ? (
                 <div className="flex items-center justify-center flex-1">
                   <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-teal"></div>

@@ -263,4 +263,39 @@ All colors MUST be HSL.
     opacity: 1 !important;
     visibility: visible !important;
   }
+
+  /* Excel preview table styles — force light-mode colors so the sheet
+     is always legible, even when the app is in dark mode. */
+  .excel-table-container {
+    color: #111 !important;
+  }
+
+  .excel-table-container table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 13px;
+    line-height: 1.4;
+  }
+
+  .excel-table-container th,
+  .excel-table-container td {
+    border: 1px solid #d1d5db;
+    padding: 6px 10px;
+    text-align: left;
+    white-space: nowrap;
+    color: #111 !important;
+  }
+
+  .excel-table-container th {
+    background: #f3f4f6;
+    font-weight: 600;
+  }
+
+  .excel-table-container tr:nth-child(even) {
+    background: #f9fafb;
+  }
+
+  .excel-table-container tr:hover {
+    background: #e5e7eb;
+  }
 }

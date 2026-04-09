@@ -308,7 +308,8 @@ export const FileUploadManagerFixed = ({
       
       for (let i = 0; i < tileFiles.length; i++) {
         const file = tileFiles[i]
-        const relativePath = file.webkitRelativePath.split('/').slice(1).join('/')
+        // Keep full path including folder name so r2-direct-upload can properly extract it
+        const relativePath = file.webkitRelativePath
         const content = await convertFileToBase64(file)
         
         fileData.push({

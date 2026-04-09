@@ -336,17 +336,20 @@ export const FilePreviewModal = ({
                     />
                   </div>
                   {excelSheets.length > 1 && (
-                    <div className="flex overflow-x-auto border-t bg-muted/10 p-2 gap-2 shrink-0">
+                    <div className="flex overflow-x-auto border-t p-2 gap-2 shrink-0" style={{ borderColor: '#d1d5db', background: '#f3f4f6' }}>
                       {excelSheets.map((sheet, idx) => (
-                        <Button
+                        <button
                           key={sheet.name}
-                          variant={idx === activeSheetIndex ? "default" : "outline"}
-                          size="sm"
                           onClick={() => setActiveSheetIndex(idx)}
-                          className="whitespace-nowrap"
+                          className="whitespace-nowrap px-3 py-1.5 text-sm font-medium rounded-md transition-colors"
+                          style={{
+                            background: idx === activeSheetIndex ? 'hsl(178, 80%, 40%)' : '#ffffff',
+                            color: idx === activeSheetIndex ? '#ffffff' : '#111827',
+                            border: `1px solid ${idx === activeSheetIndex ? 'hsl(178, 80%, 40%)' : '#d1d5db'}`,
+                          }}
                         >
                           {sheet.name}
-                        </Button>
+                        </button>
                       ))}
                     </div>
                   )}

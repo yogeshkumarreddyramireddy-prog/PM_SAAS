@@ -57,15 +57,16 @@ export const LoginForm = ({ type, onLogin, onForgotPassword }: LoginFormProps) =
           return
         }
         
-        // Role matches - log the login event (fire-and-forget, never blocks login)
-        void supabase.from('user_login_logs').insert({
+        // Role matches - log the login event
+        const { error: logError } = await supabase.from('user_login_logs').insert({
           user_id: user.id,
           portal_type: type,
           user_agent: navigator.userAgent,
           metadata: { email: user.email }
-        }).then(({ error }) => {
-          if (error) console.warn('Login log failed (non-blocking):', error)
         })
+        if (logError) {
+          console.warn('Login log failed (but proceeding with login):', logError)
+        }
 
         onLogin(credentials)
         setIsLoading(false)

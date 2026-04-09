@@ -9,6 +9,15 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { read, utils } from "xlsx"
+import '@google/model-viewer'
+
+declare global {
+  namespace JSX {
+    interface IntrinsicElements {
+      'model-viewer': any;
+    }
+  }
+}
 
 interface ContentFile {
   id: string
@@ -359,6 +368,18 @@ export const FilePreviewModal = ({
                   Failed to render Excel file
                 </div>
               )}
+            </div>
+          ) : (file.mime_type?.includes('model/gltf') || file.filename?.toLowerCase().endsWith('.glb') || file.filename?.toLowerCase().endsWith('.gltf')) ? (
+            <div className="w-full h-full min-h-[400px] flex-1 bg-black/5">
+              <model-viewer
+                src={previewUrl}
+                alt={file.filename}
+                camera-controls
+                auto-rotate
+                shadow-intensity="1"
+                style={{ width: '100%', height: '100%' }}
+                environment-image="neutral"
+              ></model-viewer>
             </div>
           ) : (
             <div className="flex items-center justify-center h-64">

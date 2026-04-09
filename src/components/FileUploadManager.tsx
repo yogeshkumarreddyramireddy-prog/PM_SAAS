@@ -22,7 +22,7 @@ export const FileUploadManagerFixed = ({
   category,
   onUploadComplete,
   maxFileSize = 500, // 500MB default
-  acceptedFormats = ['.jpg', '.jpeg', '.png', '.pdf', '.obj', '.fbx', '.gltf', '.zip', '.shp', '.shx', '.dbf', '.prj', '.geojson', '.json'],
+  acceptedFormats = ['.jpg', '.jpeg', '.png', '.pdf', '.obj', '.fbx', '.gltf', '.glb', '.zip', '.shp', '.shx', '.dbf', '.prj', '.geojson', '.json'],
   enableGpsCapture = false
 }: FileUploadManagerProps) => {
   const { setUploadingFiles, getFilesForCategory, removeFile } = useUploadContext()

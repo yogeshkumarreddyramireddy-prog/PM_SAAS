@@ -8,6 +8,7 @@ import { FileUploadManagerFixed } from "@/components/FileUploadManager"
 import { FileDownloader } from "@/components/FileDownloader"
 import MapboxGolfCourseMap from "@/components/MapboxGolfCourseMap"
 import { Building2, Upload, Eye, Trash2, Download, Calendar, Map, FileText, Image, Box, MapPin, RefreshCw, Layers } from "lucide-react"
+import { ThreeDHeroViewer } from "@/components/ThreeDHeroViewer"
 import { useToast } from "@/hooks/use-toast"
 import { useGolfCourses, useContentFiles, useDeleteContentFile } from "@/hooks/useSupabaseQuery"
 import { supabase } from "@/integrations/supabase/client"
@@ -29,6 +30,7 @@ export const AdminContentManagement = () => {
   const [uploadMode, setUploadMode] = useState(false)
   const [viewMode, setViewMode] = useState<'files' | 'map'>('files')
   const [isScanning, setIsScanning] = useState(false)
+  const [selectedModelFile, setSelectedModelFile] = useState<any>(null)
   const { toast } = useToast()
 
   const { data: golfCourses = [], isLoading: coursesLoading } = useGolfCourses()
@@ -369,6 +371,13 @@ export const AdminContentManagement = () => {
                           </div>
                         ) : currentContent.length > 0 ? (
                           <div className="grid gap-4">
+                            {type.id === '3d_models' && currentContent.length > 0 && (
+                              <div className="mb-4">
+                                <ThreeDHeroViewer 
+                                  file={selectedModelFile || currentContent[0]} 
+                                />
+                              </div>
+                            )}
                             {currentContent.map((file) => (
                               <FileDownloader
                                 key={file.id}
@@ -377,6 +386,7 @@ export const AdminContentManagement = () => {
                                 variant="button"
                                 showDelete={true}
                                 onDelete={() => refetch()}
+                                onSelect={type.id === '3d_models' ? setSelectedModelFile : undefined}
                               />
                             ))}
                           </div>

@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Download, Eye, FileText, Image, MapPin, Trash2, Sheet } from "lucide-react"
+import { Download, Eye, FileText, Image, MapPin, Trash2, Sheet, Box } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { supabase } from "@/integrations/supabase/client"
 import { FilePreviewModal } from "@/components/FilePreviewModal"
@@ -29,6 +29,7 @@ interface FileDownloaderProps {
   variant?: "button" | "icon"
   showDelete?: boolean
   onDelete?: () => void
+  onSelect?: (file: any) => void
 }
 
 export const FileDownloader = ({ 
@@ -36,7 +37,8 @@ export const FileDownloader = ({
   showPreview = true, 
   variant = "button", 
   showDelete = false,
-  onDelete 
+  onDelete,
+  onSelect
 }: FileDownloaderProps) => {
   const [isDownloading, setIsDownloading] = useState(false)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
@@ -49,6 +51,8 @@ export const FileDownloader = ({
     if (file.mime_type?.includes('pdf')) return <FileText className="h-4 w-4" />
     const isExcel = file.mime_type?.includes('spreadsheet') || file.mime_type?.includes('excel') || file.filename?.endsWith('.xls') || file.filename?.endsWith('.xlsx')
     if (isExcel) return <Sheet className="h-4 w-4 text-green-600" />
+    const is3D = file.filename?.toLowerCase().endsWith('.glb') || file.filename?.toLowerCase().endsWith('.gltf') || file.mime_type?.includes('model/gltf')
+    if (is3D) return <Box className="h-4 w-4 text-orange-600" />
     return <FileText className="h-4 w-4" />
   }
 
@@ -220,7 +224,8 @@ export const FileDownloader = ({
   }
 
   const isExcel = file.mime_type?.includes('spreadsheet') || file.mime_type?.includes('excel') || file.filename?.endsWith('.xls') || file.filename?.endsWith('.xlsx')
-  const canPreview = file.mime_type?.startsWith('image/') || file.mime_type?.includes('pdf') || isExcel
+  const is3D = file.filename?.toLowerCase().endsWith('.glb') || file.filename?.toLowerCase().endsWith('.gltf') || file.mime_type?.includes('model/gltf')
+  const canPreview = file.mime_type?.startsWith('image/') || file.mime_type?.includes('pdf') || isExcel || is3D
 
   if (variant === "icon") {
     return (
@@ -233,6 +238,18 @@ export const FileDownloader = ({
             disabled={file.status !== 'published'}
           >
             <Eye className="h-4 w-4" />
+          </Button>
+        )}
+        {showPreview && is3D && onSelect && (
+          <Button 
+            variant="outline" 
+            size="sm"
+            onClick={() => onSelect(file)}
+            disabled={file.status !== 'published'}
+            className="text-orange-600 hover:text-orange-700"
+            title="Show as Hero Model"
+          >
+            <Box className="h-4 w-4" />
           </Button>
         )}
         {/* Only show download button for non-tile maps (exclude live maps) */}
@@ -305,6 +322,18 @@ export const FileDownloader = ({
               disabled={file.status !== 'published'}
             >
               <Eye className="h-4 w-4" />
+            </Button>
+          )}
+          {showPreview && is3D && onSelect && (
+            <Button 
+              variant="outline" 
+              size="sm"
+              onClick={() => onSelect(file)}
+              disabled={file.status !== 'published'}
+              className="text-orange-600 hover:text-orange-700 gap-2"
+            >
+              <Box className="h-4 w-4" />
+              <span className="hidden lg:inline">Set Hero</span>
             </Button>
           )}
           {/* Only show download button for non-tile maps (exclude live maps) */}

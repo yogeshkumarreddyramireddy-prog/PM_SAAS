@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { FileDownloader } from "@/components/FileDownloader";
 import MapboxGolfCourseMap from "@/components/MapboxGolfCourseMap";
+import { ThreeDHeroViewer } from "@/components/ThreeDHeroViewer";
 import { Map, FileText, Image, Box, Search, ArrowLeft } from "lucide-react";
 import { useContentFiles } from "@/hooks/useSupabaseQuery";
 import { useT } from "@/translations";
@@ -23,6 +24,7 @@ export const ClientContentSection = ({
 }: ClientContentSectionProps) => {
   const [searchTerm, setSearchTerm] = useState("");
   const [showMapView, setShowMapView] = useState(contentType === 'live_maps');
+  const [selectedModelFile, setSelectedModelFile] = useState<any>(null);
   const {
     data: contentFiles = [],
     isLoading
@@ -124,13 +126,14 @@ export const ClientContentSection = ({
         )}
       </div>
 
-      {/* Map View */}
-      {showMapView && contentType === 'live_maps' && (
-        <div className="w-full mb-8 z-10 relative rounded-lg overflow-hidden border border-border mx-[15px] max-w-[calc(100%-30px)]">
-          <MapboxGolfCourseMap
-            golfCourseId={golfCourseId.toString()}
-            mapboxAccessToken={import.meta.env.VITE_MAPBOX_ACCESS_TOKEN || ''}
-            className="w-full h-full"
+        </div>
+      )}
+
+      {/* 3D Model Hero Viewer */}
+      {contentType === '3d_models' && filteredFiles.length > 0 && (
+        <div className="px-[15px]">
+          <ThreeDHeroViewer 
+            file={selectedModelFile || filteredFiles[0]} 
           />
         </div>
       )}
@@ -169,7 +172,14 @@ export const ClientContentSection = ({
           {filteredFiles.length > 0 ? (
             <div className="space-y-4">
               {filteredFiles.map(file => (
-                <FileDownloader key={file.id} file={file} showPreview={true} variant="button" showDelete={false} />
+                <FileDownloader 
+                  key={file.id} 
+                  file={file} 
+                  showPreview={true} 
+                  variant="button" 
+                  showDelete={false} 
+                  onSelect={contentType === '3d_models' ? setSelectedModelFile : undefined}
+                />
               ))}
             </div>
           ) : (

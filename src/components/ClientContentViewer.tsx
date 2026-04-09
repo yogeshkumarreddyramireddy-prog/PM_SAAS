@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { FileDownloader } from "@/components/FileDownloader";
 import MapboxGolfCourseMap from "@/components/MapboxGolfCourseMap";
+import { ThreeDHeroViewer } from "@/components/ThreeDHeroViewer";
 import { Map, FileText, Image, Box, Search, Grid, List, ArrowLeft } from "lucide-react";
 import { useContentFiles } from "@/hooks/useSupabaseQuery";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -28,6 +29,7 @@ export const ClientContentViewer = ({
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [showMapView, setShowMapView] = useState(false);
+  const [selectedModelFile, setSelectedModelFile] = useState<any>(null);
   const isMobile = useIsMobile();
   const {
     data: contentFiles = [],
@@ -175,6 +177,13 @@ export const ClientContentViewer = ({
               <TabsContent key={type.id} value={type.id} className="mt-4 sm:mt-6">
                 {filteredFiles.length > 0 ? (
                   <div className={`space-y-4 ${viewMode === 'grid' ? 'sm:grid sm:grid-cols-2 lg:grid-cols-3 sm:space-y-0 sm:gap-4' : ''}`}>
+                    {type.id === '3d_models' && filteredFiles.length > 0 && (
+                      <div className="mb-6">
+                        <ThreeDHeroViewer 
+                          file={selectedModelFile || filteredFiles[0]} 
+                        />
+                      </div>
+                    )}
                     {filteredFiles.map(file => (
                       <FileDownloader 
                         key={file.id} 
@@ -182,6 +191,7 @@ export const ClientContentViewer = ({
                         showPreview={true} 
                         variant="button" 
                         showDelete={false} 
+                        onSelect={type.id === '3d_models' ? setSelectedModelFile : undefined}
                       />
                     ))}
                   </div>

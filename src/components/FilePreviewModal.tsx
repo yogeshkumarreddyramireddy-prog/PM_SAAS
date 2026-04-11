@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
+import { Slider } from "@/components/ui/slider"
 import { Badge } from "@/components/ui/badge"
 import { 
   ZoomIn, ZoomOut, Maximize, Minimize, RotateCw, 
@@ -437,16 +438,20 @@ export const FilePreviewModal = ({
                   </div>
                 </div>
 
-                <div className="pointer-events-auto">
-                  <Button 
-                    variant="secondary" 
-                    size="sm" 
-                    className="bg-black/60 hover:bg-black/80 text-white backdrop-blur-md border border-white/20 text-xs"
-                    onClick={() => rotateModelAxis('x', 90)}
-                  >
-                    <RefreshCw className="h-3 w-3 mr-2" />
-                    Tilt Model (If Sideways)
-                  </Button>
+                <div className="pointer-events-auto flex flex-col items-end gap-2 w-[240px]">
+                  <div className="w-full bg-black/60 backdrop-blur-md border border-white/10 rounded-xl px-4 py-3 shadow-xl">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-white/80 text-xs font-semibold uppercase tracking-wider">Model Tilt</span>
+                      <span className="text-orange-400 font-mono text-xs">{modelOrientation.x}°</span>
+                    </div>
+                    <Slider 
+                      value={[modelOrientation.x]} 
+                      onValueChange={(val) => setModelOrientation(prev => ({...prev, x: val[0]}))} 
+                      max={360} 
+                      step={1} 
+                      className="[&_[role=slider]]:bg-orange-500 [&_[role=slider]]:border-orange-200"
+                    />
+                  </div>
                 </div>
               </div>
             </div>

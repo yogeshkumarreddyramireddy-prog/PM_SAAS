@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react"
 import { Button } from "@/components/ui/button"
+import { Slider } from "@/components/ui/slider"
 import { Box, Loader2, AlertCircle, RefreshCw, MousePointer2, ZoomIn, Maximize, Minimize } from "lucide-react"
 import { supabase } from "@/integrations/supabase/client"
 import '@google/model-viewer'
@@ -187,25 +188,32 @@ export const ThreeDHeroViewer = ({ file }: ThreeDHeroViewerProps) => {
               </div>
             </div>
             
-            <div className="pointer-events-auto flex items-center justify-end gap-2">
-              <Button 
-                variant="secondary" 
-                size="sm" 
-                className="bg-black/60 hover:bg-black/80 text-white backdrop-blur-md border border-white/20 text-xs shadow-xl"
-                onClick={toggleFullscreen}
-              >
-                {isFullscreen ? <Minimize className="h-4 w-4 mr-2" /> : <Maximize className="h-4 w-4 mr-2" />}
-                {isFullscreen ? "Exit Fullscreen" : "Full Screen"}
-              </Button>
-              <Button 
-                variant="secondary" 
-                size="sm" 
-                className="bg-black/60 hover:bg-black/80 text-white backdrop-blur-md border border-white/20 text-xs shadow-xl"
-                onClick={() => rotateModelAxis('x', 90)}
-              >
-                <RefreshCw className="h-3 w-3 mr-2" />
-                Tilt Model (If Sideways)
-              </Button>
+            <div className="pointer-events-auto flex flex-col items-end gap-2 w-[240px]">
+              <div className="w-full bg-black/60 backdrop-blur-md border border-white/10 rounded-xl px-4 py-3 shadow-xl">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-white/80 text-xs font-semibold uppercase tracking-wider">Model Tilt</span>
+                  <span className="text-orange-400 font-mono text-xs">{modelOrientation.x}°</span>
+                </div>
+                <Slider 
+                  value={[modelOrientation.x]} 
+                  onValueChange={(val) => setModelOrientation(prev => ({...prev, x: val[0]}))} 
+                  max={360} 
+                  step={1} 
+                  className="[&_[role=slider]]:bg-orange-500 [&_[role=slider]]:border-orange-200"
+                />
+              </div>
+
+              <div className="w-full flex justify-end">
+                <Button 
+                  variant="secondary" 
+                  size="sm" 
+                  className="bg-black/60 hover:bg-black/80 text-white backdrop-blur-md border border-white/20 text-xs shadow-xl min-w-[140px]"
+                  onClick={toggleFullscreen}
+                >
+                  {isFullscreen ? <Minimize className="h-4 w-4 mr-2" /> : <Maximize className="h-4 w-4 mr-2" />}
+                  {isFullscreen ? "Exit Fullscreen" : "Full Screen"}
+                </Button>
+              </div>
             </div>
           </div>
         </>

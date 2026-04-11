@@ -58,6 +58,7 @@ export const FilePreviewModal = ({
   const [lastTouchDistance, setLastTouchDistance] = useState(0)
   const [initialPinchZoom, setInitialPinchZoom] = useState(1)
   const imageRef = useRef<HTMLImageElement>(null)
+  const modelViewerRef = useRef<any>(null)
   
   const [excelSheets, setExcelSheets] = useState<{name: string, html: string}[]>([])
   const [activeSheetIndex, setActiveSheetIndex] = useState(0)
@@ -101,6 +102,22 @@ export const FilePreviewModal = ({
   }
   const handleRotateRight = () => setRotation(prev => (prev + 90) % 360)
   const handleRotateLeft = () => setRotation(prev => (prev - 90 + 360) % 360)
+
+  const rotateModel = (deltaThetaDeg: number, deltaPhiDeg: number) => {
+    const mv = modelViewerRef.current;
+    if (!mv) return;
+    const orbit = mv.getCameraOrbit();
+    const dTheta = deltaThetaDeg * Math.PI / 180;
+    const dPhi = deltaPhiDeg * Math.PI / 180;
+    mv.cameraOrbit = `${orbit.theta + dTheta}rad ${orbit.phi + dPhi}rad ${orbit.radius}m`;
+  };
+
+  const zoomModel = (deltaFovDeg: number) => {
+    const mv = modelViewerRef.current;
+    if (!mv) return;
+    const fov = mv.getFieldOfView(); // in degrees
+    mv.fieldOfView = `${Math.max(1, Math.min(120, fov + deltaFovDeg))}deg`;
+  };
 
   // Helper function to get touch distance for pinch-to-zoom
   const getTouchDistance = (touches: React.TouchList) => {
@@ -217,8 +234,8 @@ export const FilePreviewModal = ({
     <Dialog open={isOpen} onOpenChange={onClose}>
       <DialogContent 
         className={cn(
-          "max-w-7xl max-h-[95vh] p-0 gap-0",
-          isFullscreen && "max-w-full max-h-full h-screen w-screen"
+          "max-w-7xl max-h-[95vh] p-0 gap-0 flex flex-col",
+          isFullscreen && "max-w-full max-h-full h-screen w-screen border-0 rounded-none"
         )}
         aria-describedby={undefined}
       >
@@ -370,16 +387,57 @@ export const FilePreviewModal = ({
               )}
             </div>
           ) : (file.mime_type?.includes('model/gltf') || file.filename?.toLowerCase().endsWith('.glb') || file.filename?.toLowerCase().endsWith('.gltf')) ? (
-            <div className="w-full h-full min-h-[400px] flex-1 bg-black/5">
+            <div className="w-full h-full min-h-[400px] flex-1 bg-[#0f172a] relative">
               <model-viewer
+                ref={modelViewerRef}
                 src={previewUrl}
                 alt={file.filename}
                 camera-controls
+                enable-pan
                 auto-rotate
-                shadow-intensity="1"
-                style={{ width: '100%', height: '100%' }}
+                auto-rotate-delay="3000"
+                min-camera-orbit="auto auto 1%"
+                max-camera-orbit="auto 180deg auto"
+                min-field-of-view="1deg"
+                max-field-of-view="120deg"
+                orbit-sensitivity="1.5"
+                interpolation-decay="150"
+                shadow-intensity="1.2"
+                shadow-softness="0.8"
                 environment-image="neutral"
-              ></model-viewer>
+                exposure="1.1"
+                style={{ width: '100%', height: '100%', backgroundColor: '#0f172a' }}
+              >
+                <div slot="progress-bar" />
+                <div slot="ar-button" />
+              </model-viewer>
+
+              {/* Floating controls on the right side */}
+              <div className="absolute right-4 top-1/2 -translate-y-1/2 flex flex-col gap-2 bg-black/60 backdrop-blur-md p-2 rounded-xl border border-white/10 z-10 shadow-2xl">
+                <Button variant="ghost" size="icon" className="h-8 w-8 text-white hover:bg-white/20 mx-auto" onClick={() => rotateModel(0, -15)} title="Rotate Up">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m18 15-6-6-6 6"/></svg>
+                </Button>
+                <div className="flex gap-1 justify-center">
+                  <Button variant="ghost" size="icon" className="h-8 w-8 text-white hover:bg-white/20" onClick={() => rotateModel(-15, 0)} title="Rotate Left">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+                  </Button>
+                  <Button variant="ghost" size="icon" className="h-8 w-8 text-white hover:bg-white/20" onClick={() => rotateModel(15, 0)} title="Rotate Right">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+                  </Button>
+                </div>
+                <Button variant="ghost" size="icon" className="h-8 w-8 text-white hover:bg-white/20 mx-auto" onClick={() => rotateModel(0, 15)} title="Rotate Down">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+                </Button>
+                
+                <div className="w-full h-px bg-white/20 my-1"/>
+                
+                <Button variant="ghost" size="icon" className="h-8 w-8 text-white hover:bg-white/20 mx-auto" onClick={() => zoomModel(-10)} title="Zoom In">
+                  <ZoomIn className="h-4 w-4" />
+                </Button>
+                <Button variant="ghost" size="icon" className="h-8 w-8 text-white hover:bg-white/20 mx-auto" onClick={() => zoomModel(10)} title="Zoom Out">
+                  <ZoomOut className="h-4 w-4" />
+                </Button>
+              </div>
             </div>
           ) : (
             <div className="flex items-center justify-center h-64">

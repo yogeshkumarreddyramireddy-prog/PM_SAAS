@@ -186,6 +186,7 @@ export const ClientContentSection = ({
                   variant="button" 
                   showDelete={false} 
                   onSelect={contentType === '3d_models' ? setSelectedModelFile : undefined}
+                  isActiveHero={contentType === '3d_models' && (selectedModelFile?.id === file.id || (!selectedModelFile && filteredFiles[0]?.id === file.id))}
                 />
               ))}
             </div>

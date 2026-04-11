@@ -190,8 +190,9 @@ export const ClientContentViewer = ({
                         file={file} 
                         showPreview={true} 
                         variant="button" 
-                        showDelete={false} 
+                        showDelete={false}
                         onSelect={type.id === '3d_models' ? setSelectedModelFile : undefined}
+                        isActiveHero={type.id === '3d_models' && (selectedModelFile?.id === file.id || (!selectedModelFile && filteredFiles[0]?.id === file.id))}
                       />
                     ))}
                   </div>

@@ -1,6 +1,6 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { Button } from "@/components/ui/button"
-import { Box, Loader2, AlertCircle, RefreshCw, MousePointer2, ZoomIn, RotateCw, RotateCcw } from "lucide-react"
+import { Box, Loader2, AlertCircle, RefreshCw, MousePointer2, ZoomIn, Maximize, Minimize } from "lucide-react"
 import { supabase } from "@/integrations/supabase/client"
 import '@google/model-viewer'
 
@@ -26,6 +26,27 @@ export const ThreeDHeroViewer = ({ file }: ThreeDHeroViewerProps) => {
   const [isFetching, setIsFetching] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [modelOrientation, setModelOrientation] = useState({ x: 0, y: 0, z: 0 })
+  const [isFullscreen, setIsFullscreen] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  const toggleFullscreen = async () => {
+    if (!document.fullscreenElement) {
+      await containerRef.current?.requestFullscreen()
+      setIsFullscreen(true)
+    } else {
+      await document.exitFullscreen()
+      setIsFullscreen(false)
+    }
+  }
+
+  // Sync state if user escapes fullscreen
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement)
+    }
+    document.addEventListener('fullscreenchange', handleFullscreenChange)
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange)
+  }, [])
 
   const rotateModelAxis = (axis: 'x' | 'y' | 'z', deltaDeg: number) => {
     setModelOrientation(prev => ({
@@ -72,7 +93,10 @@ export const ThreeDHeroViewer = ({ file }: ThreeDHeroViewerProps) => {
   }, [file.id, file.r2_object_key, file.r2_bucket_name, file.filename])
 
   return (
-    <div className="w-full rounded-2xl overflow-hidden border border-white/10 shadow-2xl bg-slate-950 relative group" style={{ height: 500 }}>
+    <div 
+      ref={containerRef}
+      className={`relative w-full overflow-hidden bg-[#0f172a] group ${isFullscreen ? 'h-screen' : 'h-[500px] rounded-2xl border border-white/10 shadow-2xl'}`}
+    >
 
       {/* ── Fetching URL ── */}
       {isFetching && (
@@ -163,11 +187,20 @@ export const ThreeDHeroViewer = ({ file }: ThreeDHeroViewerProps) => {
               </div>
             </div>
             
-            <div className="pointer-events-auto">
+            <div className="pointer-events-auto flex items-center justify-end gap-2">
               <Button 
                 variant="secondary" 
                 size="sm" 
-                className="bg-black/60 hover:bg-black/80 text-white backdrop-blur-md border border-white/20 text-xs"
+                className="bg-black/60 hover:bg-black/80 text-white backdrop-blur-md border border-white/20 text-xs shadow-xl"
+                onClick={toggleFullscreen}
+              >
+                {isFullscreen ? <Minimize className="h-4 w-4 mr-2" /> : <Maximize className="h-4 w-4 mr-2" />}
+                {isFullscreen ? "Exit Fullscreen" : "Full Screen"}
+              </Button>
+              <Button 
+                variant="secondary" 
+                size="sm" 
+                className="bg-black/60 hover:bg-black/80 text-white backdrop-blur-md border border-white/20 text-xs shadow-xl"
                 onClick={() => rotateModelAxis('x', 90)}
               >
                 <RefreshCw className="h-3 w-3 mr-2" />

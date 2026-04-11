@@ -29,16 +29,18 @@ interface FileDownloaderProps {
   variant?: "button" | "icon"
   showDelete?: boolean
   onDelete?: () => void
-  onSelect?: (file: any) => void
+  onSelect?: (file: ContentFile) => void
+  isActiveHero?: boolean
 }
 
 export const FileDownloader = ({ 
   file, 
-  showPreview = true, 
-  variant = "button", 
+  showPreview = false, 
+  variant = "button",
   showDelete = false,
   onDelete,
-  onSelect
+  onSelect,
+  isActiveHero = false
 }: FileDownloaderProps) => {
   const [isDownloading, setIsDownloading] = useState(false)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
@@ -230,7 +232,7 @@ export const FileDownloader = ({
   if (variant === "icon") {
     return (
       <div className="flex gap-1">
-        {showPreview && canPreview && (
+        {showPreview && canPreview && !is3D && (
           <Button 
             variant="outline" 
             size="sm"
@@ -242,12 +244,12 @@ export const FileDownloader = ({
         )}
         {showPreview && is3D && onSelect && (
           <Button 
-            variant="outline" 
+            variant={isActiveHero ? "default" : "outline"}
             size="sm"
             onClick={() => onSelect(file)}
             disabled={file.status !== 'published'}
-            className="text-orange-600 hover:text-orange-700"
-            title="Show as Hero Model"
+            className={isActiveHero ? "bg-orange-500 hover:bg-orange-600 text-white" : "text-orange-600 hover:text-orange-700"}
+            title="View 3D Model"
           >
             <Box className="h-4 w-4" />
           </Button>
@@ -280,7 +282,7 @@ export const FileDownloader = ({
 
   return (
     <>
-      <div className="flex items-center gap-2 p-4 bg-background/50 rounded-lg border">
+      <div className={`flex items-center gap-2 p-4 rounded-lg border transition-colors ${isActiveHero ? 'bg-orange-50/50 border-orange-200' : 'bg-background/50'}`}>
         <div className="p-2 rounded-lg bg-background">
           {getFileIcon()}
         </div>
@@ -314,7 +316,7 @@ export const FileDownloader = ({
         </div>
         
         <div className="flex gap-1">
-          {showPreview && canPreview && (
+          {showPreview && canPreview && !is3D && (
             <Button 
               variant="outline" 
               size="sm"
@@ -326,14 +328,14 @@ export const FileDownloader = ({
           )}
           {showPreview && is3D && onSelect && (
             <Button 
-              variant="outline" 
+              variant={isActiveHero ? "default" : "outline"}
               size="sm"
               onClick={() => onSelect(file)}
               disabled={file.status !== 'published'}
-              className="text-orange-600 hover:text-orange-700 gap-2"
+              className={isActiveHero ? "bg-orange-500 hover:bg-orange-600 text-white gap-2" : "text-orange-600 hover:text-orange-700 gap-2"}
             >
               <Box className="h-4 w-4" />
-              <span className="hidden lg:inline">Set Hero</span>
+              <span className="hidden lg:inline">{isActiveHero ? "Currently Viewing" : "View Model"}</span>
             </Button>
           )}
           {/* Only show download button for non-tile maps (exclude live maps) */}

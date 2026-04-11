@@ -387,6 +387,7 @@ export const AdminContentManagement = () => {
                                 showDelete={true}
                                 onDelete={() => refetch()}
                                 onSelect={type.id === '3d_models' ? setSelectedModelFile : undefined}
+                                isActiveHero={type.id === '3d_models' && selectedModelFile?.id === file.id}
                               />
                             ))}
                           </div>

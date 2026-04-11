@@ -98,12 +98,31 @@ export const ThreeDHeroViewer = ({ file }: ThreeDHeroViewerProps) => {
         <model-viewer
           src={previewUrl}
           alt={file.filename}
+
+          {/* ── Core controls ── */}
           camera-controls
+          enable-pan
           auto-rotate
-          shadow-intensity="1"
+          auto-rotate-delay="3000"
+
+          {/* ── Orbit: allow full 360° horizontal + full vertical (0→180°) ── */}
+          min-camera-orbit="auto auto 1%"
+          max-camera-orbit="auto 180deg auto"
+
+          {/* ── Zoom: allow extreme close-up (1°) and wide pull-back (120°) ── */}
+          min-field-of-view="1deg"
+          max-field-of-view="120deg"
+
+          {/* ── Feel: faster response, smooth deceleration ── */}
+          orbit-sensitivity="1.5"
+          interpolation-decay="150"
+
+          {/* ── Look ── */}
+          shadow-intensity="1.2"
+          shadow-softness="0.8"
           environment-image="neutral"
-          exposure="1"
-          touch-action="pan-y"
+          exposure="1.1"
+
           style={{ width: '100%', height: '100%', backgroundColor: '#0f172a' }}
         >
           {/* Suppress model-viewer default UI slots */}
@@ -111,6 +130,7 @@ export const ThreeDHeroViewer = ({ file }: ThreeDHeroViewerProps) => {
           <div slot="ar-button" />
         </model-viewer>
       )}
+
 
       {/* ── Overlay hints (hover) ── */}
       {previewUrl && !isFetching && !error && (
@@ -130,14 +150,18 @@ export const ThreeDHeroViewer = ({ file }: ThreeDHeroViewerProps) => {
           </div>
 
           <div className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none">
-            <div className="bg-black/50 backdrop-blur-md border border-white/10 rounded-xl px-3 py-2 flex flex-col gap-1">
+            <div className="bg-black/50 backdrop-blur-md border border-white/10 rounded-xl px-3 py-2 flex flex-col gap-1.5">
               <div className="flex items-center gap-2 text-white/60 text-xs">
                 <MousePointer2 className="h-3 w-3 shrink-0" />
-                <span>Drag to rotate</span>
+                <span>Left drag — rotate</span>
               </div>
               <div className="flex items-center gap-2 text-white/60 text-xs">
                 <ZoomIn className="h-3 w-3 shrink-0" />
-                <span>Scroll to zoom</span>
+                <span>Scroll — zoom in/out</span>
+              </div>
+              <div className="flex items-center gap-2 text-white/60 text-xs">
+                <MousePointer2 className="h-3 w-3 shrink-0 rotate-90" />
+                <span>Right drag — pan</span>
               </div>
             </div>
           </div>

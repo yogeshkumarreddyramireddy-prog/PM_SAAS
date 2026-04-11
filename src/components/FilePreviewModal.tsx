@@ -420,67 +420,33 @@ export const FilePreviewModal = ({
                 <div slot="ar-button" />
               </model-viewer>
 
-              {/* Floating controls on the right side */}
-              <div className="absolute right-4 top-1/2 -translate-y-1/2 flex flex-col gap-2 bg-black/60 backdrop-blur-md p-3 rounded-xl border border-white/10 z-10 shadow-2xl">
-                <div className="text-[10px] uppercase font-bold text-white/50 text-center tracking-wider mb-1">Camera</div>
-                <Button variant="ghost" size="icon" className="h-8 w-8 text-white hover:bg-white/20 mx-auto" onClick={() => rotateModel(0, -15)} title="Camera Up">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m18 15-6-6-6 6"/></svg>
-                </Button>
-                <div className="flex gap-1 justify-center">
-                  <Button variant="ghost" size="icon" className="h-8 w-8 text-white hover:bg-white/20" onClick={() => rotateModel(-15, 0)} title="Camera Left">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
-                  </Button>
-                  <Button variant="ghost" size="icon" className="h-8 w-8 text-white hover:bg-white/20" onClick={() => rotateModel(15, 0)} title="Camera Right">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6"/></svg>
-                  </Button>
-                </div>
-                <Button variant="ghost" size="icon" className="h-8 w-8 text-white hover:bg-white/20 mx-auto" onClick={() => rotateModel(0, 15)} title="Camera Down">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
-                </Button>
-                <div className="flex justify-center gap-1 mt-1">
-                  <Button variant="ghost" size="icon" className="h-8 w-8 text-white hover:bg-white/20" onClick={() => zoomModel(-10)} title="Zoom In">
-                    <ZoomIn className="h-4 w-4" />
-                  </Button>
-                  <Button variant="ghost" size="icon" className="h-8 w-8 text-white hover:bg-white/20" onClick={() => zoomModel(10)} title="Zoom Out">
-                    <ZoomOut className="h-4 w-4" />
-                  </Button>
+              {/* Floating controls on the right side - clean & simple */}
+              <div className="absolute top-3 right-3 flex flex-col items-end gap-3 z-10 pointer-events-none">
+                <div className="bg-black/50 backdrop-blur-md border border-white/10 rounded-xl px-3 py-2 flex flex-col gap-1.5 pointer-events-auto shadow-2xl">
+                  <div className="flex items-center gap-2 text-white/60 text-xs">
+                    <MousePointer2 className="h-3 w-3 shrink-0" />
+                    <span>Left click + drag to rotate</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-white/60 text-xs">
+                    <MousePointer2 className="h-3 w-3 shrink-0 rotate-90" />
+                    <span>Right click + drag to move (pan)</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-white/60 text-xs">
+                    <ZoomIn className="h-3 w-3 shrink-0" />
+                    <span>Scroll to zoom</span>
+                  </div>
                 </div>
 
-                <div className="w-full h-px bg-white/20 my-2"/>
-                
-                <div className="text-[10px] uppercase font-bold text-white/50 text-center tracking-wider mb-1">Model Axes</div>
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs text-rose-400 font-mono font-bold w-3 text-center">X</span>
-                  <div className="flex gap-1">
-                    <Button variant="ghost" size="icon" className="h-7 w-7 text-white hover:bg-white/20" onClick={() => rotateModelAxis('x', -90)} title="Rotate X -90°">
-                      <RotateCcw className="h-3 w-3" />
-                    </Button>
-                    <Button variant="ghost" size="icon" className="h-7 w-7 text-white hover:bg-white/20" onClick={() => rotateModelAxis('x', 90)} title="Rotate X +90°">
-                      <RotateCw className="h-3 w-3" />
-                    </Button>
-                  </div>
-                </div>
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs text-green-400 font-mono font-bold w-3 text-center">Y</span>
-                  <div className="flex gap-1">
-                    <Button variant="ghost" size="icon" className="h-7 w-7 text-white hover:bg-white/20" onClick={() => rotateModelAxis('y', -90)} title="Rotate Y -90°">
-                      <RotateCcw className="h-3 w-3" />
-                    </Button>
-                    <Button variant="ghost" size="icon" className="h-7 w-7 text-white hover:bg-white/20" onClick={() => rotateModelAxis('y', 90)} title="Rotate Y +90°">
-                      <RotateCw className="h-3 w-3" />
-                    </Button>
-                  </div>
-                </div>
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs text-blue-400 font-mono font-bold w-3 text-center">Z</span>
-                  <div className="flex gap-1">
-                    <Button variant="ghost" size="icon" className="h-7 w-7 text-white hover:bg-white/20" onClick={() => rotateModelAxis('z', -90)} title="Rotate Z -90°">
-                      <RotateCcw className="h-3 w-3" />
-                    </Button>
-                    <Button variant="ghost" size="icon" className="h-7 w-7 text-white hover:bg-white/20" onClick={() => rotateModelAxis('z', 90)} title="Rotate Z +90°">
-                      <RotateCw className="h-3 w-3" />
-                    </Button>
-                  </div>
+                <div className="pointer-events-auto">
+                  <Button 
+                    variant="secondary" 
+                    size="sm" 
+                    className="bg-black/60 hover:bg-black/80 text-white backdrop-blur-md border border-white/20 text-xs"
+                    onClick={() => rotateModelAxis('x', 90)}
+                  >
+                    <RefreshCw className="h-3 w-3 mr-2" />
+                    Tilt Model (If Sideways)
+                  </Button>
                 </div>
               </div>
             </div>

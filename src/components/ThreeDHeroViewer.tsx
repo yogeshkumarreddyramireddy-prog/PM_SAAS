@@ -151,53 +151,28 @@ export const ThreeDHeroViewer = ({ file }: ThreeDHeroViewerProps) => {
             <div className="bg-black/50 backdrop-blur-md border border-white/10 rounded-xl px-3 py-2 flex flex-col gap-1.5">
               <div className="flex items-center gap-2 text-white/60 text-xs">
                 <MousePointer2 className="h-3 w-3 shrink-0" />
-                <span>Left drag — rotate</span>
-              </div>
-              <div className="flex items-center gap-2 text-white/60 text-xs">
-                <ZoomIn className="h-3 w-3 shrink-0" />
-                <span>Scroll — zoom in/out</span>
+                <span>Left click + drag to rotate</span>
               </div>
               <div className="flex items-center gap-2 text-white/60 text-xs">
                 <MousePointer2 className="h-3 w-3 shrink-0 rotate-90" />
-                <span>Right drag — pan</span>
+                <span>Right click + drag to move (pan)</span>
+              </div>
+              <div className="flex items-center gap-2 text-white/60 text-xs">
+                <ZoomIn className="h-3 w-3 shrink-0" />
+                <span>Scroll to zoom</span>
               </div>
             </div>
-
-            <div className="bg-black/50 backdrop-blur-md border border-white/10 rounded-xl px-3 py-2 flex flex-col gap-1.5 pointer-events-auto">
-              <div className="text-[10px] uppercase font-bold text-white/50 text-center tracking-wider mb-0.5">Model Axes</div>
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-xs text-rose-400 font-mono font-bold w-3 text-center">X</span>
-                <div className="flex gap-1">
-                  <Button variant="ghost" size="icon" className="h-6 w-6 text-white hover:bg-white/20" onClick={() => rotateModelAxis('x', -90)} title="Rotate X -90°">
-                    <RotateCcw className="h-3 w-3" />
-                  </Button>
-                  <Button variant="ghost" size="icon" className="h-6 w-6 text-white hover:bg-white/20" onClick={() => rotateModelAxis('x', 90)} title="Rotate X +90°">
-                    <RotateCw className="h-3 w-3" />
-                  </Button>
-                </div>
-              </div>
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-xs text-green-400 font-mono font-bold w-3 text-center">Y</span>
-                <div className="flex gap-1">
-                  <Button variant="ghost" size="icon" className="h-6 w-6 text-white hover:bg-white/20" onClick={() => rotateModelAxis('y', -90)} title="Rotate Y -90°">
-                    <RotateCcw className="h-3 w-3" />
-                  </Button>
-                  <Button variant="ghost" size="icon" className="h-6 w-6 text-white hover:bg-white/20" onClick={() => rotateModelAxis('y', 90)} title="Rotate Y +90°">
-                    <RotateCw className="h-3 w-3" />
-                  </Button>
-                </div>
-              </div>
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-xs text-blue-400 font-mono font-bold w-3 text-center">Z</span>
-                <div className="flex gap-1">
-                  <Button variant="ghost" size="icon" className="h-6 w-6 text-white hover:bg-white/20" onClick={() => rotateModelAxis('z', -90)} title="Rotate Z -90°">
-                    <RotateCcw className="h-3 w-3" />
-                  </Button>
-                  <Button variant="ghost" size="icon" className="h-6 w-6 text-white hover:bg-white/20" onClick={() => rotateModelAxis('z', 90)} title="Rotate Z +90°">
-                    <RotateCw className="h-3 w-3" />
-                  </Button>
-                </div>
-              </div>
+            
+            <div className="pointer-events-auto">
+              <Button 
+                variant="secondary" 
+                size="sm" 
+                className="bg-black/60 hover:bg-black/80 text-white backdrop-blur-md border border-white/20 text-xs"
+                onClick={() => rotateModelAxis('x', 90)}
+              >
+                <RefreshCw className="h-3 w-3 mr-2" />
+                Tilt Model (If Sideways)
+              </Button>
             </div>
           </div>
         </>

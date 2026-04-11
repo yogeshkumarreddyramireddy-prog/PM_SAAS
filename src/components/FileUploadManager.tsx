@@ -60,7 +60,8 @@ export const FileUploadManagerFixed = ({
     });
     if (presignError) throw presignError;
 
-    const MULTIPART_THRESHOLD = 25 * 1024 * 1024; // 25 MB
+    // Use multipart for files >= 10 MB
+    const MULTIPART_THRESHOLD = 10 * 1024 * 1024; // 10 MB
 
     if (file.size < MULTIPART_THRESHOLD) {
       // --- Small file: fast single PUT ---
@@ -79,8 +80,10 @@ export const FileUploadManagerFixed = ({
       });
     } else {
       // --- Large file: chunked S3 multipart upload ---
-      const CHUNK_SIZE = 50 * 1024 * 1024;  // 50 MB parts
-      const PARALLEL_PARTS = 3;              // 3 concurrent parts at a time
+      // Chunk size kept small (8 MB) so each browser→R2 PUT stays well within
+      // Cloudflare's CORS-accepted body size and avoids ERR_CONNECTION_RESET.
+      const CHUNK_SIZE = 8 * 1024 * 1024;   // 8 MB per part (R2 min is 5 MB)
+      const PARALLEL_PARTS = 1;              // sequential — avoids connection overload
       const MAX_RETRIES = 5;
       const objectKey = presignData.objectKey;
       const numParts = Math.ceil(file.size / CHUNK_SIZE);

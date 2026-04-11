@@ -98,31 +98,20 @@ export const ThreeDHeroViewer = ({ file }: ThreeDHeroViewerProps) => {
         <model-viewer
           src={previewUrl}
           alt={file.filename}
-
-          {/* ── Core controls ── */}
           camera-controls
           enable-pan
           auto-rotate
           auto-rotate-delay="3000"
-
-          {/* ── Orbit: allow full 360° horizontal + full vertical (0→180°) ── */}
           min-camera-orbit="auto auto 1%"
           max-camera-orbit="auto 180deg auto"
-
-          {/* ── Zoom: allow extreme close-up (1°) and wide pull-back (120°) ── */}
           min-field-of-view="1deg"
           max-field-of-view="120deg"
-
-          {/* ── Feel: faster response, smooth deceleration ── */}
           orbit-sensitivity="1.5"
           interpolation-decay="150"
-
-          {/* ── Look ── */}
           shadow-intensity="1.2"
           shadow-softness="0.8"
           environment-image="neutral"
           exposure="1.1"
-
           style={{ width: '100%', height: '100%', backgroundColor: '#0f172a' }}
         >
           {/* Suppress model-viewer default UI slots */}

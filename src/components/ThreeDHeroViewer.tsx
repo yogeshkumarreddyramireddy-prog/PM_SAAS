@@ -104,10 +104,11 @@ export const ThreeDHeroViewer = ({ file }: ThreeDHeroViewerProps) => {
           environment-image="neutral"
           exposure="1"
           touch-action="pan-y"
-          style={{ width: '100%', height: '100%', background: 'transparent' }}
+          style={{ width: '100%', height: '100%', backgroundColor: '#0f172a' }}
         >
-          {/* suppress default progress bar */}
+          {/* Suppress model-viewer default UI slots */}
           <div slot="progress-bar" />
+          <div slot="ar-button" />
         </model-viewer>
       )}
 

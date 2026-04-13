@@ -61,7 +61,7 @@ export const ClientHeader = ({
           {/* User Info, Course Switcher, Language Toggle & Logout */}
           <div className="flex items-center gap-2 sm:gap-4">
             {assignedCourses.length > 1 && onCourseChange && (
-              <div className="hidden sm:block">
+              <div className="hidden sm:block" id="tour-course-selector">
                 <Select
                   value={activeCourseId?.toString()}
                   onValueChange={(val) => onCourseChange(parseInt(val))}

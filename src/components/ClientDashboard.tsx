@@ -2,12 +2,14 @@ import { useState, useEffect } from "react";
 import { ClientHeader } from "@/components/ClientHeader";
 import { DashboardTile } from "@/components/DashboardTile";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Map, FileText, Image, Box, TrendingUp } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Map, FileText, Image, Box, TrendingUp, HelpCircle } from "lucide-react";
 import { useContentFiles } from "@/hooks/useSupabaseQuery";
 import { DroneImageUploader } from "@/components/DroneImageUploader";
 import { RecentUploads } from "@/components/RecentUploads";
 import { useT } from "@/translations";
 import { supabase } from "@/integrations/supabase/client";
+import { Joyride, Step, CallBackProps, STATUS } from "react-joyride";
 
 interface ClientDashboardProps {
   onLogout: () => void;
@@ -37,6 +39,72 @@ export const ClientDashboard = ({
     isLoading
   } = useContentFiles(golfCourseId);
   const t = useT();
+
+  const [runTour, setRunTour] = useState(false);
+  const [tourSteps] = useState<Step[]>([
+    {
+      target: 'body',
+      title: 'Welcome to your Dashboard!',
+      content: 'Would you like a quick tour of where to find your maps, reports, and 3D models?',
+      placement: 'center',
+      disableBeacon: true,
+    },
+    {
+      target: '#tour-main-grid',
+      title: 'Navigation Grid',
+      content: 'Access your interactive map layers, download PDF reports, or view 3D models from this central grid.',
+      disableBeacon: true,
+      placement: 'bottom',
+    },
+    {
+      target: '#tour-quick-stats',
+      title: 'Quick Stats',
+      content: 'Keep track of your total files, maps available, and data storage volume at a glance.',
+      disableBeacon: true,
+      placement: 'bottom',
+    },
+    {
+      target: '#tour-drone-upload',
+      title: 'Submit New Data',
+      content: 'Need to provide us with new drone imagery? You can securely upload your raw data right here.',
+      disableBeacon: true,
+      placement: 'top',
+    },
+    {
+      target: '#tour-recent-uploads',
+      title: 'Upload Status',
+      content: 'Check here to see the processing status of your recent uploads and view newly published data.',
+      disableBeacon: true,
+      placement: 'top',
+    },
+    {
+      target: '#tour-course-selector',
+      title: 'Switch Courses',
+      content: 'Manage multiple sites? Switch between your assigned golf courses using this dropdown menu.',
+      disableBeacon: true,
+      placement: 'bottom',
+    }
+  ]);
+
+  useEffect(() => {
+    const hasSeenTour = localStorage.getItem('phytomaps_tour_completed');
+    if (!hasSeenTour) {
+      setTimeout(() => {
+        setRunTour(true);
+        // Set this immediately so navigating away before finishing doesn't cause it to restart
+        localStorage.setItem('phytomaps_tour_completed', 'true');
+      }, 1500); 
+    }
+  }, []);
+
+  const handleJoyrideCallback = (data: CallBackProps) => {
+    const { status } = data;
+    const finishedStatuses: string[] = [STATUS.FINISHED, STATUS.SKIPPED];
+    if (finishedStatuses.includes(status)) {
+      setRunTour(false);
+      localStorage.setItem('phytomaps_tour_completed', 'true');
+    }
+  };
 
   useEffect(() => {
     // Reset immediately so we never show stale data from the previous course
@@ -157,6 +225,42 @@ export const ClientDashboard = ({
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-background to-muted/30">
+      <Joyride
+        steps={tourSteps}
+        run={runTour}
+        continuous={true}
+        showProgress={true}
+        showSkipButton={true}
+        disableOverlayClose={true}
+        hideCloseButton={true}
+        callback={handleJoyrideCallback}
+        locale={{ 
+          back: 'Back', 
+          close: 'Close', 
+          last: 'Finish Tour', 
+          next: 'Next', 
+          skip: 'Skip Tour' 
+        }}
+        styles={{
+          options: {
+            primaryColor: '#0d9488', // teal-600 to match primary-teal
+            textColor: '#334155',
+            backgroundColor: '#ffffff',
+            arrowColor: '#ffffff',
+            overlayColor: 'rgba(0, 0, 0, 0.6)',
+          },
+          tooltipContainer: {
+            textAlign: 'left',
+          },
+          buttonNext: {
+            backgroundColor: '#0d9488',
+            borderRadius: '4px',
+          },
+          buttonBack: {
+            color: '#64748b',
+          }
+        }}
+      />
       <ClientHeader 
         golfCourseName={golfCourseName} 
         userName={userFullName} 
@@ -175,7 +279,7 @@ export const ClientDashboard = ({
               <h2 className="text-lg sm:text-xl font-semibold text-foreground mb-3 sm:mb-4">
                 {t.dashboard.sectionHeading}
               </h2>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-6">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-6" id="tour-main-grid">
                 {dashboardData.map(tile => (
                   <DashboardTile
                     key={tile.section}
@@ -191,7 +295,7 @@ export const ClientDashboard = ({
             </div>
 
             {/* Quick Stats */}
-            <Card>
+            <Card id="tour-quick-stats">
               <CardHeader>
                 <CardTitle className="flex items-center gap-2 text-base sm:text-lg">
                   <TrendingUp className="h-4 w-4 sm:h-5 sm:w-5" />
@@ -221,7 +325,7 @@ export const ClientDashboard = ({
             </Card>
 
             {/* Drone Image Upload */}
-            <div className="mt-8">
+            <div className="mt-8" id="tour-drone-upload">
               <DroneImageUploader
                 golfCourseId={golfCourseId}
                 golfCourseName={golfCourseName}
@@ -230,7 +334,7 @@ export const ClientDashboard = ({
             </div>
 
             {/* Recent Uploads */}
-            <div className="mt-6">
+            <div className="mt-6" id="tour-recent-uploads">
               <RecentUploads
                 golfCourseId={golfCourseId}
                 golfCourseName={golfCourseName}
@@ -240,6 +344,15 @@ export const ClientDashboard = ({
           </div>
         </div>
       </main>
+
+      {/* Floating Tour Button */}
+      <Button
+        onClick={() => setRunTour(true)}
+        className="fixed bottom-6 right-6 rounded-full shadow-lg z-50 flex items-center gap-2 bg-primary-teal hover:bg-primary-teal/90 text-white px-4 py-2 cursor-pointer transition-transform hover:scale-105"
+      >
+        <HelpCircle className="h-5 w-5" />
+        <span className="font-semibold">Take a Tour</span>
+      </Button>
     </div>
   );
 };

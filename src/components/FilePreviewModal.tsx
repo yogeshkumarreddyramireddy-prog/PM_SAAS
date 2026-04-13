@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge"
 import { 
   ZoomIn, ZoomOut, Maximize, Minimize, RotateCw, 
   Download, X, FileText, Image as ImageIcon, MapPin,
-  Move, RotateCcw
+  Move, RotateCcw, MousePointer2
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { read, utils } from "xlsx"
@@ -16,11 +16,21 @@ import { BarChart, Bar, LineChart, Line, AreaChart, Area, ScatterChart, Scatter,
 import '@google/model-viewer'
 
 declare global {
+  // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace JSX {
     interface IntrinsicElements {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       'model-viewer': any;
     }
   }
+}
+
+interface ModelViewerElement extends HTMLElement {
+  getCameraOrbit(): { theta: number; phi: number; radius: number };
+  cameraOrbit: string;
+  getFieldOfView(): number;
+  fieldOfView: string;
+  orientation: string;
 }
 
 interface ContentFile {
@@ -60,12 +70,13 @@ export const FilePreviewModal = ({
   const [isDragging, setIsDragging] = useState(false)
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
   const [initialPinchZoom, setInitialPinchZoom] = useState(1)
+  const [lastTouchDistance, setLastTouchDistance] = useState(0)
   const imageRef = useRef<HTMLImageElement>(null)
-  const modelViewerRef = useRef<any>(null)
+  const modelViewerRef = useRef<ModelViewerElement | null>(null)
   const tiltLabelRef = useRef<HTMLSpanElement>(null)
   const [modelOrientation, setModelOrientation] = useState({ x: 0, y: 0, z: 0 })
   
-  const [excelSheets, setExcelSheets] = useState<{name: string, html: string, data: any[]}[]>([])
+  const [excelSheets, setExcelSheets] = useState<{name: string, html: string, data: Record<string, unknown>[]}[]>([])
   const [activeSheetIndex, setActiveSheetIndex] = useState(0)
   const [isLoadingExcel, setIsLoadingExcel] = useState(false)
   const [excelViewMode, setExcelViewMode] = useState<'table' | 'chart'>('table')
@@ -87,14 +98,14 @@ export const FilePreviewModal = ({
             return {
               name,
               html: utils.sheet_to_html(sheet, { id: 'excel-table' }),
-              data: utils.sheet_to_json(sheet)
+              data: utils.sheet_to_json(sheet) as Record<string, unknown>[]
             }
           });
           setExcelSheets(sheets);
           setActiveSheetIndex(0);
           
           if (sheets[0]?.data?.length > 0) {
-            const firstRow = sheets[0].data[0] as any;
+            const firstRow = sheets[0].data[0] as Record<string, unknown>;
             const numericKeys = Object.keys(firstRow).filter(k => typeof firstRow[k] === 'number' && k !== 'id' && !k.toLowerCase().includes('layer') && !k.toLowerCase().includes('area_m2'));
             if (numericKeys.length > 0) {
               setChartMetric(numericKeys[0]);

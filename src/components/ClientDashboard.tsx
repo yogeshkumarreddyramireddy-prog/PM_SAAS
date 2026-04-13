@@ -9,7 +9,7 @@ import { DroneImageUploader } from "@/components/DroneImageUploader";
 import { RecentUploads } from "@/components/RecentUploads";
 import { useT } from "@/translations";
 import { supabase } from "@/integrations/supabase/client";
-import { Joyride, Step, CallBackProps, STATUS } from "react-joyride";
+import { Joyride, Step, EventData, STATUS } from "react-joyride";
 
 interface ClientDashboardProps {
   onLogout: () => void;
@@ -18,7 +18,7 @@ interface ClientDashboardProps {
   golfCourseName: string;
   userFullName?: string;
   golfCourseLocation?: string;
-  assignedCourses?: any[];
+  assignedCourses?: { id: number; name: string }[];
   onCourseChange?: (id: number) => void;
 }
 
@@ -47,41 +47,35 @@ export const ClientDashboard = ({
       title: 'Welcome to your Dashboard!',
       content: 'Would you like a quick tour of where to find your maps, reports, and 3D models?',
       placement: 'center',
-      disableBeacon: true,
     },
     {
       target: '#tour-main-grid',
       title: 'Navigation Grid',
       content: 'Access your interactive map layers, download PDF reports, or view 3D models from this central grid.',
-      disableBeacon: true,
       placement: 'bottom',
     },
     {
       target: '#tour-quick-stats',
       title: 'Quick Stats',
       content: 'Keep track of your total files, maps available, and data storage volume at a glance.',
-      disableBeacon: true,
       placement: 'bottom',
     },
     {
       target: '#tour-drone-upload',
       title: 'Submit New Data',
       content: 'Need to provide us with new drone imagery? You can securely upload your raw data right here.',
-      disableBeacon: true,
       placement: 'top',
     },
     {
       target: '#tour-recent-uploads',
       title: 'Upload Status',
       content: 'Check here to see the processing status of your recent uploads and view newly published data.',
-      disableBeacon: true,
       placement: 'top',
     },
     {
       target: '#tour-course-selector',
       title: 'Switch Courses',
       content: 'Manage multiple sites? Switch between your assigned golf courses using this dropdown menu.',
-      disableBeacon: true,
       placement: 'bottom',
     }
   ]);
@@ -93,11 +87,11 @@ export const ClientDashboard = ({
         setRunTour(true);
         // Set this immediately so navigating away before finishing doesn't cause it to restart
         localStorage.setItem('phytomaps_tour_completed', 'true');
-      }, 1500); 
+      }, 1500);
     }
   }, []);
 
-  const handleJoyrideCallback = (data: CallBackProps) => {
+  const handleJoyrideCallback = (data: EventData) => {
     const { status } = data;
     const finishedStatuses: string[] = [STATUS.FINISHED, STATUS.SKIPPED];
     if (finishedStatuses.includes(status)) {
@@ -138,13 +132,13 @@ export const ClientDashboard = ({
     };
 
     fetchMapCounts();
-  // Only re-run when the selected course changes — not on every contentFiles update
+    // Only re-run when the selected course changes — not on every contentFiles update
   }, [golfCourseId]);
 
   const getNewFilesCount = (category: string, sectionAlias: string) => {
     const lastVisitedStr = localStorage.getItem(`last_visited_${sectionAlias}_${golfCourseId}`);
     const lastVisited = lastVisitedStr ? parseInt(lastVisitedStr, 10) : 0;
-    
+
     return contentFiles.filter(f => {
       if (f.file_category !== category || f.status !== 'published') return false;
       const createdAt = new Date(f.created_at || '').getTime();
@@ -199,7 +193,7 @@ export const ClientDashboard = ({
   };
 
   const dashboardData = getDashboardData();
-  
+
   const handleTileClick = (section: string) => {
     localStorage.setItem(`last_visited_${section}_${golfCourseId}`, Date.now().toString());
     onTileClick(section);
@@ -229,30 +223,30 @@ export const ClientDashboard = ({
         steps={tourSteps}
         run={runTour}
         continuous={true}
-        showProgress={true}
-        showSkipButton={true}
-        disableOverlayClose={true}
-        hideCloseButton={true}
-        callback={handleJoyrideCallback}
-        locale={{ 
-          back: 'Back', 
-          close: 'Close', 
-          last: 'Finish Tour', 
-          next: 'Next', 
-          skip: 'Skip Tour' 
+        onEvent={handleJoyrideCallback}
+        locale={{
+          back: 'Back',
+          close: 'Close',
+          last: 'Finish Tour',
+          next: 'Next',
+          skip: 'Skip Tour'
+        }}
+        options={{
+          primaryColor: '#0d9488',
+          textColor: '#334155',
+          backgroundColor: '#ffffff',
+          arrowColor: '#ffffff',
+          overlayColor: 'rgba(0, 0, 0, 0.6)',
+          showProgress: true,
+          skipBeacon: true,
+          overlayClickAction: false,
+          buttons: ['back', 'primary', 'skip']
         }}
         styles={{
-          options: {
-            primaryColor: '#0d9488', // teal-600 to match primary-teal
-            textColor: '#334155',
-            backgroundColor: '#ffffff',
-            arrowColor: '#ffffff',
-            overlayColor: 'rgba(0, 0, 0, 0.6)',
-          },
           tooltipContainer: {
             textAlign: 'left',
           },
-          buttonNext: {
+          buttonPrimary: {
             backgroundColor: '#0d9488',
             borderRadius: '4px',
           },
@@ -261,10 +255,10 @@ export const ClientDashboard = ({
           }
         }}
       />
-      <ClientHeader 
-        golfCourseName={golfCourseName} 
-        userName={userFullName} 
-        onLogout={onLogout} 
+      <ClientHeader
+        golfCourseName={golfCourseName}
+        userName={userFullName}
+        onLogout={onLogout}
         activeCourseId={golfCourseId}
         assignedCourses={assignedCourses}
         onCourseChange={onCourseChange}

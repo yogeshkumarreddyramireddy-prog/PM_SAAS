@@ -10,6 +10,9 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { read, utils } from "xlsx"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { BarChart, Bar, LineChart, Line, AreaChart, Area, ScatterChart, Scatter, PieChart, Pie, Cell, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, Legend } from "recharts"
 import '@google/model-viewer'
 
 declare global {
@@ -62,9 +65,13 @@ export const FilePreviewModal = ({
   const tiltLabelRef = useRef<HTMLSpanElement>(null)
   const [modelOrientation, setModelOrientation] = useState({ x: 0, y: 0, z: 0 })
   
-  const [excelSheets, setExcelSheets] = useState<{name: string, html: string}[]>([])
+  const [excelSheets, setExcelSheets] = useState<{name: string, html: string, data: any[]}[]>([])
   const [activeSheetIndex, setActiveSheetIndex] = useState(0)
   const [isLoadingExcel, setIsLoadingExcel] = useState(false)
+  const [excelViewMode, setExcelViewMode] = useState<'table' | 'chart'>('table')
+  const [chartType, setChartType] = useState<'line' | 'bar' | 'area' | 'scatter' | 'pie' | 'radar'>('line')
+  const [chartMetric, setChartMetric] = useState<string>('')
+  const [chartXAxis, setChartXAxis] = useState<string>('')
   
   const isExcel = file?.mime_type?.includes('spreadsheet') || file?.mime_type?.includes('excel') || file?.filename?.endsWith('.xls') || file?.filename?.endsWith('.xlsx')
 
@@ -75,12 +82,33 @@ export const FilePreviewModal = ({
         .then(res => res.arrayBuffer())
         .then(ab => {
           const workbook = read(ab, { type: 'array' });
-          const sheets = workbook.SheetNames.map(name => ({
-            name,
-            html: utils.sheet_to_html(workbook.Sheets[name], { id: 'excel-table' })
-          }));
+          const sheets = workbook.SheetNames.map(name => {
+            const sheet = workbook.Sheets[name];
+            return {
+              name,
+              html: utils.sheet_to_html(sheet, { id: 'excel-table' }),
+              data: utils.sheet_to_json(sheet)
+            }
+          });
           setExcelSheets(sheets);
           setActiveSheetIndex(0);
+          
+          if (sheets[0]?.data?.length > 0) {
+            const firstRow = sheets[0].data[0] as any;
+            const numericKeys = Object.keys(firstRow).filter(k => typeof firstRow[k] === 'number' && k !== 'id' && !k.toLowerCase().includes('layer') && !k.toLowerCase().includes('area_m2'));
+            if (numericKeys.length > 0) {
+              setChartMetric(numericKeys[0]);
+            }
+            
+            // Guess a good X Axis (id, type, name, etc.)
+            const allKeys = Object.keys(firstRow);
+            const maybeId = allKeys.find(k => k.toLowerCase() === 'type' || k.toLowerCase() === 'id' || k.toLowerCase() === 'name');
+            if (maybeId) {
+              setChartXAxis(maybeId);
+            } else if (allKeys.length > 0) {
+              setChartXAxis(allKeys[0]);
+            }
+          }
         })
         .catch(err => {
           console.error("Failed to parse Excel file", err);
@@ -90,6 +118,9 @@ export const FilePreviewModal = ({
     } else {
       setExcelSheets([]);
       setActiveSheetIndex(0);
+      setExcelViewMode('table');
+      setChartMetric('');
+      setChartXAxis('');
     }
   }, [isOpen, previewUrl, file, isExcel]);
 
@@ -357,18 +388,168 @@ export const FilePreviewModal = ({
               allow="autoplay"
             />
           ) : isExcel ? (
-            <div className="w-full h-full bg-white text-black flex flex-col">
+            <div className="w-full h-full bg-white text-black flex flex-col overflow-hidden min-h-0">
               {isLoadingExcel ? (
                 <div className="flex items-center justify-center flex-1">
                   <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-teal"></div>
                 </div>
               ) : excelSheets.length > 0 ? (
                 <>
-                  <div className="flex-1 overflow-auto p-4">
-                    <div 
-                      className="excel-table-container max-w-full"
-                      dangerouslySetInnerHTML={{ __html: excelSheets[activeSheetIndex]?.html || "" }} 
-                    />
+                  <div className="p-2 border-b flex justify-between items-center bg-gray-50 flex-wrap gap-2 shrink-0">
+                    <Tabs value={excelViewMode} onValueChange={(v) => setExcelViewMode(v as 'table' | 'chart')} className="w-full sm:w-[300px]">
+                      <TabsList className="grid w-full grid-cols-2">
+                        <TabsTrigger value="table">Table View</TabsTrigger>
+                        <TabsTrigger value="chart">Chart View</TabsTrigger>
+                      </TabsList>
+                    </Tabs>
+                    
+                    {excelViewMode === 'chart' && excelSheets[activeSheetIndex]?.data?.length > 0 && (
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <Select value={chartType} onValueChange={(v) => setChartType(v as 'line' | 'bar')}>
+                          <SelectTrigger className="w-[120px] bg-white h-8 text-xs">
+                            <SelectValue placeholder="Chart Type" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="line">Line Chart</SelectItem>
+                            <SelectItem value="bar">Bar Chart</SelectItem>
+                            <SelectItem value="area">Area Chart</SelectItem>
+                            <SelectItem value="scatter">Scatter Plot</SelectItem>
+                            <SelectItem value="pie">Pie Chart</SelectItem>
+                            <SelectItem value="radar">Radar Chart</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        
+                        <Select value={chartXAxis} onValueChange={setChartXAxis}>
+                          <SelectTrigger className="w-[140px] bg-white h-8 text-xs">
+                            <SelectValue placeholder="X-Axis" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {(() => {
+                              const data = excelSheets[activeSheetIndex].data;
+                              if (!data || data.length === 0) return null;
+                              return Object.keys(data[0]).map(k => (
+                                <SelectItem key={k} value={k}>X: {k}</SelectItem>
+                              ));
+                            })()}
+                          </SelectContent>
+                        </Select>
+
+                        <Select value={chartMetric} onValueChange={setChartMetric}>
+                          <SelectTrigger className="w-[160px] bg-white h-8 text-xs">
+                            <SelectValue placeholder="Y-Axis Metric" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {(() => {
+                              const data = excelSheets[activeSheetIndex].data;
+                              if (!data || data.length === 0) return null;
+                              const firstRow = data[0];
+                              const keys = Object.keys(firstRow).filter(k => typeof firstRow[k] === 'number' && k !== 'id');
+                              return keys.map(k => (
+                                <SelectItem key={k} value={k}>Y: {k}</SelectItem>
+                              ));
+                            })()}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
+                  </div>
+                  
+                  <div className="flex-1 overflow-auto p-0 flex flex-col min-h-0">
+                    {excelViewMode === 'table' ? (
+                      <div className="p-4">
+                        <div 
+                          className="excel-table-container max-w-full"
+                          dangerouslySetInnerHTML={{ __html: excelSheets[activeSheetIndex]?.html || "" }} 
+                        />
+                      </div>
+                    ) : (
+                      <div className="w-full h-[500px] p-4 bg-white">
+                        {excelSheets[activeSheetIndex]?.data?.length > 0 ? (
+                          <ResponsiveContainer width="100%" height="100%">
+                            {(() => {
+                              const chartProps = {
+                                data: excelSheets[activeSheetIndex].data,
+                                margin: { top: 20, right: 30, left: 20, bottom: 20 }
+                              };
+                              const commonElements = (
+                                <>
+                                  <CartesianGrid strokeDasharray="3 3" />
+                                  <XAxis dataKey={chartXAxis} angle={-45} textAnchor="end" height={60} />
+                                  <YAxis />
+                                  <RechartsTooltip formatter={(value: number) => typeof value === 'number' ? value.toFixed(4) : value} />
+                                  <Legend verticalAlign="top" height={36} />
+                                </>
+                              );
+
+                              if (chartType === 'line') return (
+                                <LineChart {...chartProps}>
+                                  {commonElements}
+                                  {chartMetric && <Line type="monotone" dataKey={chartMetric} stroke="#0ea5e9" strokeWidth={2} activeDot={{ r: 8 }} />}
+                                </LineChart>
+                              );
+                              if (chartType === 'bar') return (
+                                <BarChart {...chartProps}>
+                                  {commonElements}
+                                  {chartMetric && <Bar dataKey={chartMetric} fill="#0ea5e9" radius={[4, 4, 0, 0]} />}
+                                </BarChart>
+                              );
+                              if (chartType === 'area') return (
+                                <AreaChart {...chartProps}>
+                                  {commonElements}
+                                  {chartMetric && <Area type="monotone" dataKey={chartMetric} stroke="#0ea5e9" fill="#0ea5e9" fillOpacity={0.3} />}
+                                </AreaChart>
+                              );
+                              if (chartType === 'scatter') return (
+                                <ScatterChart {...chartProps}>
+                                  <CartesianGrid strokeDasharray="3 3" />
+                                  <XAxis 
+                                    dataKey={chartXAxis} 
+                                    name={chartXAxis} 
+                                    type={typeof excelSheets[activeSheetIndex].data[0][chartXAxis] === 'number' ? 'number' : 'category'} 
+                                    angle={-45} 
+                                    textAnchor="end" 
+                                    height={60} 
+                                  />
+                                  <YAxis dataKey={chartMetric} name={chartMetric} />
+                                  <RechartsTooltip cursor={{ strokeDasharray: '3 3' }} formatter={(value: number) => typeof value === 'number' ? value.toFixed(4) : value} />
+                                  <Legend verticalAlign="top" height={36} />
+                                  <Scatter name={chartMetric} data={excelSheets[activeSheetIndex].data} fill="#0ea5e9" />
+                                </ScatterChart>
+                              );
+                              if (chartType === 'pie') {
+                                const COLORS = ['#0ea5e9', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#f97316', '#14b8a6', '#6366f1', '#eab308'];
+                                return (
+                                  <PieChart margin={{ top: 20, right: 30, left: 20, bottom: 20 }}>
+                                    <RechartsTooltip formatter={(value: number) => typeof value === 'number' ? value.toFixed(4) : value} />
+                                    <Legend verticalAlign="top" height={36} />
+                                    <Pie data={excelSheets[activeSheetIndex].data} dataKey={chartMetric} nameKey={chartXAxis} cx="50%" cy="50%" outerRadius={150} fill="#0ea5e9" label>
+                                      {excelSheets[activeSheetIndex].data.map((_entry, index) => (
+                                        <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                                      ))}
+                                    </Pie>
+                                  </PieChart>
+                                );
+                              }
+                              if (chartType === 'radar') return (
+                                <RadarChart cx="50%" cy="50%" outerRadius={150} data={excelSheets[activeSheetIndex].data}>
+                                  <PolarGrid />
+                                  <PolarAngleAxis dataKey={chartXAxis} />
+                                  <PolarRadiusAxis />
+                                  <Radar name={chartMetric} dataKey={chartMetric} stroke="#0ea5e9" fill="#0ea5e9" fillOpacity={0.6} />
+                                  <RechartsTooltip formatter={(value: number) => typeof value === 'number' ? value.toFixed(4) : value} />
+                                  <Legend verticalAlign="top" height={36} />
+                                </RadarChart>
+                              );
+                              return null;
+                            })()}
+                          </ResponsiveContainer>
+                        ) : (
+                          <div className="flex items-center justify-center h-full text-muted-foreground">
+                            No chartable data found in this sheet.
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                   {excelSheets.length > 1 && (
                     <div className="flex overflow-x-auto border-t p-2 gap-2 shrink-0" style={{ borderColor: '#d1d5db', background: '#f3f4f6' }}>

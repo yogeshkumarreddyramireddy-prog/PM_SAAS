@@ -3,8 +3,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Button } from "@/components/ui/button"
 import { Slider } from "@/components/ui/slider"
 import { Badge } from "@/components/ui/badge"
-import { 
-  ZoomIn, ZoomOut, Maximize, Minimize, RotateCw, 
+import {
+  ZoomIn, ZoomOut, Maximize, Minimize, RotateCw,
   Download, X, FileText, Image as ImageIcon, MapPin,
   Move, RotateCcw, MousePointer2
 } from "lucide-react"
@@ -56,12 +56,12 @@ interface FilePreviewModalProps {
   onDownload?: () => void
 }
 
-export const FilePreviewModal = ({ 
-  file, 
-  previewUrl, 
-  isOpen, 
-  onClose, 
-  onDownload 
+export const FilePreviewModal = ({
+  file,
+  previewUrl,
+  isOpen,
+  onClose,
+  onDownload
 }: FilePreviewModalProps) => {
   const [zoom, setZoom] = useState(1)
   const [position, setPosition] = useState({ x: 0, y: 0 })
@@ -75,15 +75,15 @@ export const FilePreviewModal = ({
   const modelViewerRef = useRef<ModelViewerElement | null>(null)
   const tiltLabelRef = useRef<HTMLSpanElement>(null)
   const [modelOrientation, setModelOrientation] = useState({ x: 0, y: 0, z: 0 })
-  
-  const [excelSheets, setExcelSheets] = useState<{name: string, html: string, data: Record<string, unknown>[]}[]>([])
+
+  const [excelSheets, setExcelSheets] = useState<{ name: string, html: string, data: Record<string, unknown>[] }[]>([])
   const [activeSheetIndex, setActiveSheetIndex] = useState(0)
   const [isLoadingExcel, setIsLoadingExcel] = useState(false)
   const [excelViewMode, setExcelViewMode] = useState<'table' | 'chart'>('table')
   const [chartType, setChartType] = useState<'line' | 'bar' | 'area' | 'scatter' | 'pie' | 'radar'>('line')
   const [chartMetric, setChartMetric] = useState<string>('')
   const [chartXAxis, setChartXAxis] = useState<string>('')
-  
+
   const isExcel = file?.mime_type?.includes('spreadsheet') || file?.mime_type?.includes('excel') || file?.filename?.endsWith('.xls') || file?.filename?.endsWith('.xlsx')
 
   useEffect(() => {
@@ -103,14 +103,14 @@ export const FilePreviewModal = ({
           });
           setExcelSheets(sheets);
           setActiveSheetIndex(0);
-          
+
           if (sheets[0]?.data?.length > 0) {
             const firstRow = sheets[0].data[0] as Record<string, unknown>;
             const numericKeys = Object.keys(firstRow).filter(k => typeof firstRow[k] === 'number' && k !== 'id' && !k.toLowerCase().includes('layer') && !k.toLowerCase().includes('area_m2'));
             if (numericKeys.length > 0) {
               setChartMetric(numericKeys[0]);
             }
-            
+
             // Guess a good X Axis (id, type, name, etc.)
             const allKeys = Object.keys(firstRow);
             const maybeId = allKeys.find(k => k.toLowerCase() === 'type' || k.toLowerCase() === 'id' || k.toLowerCase() === 'name');
@@ -176,7 +176,7 @@ export const FilePreviewModal = ({
     const touch1 = touches[0]
     const touch2 = touches[1]
     return Math.sqrt(
-      Math.pow(touch2.clientX - touch1.clientX, 2) + 
+      Math.pow(touch2.clientX - touch1.clientX, 2) +
       Math.pow(touch2.clientY - touch1.clientY, 2)
     )
   }
@@ -184,9 +184,9 @@ export const FilePreviewModal = ({
   // Touch event handlers
   const handleTouchStart = (e: React.TouchEvent) => {
     if (!file.mime_type?.startsWith('image/')) return
-    
+
     e.preventDefault()
-    
+
     if (e.touches.length === 1) {
       // Single touch - start panning
       setIsDragging(true)
@@ -203,9 +203,9 @@ export const FilePreviewModal = ({
 
   const handleTouchMove = (e: React.TouchEvent) => {
     if (!file.mime_type?.startsWith('image/')) return
-    
+
     e.preventDefault()
-    
+
     if (e.touches.length === 1 && isDragging) {
       // Single touch - panning
       const touch = e.touches[0]
@@ -226,9 +226,9 @@ export const FilePreviewModal = ({
 
   const handleTouchEnd = (e: React.TouchEvent) => {
     if (!file.mime_type?.startsWith('image/')) return
-    
+
     e.preventDefault()
-    
+
     if (e.touches.length === 0) {
       // All touches ended
       setIsDragging(false)
@@ -283,7 +283,7 @@ export const FilePreviewModal = ({
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent 
+      <DialogContent
         className={cn(
           "max-w-7xl max-h-[95vh] p-0 gap-0 flex flex-col",
           isFullscreen && "max-w-full max-h-full h-screen w-screen border-0 rounded-none"
@@ -315,7 +315,7 @@ export const FilePreviewModal = ({
                 </div>
               </div>
             </div>
-            
+
             {/* Controls row below title */}
             <div className="flex items-center justify-center gap-1 flex-wrap">
               {file.mime_type?.startsWith('image/') && (
@@ -337,15 +337,15 @@ export const FilePreviewModal = ({
                   </Button>
                 </>
               )}
-              
-              <Button 
-                variant="outline" 
-                size="sm" 
+
+              <Button
+                variant="outline"
+                size="sm"
                 onClick={() => setIsFullscreen(!isFullscreen)}
               >
                 {isFullscreen ? <Minimize className="h-4 w-4" /> : <Maximize className="h-4 w-4" />}
               </Button>
-              
+
               {onDownload && (
                 <Button variant="outline" size="sm" onClick={onDownload}>
                   <Download className="h-4 w-4" />
@@ -356,7 +356,7 @@ export const FilePreviewModal = ({
         </DialogHeader>
 
         {/* Content */}
-        <div 
+        <div
           className="flex-1 overflow-hidden bg-muted/20 relative flex flex-col"
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
@@ -413,7 +413,7 @@ export const FilePreviewModal = ({
                         <TabsTrigger value="chart">Chart View</TabsTrigger>
                       </TabsList>
                     </Tabs>
-                    
+
                     {excelViewMode === 'chart' && excelSheets[activeSheetIndex]?.data?.length > 0 && (
                       <div className="flex items-center gap-2 flex-wrap">
                         <Select value={chartType} onValueChange={(v) => setChartType(v as 'line' | 'bar')}>
@@ -429,7 +429,7 @@ export const FilePreviewModal = ({
                             <SelectItem value="radar">Radar Chart</SelectItem>
                           </SelectContent>
                         </Select>
-                        
+
                         <Select value={chartXAxis} onValueChange={setChartXAxis}>
                           <SelectTrigger className="w-[140px] bg-white h-8 text-xs">
                             <SelectValue placeholder="X-Axis" />
@@ -464,13 +464,13 @@ export const FilePreviewModal = ({
                       </div>
                     )}
                   </div>
-                  
+
                   <div className="flex-1 overflow-auto p-0 flex flex-col min-h-0">
                     {excelViewMode === 'table' ? (
                       <div className="p-4">
-                        <div 
+                        <div
                           className="excel-table-container max-w-full"
-                          dangerouslySetInnerHTML={{ __html: excelSheets[activeSheetIndex]?.html || "" }} 
+                          dangerouslySetInnerHTML={{ __html: excelSheets[activeSheetIndex]?.html || "" }}
                         />
                       </div>
                     ) : (
@@ -513,13 +513,13 @@ export const FilePreviewModal = ({
                               if (chartType === 'scatter') return (
                                 <ScatterChart {...chartProps}>
                                   <CartesianGrid strokeDasharray="3 3" />
-                                  <XAxis 
-                                    dataKey={chartXAxis} 
-                                    name={chartXAxis} 
-                                    type={typeof excelSheets[activeSheetIndex].data[0][chartXAxis] === 'number' ? 'number' : 'category'} 
-                                    angle={-45} 
-                                    textAnchor="end" 
-                                    height={60} 
+                                  <XAxis
+                                    dataKey={chartXAxis}
+                                    name={chartXAxis}
+                                    type={typeof excelSheets[activeSheetIndex].data[0][chartXAxis] === 'number' ? 'number' : 'category'}
+                                    angle={-45}
+                                    textAnchor="end"
+                                    height={60}
                                   />
                                   <YAxis dataKey={chartMetric} name={chartMetric} />
                                   <RechartsTooltip cursor={{ strokeDasharray: '3 3' }} formatter={(value: number) => typeof value === 'number' ? value.toFixed(4) : value} />
@@ -637,8 +637,8 @@ export const FilePreviewModal = ({
                       <span className="text-white/80 text-xs font-semibold uppercase tracking-wider">Model Tilt</span>
                       <span ref={tiltLabelRef} className="text-orange-400 font-mono text-xs">{modelOrientation.x}°</span>
                     </div>
-                    <Slider 
-                      defaultValue={[modelOrientation.x]} 
+                    <Slider
+                      defaultValue={[modelOrientation.x]}
                       onValueChange={(val) => {
                         const newX = val[0];
                         if (tiltLabelRef.current) tiltLabelRef.current.innerText = `${newX}°`;
@@ -646,9 +646,9 @@ export const FilePreviewModal = ({
                           modelViewerRef.current.orientation = `${newX}deg ${modelOrientation.y}deg ${modelOrientation.z}deg`;
                         }
                       }}
-                      onValueCommit={(val) => setModelOrientation(prev => ({...prev, x: val[0]}))}
-                      max={360} 
-                      step={1} 
+                      onValueCommit={(val) => setModelOrientation(prev => ({ ...prev, x: val[0] }))}
+                      max={360}
+                      step={1}
                       className="[&_[role=slider]]:bg-orange-500 [&_[role=slider]]:border-orange-200"
                     />
                   </div>

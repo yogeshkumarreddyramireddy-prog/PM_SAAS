@@ -1,6 +1,14 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { S3Client, GetObjectCommand } from "npm:@aws-sdk/client-s3"
 
+// 1x1 Transparent PNG used as a fallback for missing tiles
+const TRANSPARENT_PNG = new Uint8Array([
+  137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 
+  0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 11, 73, 68, 65, 84, 
+  8, 215, 99, 96, 0, 2, 0, 0, 5, 0, 1, 226, 38, 5, 155, 0, 0, 0, 0, 73, 69, 
+  78, 68, 174, 66, 96, 130
+]);
+
 // CRITICAL: This function MUST allow public access - no authentication required
 serve(async (req) => {
   // Set CORS headers for all responses
@@ -10,7 +18,7 @@ serve(async (req) => {
     "Access-Control-Allow-Methods": "POST, GET, OPTIONS, PUT, DELETE",
     "Access-Control-Max-Age": "3600"
   }
-  
+
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }
@@ -18,11 +26,11 @@ serve(async (req) => {
   try {
     const url = new URL(req.url)
     const pathParts = url.pathname.split('/').filter(p => p.length > 0)
-    
+
     console.log('=== TILE PROXY REQUEST ===')
     console.log('Full URL:', req.url)
     console.log('Path parts:', pathParts)
-    
+
     // Expected path: /functions/v1/tile-proxy/{tilesetId}/{z}/{x}/{y}.png
     // pathParts after filtering: ['functions', 'v1', 'tile-proxy', '{tilesetId}', '{z}', '{x}', '{y}.png']
     //                   indices:   0           1    2             3              4      5      6
@@ -32,7 +40,7 @@ serve(async (req) => {
     if (tileProxyIdx === -1 || pathParts.length < tileProxyIdx + 5) {
       throw new Error(`Invalid tile path format. Expected .../tile-proxy/{id}/{z}/{x}/{y}.png. Got: ${url.pathname}`)
     }
-    
+
     tilesetIdOrName = pathParts[tileProxyIdx + 1]
     z = parseInt(pathParts[tileProxyIdx + 2])
     x = parseInt(pathParts[tileProxyIdx + 3])
@@ -40,12 +48,12 @@ serve(async (req) => {
 
     const lastDotIndex = yWithExt.lastIndexOf('.')
     if (lastDotIndex === -1) throw new Error('Missing file extension in tile URL')
-    
+
     const y = parseInt(yWithExt.substring(0, lastDotIndex))
     const ext = yWithExt.substring(lastDotIndex + 1)
-    
+
     console.log('Parsed tile request:', { tilesetIdOrName, z, x, y, ext })
-    
+
     if (isNaN(z) || isNaN(x) || isNaN(y) || z < 0 || x < 0 || y < 0) {
       throw new Error(`Invalid tile coordinates: z=${z}, x=${x}, y=${y}`)
     }
@@ -128,19 +136,21 @@ serve(async (req) => {
     }
 
     if (!r2FolderPath) {
-      return new Response(
-        JSON.stringify({ 
-          error: 'Tile source not found',
-          message: `No tileset or tile map found for ID: ${tilesetIdOrName}`,
-        }),
-        { status: 404, headers: { 'Content-Type': 'application/json', ...corsHeaders } }
-      )
+      console.log(`Tileset not found for ID: ${tilesetIdOrName}, returning transparent fallback tile.`);
+      return new Response(TRANSPARENT_PNG, {
+        status: 200,
+        headers: {
+          ...corsHeaders,
+          'Content-Type': 'image/png',
+          'Cache-Control': 'public, max-age=86400'
+        }
+      })
     }
 
     // Build the R2 tile key from the folder path
     const normalizedPath = r2FolderPath.endsWith('/') ? r2FolderPath : `${r2FolderPath}/`
     const primaryTileKey = `${normalizedPath}${z}/${x}/${y}.${ext}`
-    
+
     console.log('Fetching tile from R2:', { bucket: r2BucketName, key: primaryTileKey })
 
     const getPrimaryCommand = new GetObjectCommand({
@@ -157,36 +167,35 @@ serve(async (req) => {
         const n = Math.pow(2, z)
         const flippedY = n - 1 - y
         const fallbackTileKey = `${normalizedPath}${z}/${x}/${flippedY}.${ext}`
-        
+
         console.log(`Primary tile not found. Trying TMS fallback: ${fallbackTileKey}`)
-        
+
         const getFallbackCommand = new GetObjectCommand({
           Bucket: r2BucketName,
           Key: fallbackTileKey
         })
-        
+
         try {
           response = await s3Client.send(getFallbackCommand)
         } catch (innerError: any) {
-          console.error('Error fetching fallback tile from R2:', innerError)
-          return new Response(JSON.stringify({ 
-            error: 'Tile not found',
-            r2_path: primaryTileKey,
-            tms_path: fallbackTileKey,
-            details: innerError.Code || innerError.message
-          }), { 
-            status: 404, 
-            headers: { 'Content-Type': 'application/json', ...corsHeaders } 
+          console.error(`Tile strictly not found (primary & fallback failed). Returning transparent fallback tile.`);
+          return new Response(TRANSPARENT_PNG, {
+            status: 200,
+            headers: {
+              ...corsHeaders,
+              'Content-Type': 'image/png',
+              'Cache-Control': 'public, max-age=86400'
+            }
           })
         }
       } else {
         console.error('Error fetching tile from R2:', s3Error)
-        return new Response(JSON.stringify({ 
+        return new Response(JSON.stringify({
           error: 'R2 fetch error',
           details: s3Error.Code || s3Error.message
-        }), { 
-          status: 500, 
-          headers: { 'Content-Type': 'application/json', ...corsHeaders } 
+        }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json', ...corsHeaders }
         })
       }
     }
@@ -195,7 +204,7 @@ serve(async (req) => {
       if (!response.Body) {
         throw new Error('Tile not found - empty response body')
       }
-      
+
       console.log('SUCCESS: Tile found in R2')
       const tileData = await response.Body.transformToByteArray()
       const contentType = ext === 'png' ? 'image/png' : 'image/jpeg'
@@ -207,22 +216,22 @@ serve(async (req) => {
           'Cache-Control': 'public, max-age=86400'
         }
       })
-      
+
     } catch (processError: any) {
       console.error('Error processing tile data:', processError)
-      return new Response(JSON.stringify({ 
+      return new Response(JSON.stringify({
         error: 'Tile processing error',
         details: processError.message
-      }), { 
-        status: 500, 
-        headers: { 'Content-Type': 'application/json', ...corsHeaders } 
+      }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders }
       })
     }
 
   } catch (error) {
     console.error('TILE PROXY ERROR:', error)
     return new Response(
-      JSON.stringify({ 
+      JSON.stringify({
         error: 'Tile proxy internal error',
         details: error instanceof Error ? error.message : 'Unknown error',
       }),

@@ -37,10 +37,10 @@ serve(async (req) => {
 
     // Verify the calling user is logged in
     const token = authHeader.replace('Bearer ', '')
-    const { data: { user }, error: authError } = await supabaseAnon.auth.getUser(token)
+    const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(token)
     if (authError || !user) {
       console.error("Auth error:", authError)
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), { 
+      return new Response(JSON.stringify({ error: 'Unauthorized', details: authError?.message || 'No user found' }), { 
         status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       })
     }

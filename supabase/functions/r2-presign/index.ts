@@ -82,7 +82,7 @@ serve(async (req) => {
     const objectKey = `${sanitizedCourseName}/${category}/${timestamp}_${sanitizedFileName}`
 
     // Log Content-Type for debugging
-    console.log('Presign request Content-Type:', fileType);
+    console.log('Presign request Content-Type:', resolvedFileType);
 
     // Store file metadata in database first
     const { data: fileRecord, error } = await supabase
@@ -94,7 +94,7 @@ serve(async (req) => {
         r2_object_key: objectKey,
         r2_bucket_name: r2BucketName,
         file_size: fileSize,
-        mime_type: fileType,
+        mime_type: resolvedFileType,
         file_extension: fileName.split('.').pop()?.toLowerCase(),
         golf_course_id: golfCourseId,
         file_category: category,
@@ -131,7 +131,7 @@ serve(async (req) => {
     const command = new PutObjectCommand({
       Bucket: r2BucketName,
       Key: objectKey,
-      ContentType: fileType,
+      ContentType: resolvedFileType,
     });
 
     const uploadUrl = await getSignedUrl(s3, command, { expiresIn: 900 }); // 15 minutes

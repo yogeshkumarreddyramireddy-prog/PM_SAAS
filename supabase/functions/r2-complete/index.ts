@@ -132,7 +132,7 @@ async function triggerTiffTiling(fileId: string, supabase: any) {
     // Fetch the file record to check if it's a TIFF in live_maps
     const { data: fileRecord, error: fetchError } = await supabase
       .from('content_files')
-      .select('id, original_filename, r2_object_key, golf_course_id, file_category')
+      .select('id, original_filename, r2_object_key, golf_course_id, file_category, mime_type')
       .eq('id', fileId)
       .single()
 
@@ -142,7 +142,7 @@ async function triggerTiffTiling(fileId: string, supabase: any) {
     }
 
     const filename = (fileRecord.original_filename || '').toLowerCase()
-    const isTiff = filename.endsWith('.tif') || filename.endsWith('.tiff')
+    const isTiff = filename.endsWith('.tif') || filename.endsWith('.tiff') || fileRecord.mime_type === 'image/tiff'
     const isLiveMaps = fileRecord.file_category === 'live_maps'
 
     if (!isTiff || !isLiveMaps) {
@@ -166,11 +166,25 @@ async function triggerTiffTiling(fileId: string, supabase: any) {
     }
 
     const sanitizedCourseName = course.name.replace(/[^a-zA-Z0-9.-]/g, '_')
+    
+    // Heuristic: If filename contains 'multispectral', 'ms', or 'ndvi', use COG pathway
+    const isMultispectral = filename.includes('multispectral') || 
+                           filename.includes('-ms-') || 
+                           filename.includes('_ms_') ||
+                           filename.includes('ndvi');
+    
+    const workflow = isMultispectral ? 'process-cog.yml' : 'tile-geotiff.yml';
 
     // Update file status to 'processing'
     await supabase
       .from('content_files')
-      .update({ status: 'processing' })
+      .update({ 
+        status: 'processing',
+        metadata: { 
+          ...(fileRecord.metadata || {}),
+          processing_pathway: isMultispectral ? 'COG' : 'PNG_TILES'
+        }
+      })
       .eq('id', fileId)
 
     // Call the trigger-tiling edge function
@@ -179,7 +193,8 @@ async function triggerTiffTiling(fileId: string, supabase: any) {
         fileId: fileRecord.id,
         r2Key: fileRecord.r2_object_key,
         golfCourseId: fileRecord.golf_course_id.toString(),
-        golfCourseName: sanitizedCourseName
+        golfCourseName: sanitizedCourseName,
+        workflow: workflow
       }
     })
 

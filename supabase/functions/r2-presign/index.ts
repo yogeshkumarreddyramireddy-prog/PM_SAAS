@@ -20,13 +20,25 @@ serve(async (req) => {
   }
 
   try {
-    const { fileName, fileType, fileSize, golfCourseId, category, metadata = {}, gpsCoordinates }: R2PresignRequest = await req.json()
+    const { fileName, fileSize, golfCourseId, category, metadata = {}, gpsCoordinates, fileType: parsedFileType = '' }: R2PresignRequest & { fileType?: string } = await req.json()
 
-    console.log('Presign request:', { fileName, fileType, fileSize, golfCourseId, category })
+
+    // Derive MIME from extension when browser sends empty type (common for .tiff on macOS)
+    const ext = fileName?.split('.').pop()?.toLowerCase() || ''
+    const extMimeMap: Record<string, string> = {
+      tif: 'image/tiff', tiff: 'image/tiff',
+      jpg: 'image/jpeg', jpeg: 'image/jpeg',
+      png: 'image/png', webp: 'image/webp',
+      pdf: 'application/pdf', zip: 'application/zip',
+      glb: 'model/gltf-binary', gltf: 'model/gltf+json',
+    }
+    const resolvedFileType = parsedFileType || extMimeMap[ext] || 'application/octet-stream'
+
+    console.log('Presign request:', { fileName, resolvedFileType, fileSize, golfCourseId, category })
 
     // Validate required fields
-    if (!fileName || !fileType || fileSize === undefined || fileSize === null || !golfCourseId || !category) {
-      throw new Error('Missing required fields: fileName, fileType, fileSize, golfCourseId, category')
+    if (!fileName || !fileSize || !golfCourseId || !category) {
+      throw new Error(`Missing required fields. Got: fileName=${fileName}, fileSize=${fileSize}, golfCourseId=${golfCourseId}, category=${category}`)
     }
 
     // Get R2 credentials from environment

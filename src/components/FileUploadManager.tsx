@@ -130,7 +130,12 @@ export const FileUploadManagerFixed = ({
               // Refresh session every 5 parts to avoid JWT expiry on very long uploads
               if (idx % 5 === 0) await supabase.auth.getSession();
 
-              const resp = await fetch(partUrlObj.url, { method: 'PUT', body: chunk });
+              // Use application/octet-stream for chunks to match the backend signature
+              const resp = await fetch(partUrlObj.url, { 
+                method: 'PUT', 
+                body: chunk,
+                headers: { 'Content-Type': 'application/octet-stream' }
+              });
               if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
               const rawEtag = resp.headers.get('ETag');
               if (!rawEtag) throw new Error('No ETag in response');

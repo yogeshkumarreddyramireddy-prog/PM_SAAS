@@ -6,6 +6,7 @@ interface TriggerTilingRequest {
   r2Key: string
   golfCourseId: string
   golfCourseName: string
+  workflow?: 'tile-geotiff.yml' | 'process-cog.yml'
 }
 
 serve(async (req) => {
@@ -15,9 +16,9 @@ serve(async (req) => {
   }
 
   try {
-    const { fileId, r2Key, golfCourseId, golfCourseName }: TriggerTilingRequest = await req.json()
+    const { fileId, r2Key, golfCourseId, golfCourseName, workflow = 'tile-geotiff.yml' }: TriggerTilingRequest = await req.json()
 
-    console.log(`🚀 Triggering tiling workflow for file ${fileId}`)
+    console.log(`🚀 Triggering ${workflow} for file ${fileId}`)
     console.log(`   R2 Key: ${r2Key}`)
     console.log(`   Golf Course: ${golfCourseName} (${golfCourseId})`)
 
@@ -31,7 +32,7 @@ serve(async (req) => {
     }
 
     // Trigger GitHub Actions workflow via the REST API
-    const workflowUrl = `https://api.github.com/repos/${githubOwner}/${githubRepo}/actions/workflows/tile-geotiff.yml/dispatches`
+    const workflowUrl = `https://api.github.com/repos/${githubOwner}/${githubRepo}/actions/workflows/${workflow}/dispatches`
 
     const response = await fetch(workflowUrl, {
       method: 'POST',

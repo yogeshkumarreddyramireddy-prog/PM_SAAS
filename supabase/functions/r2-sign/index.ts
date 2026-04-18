@@ -692,18 +692,30 @@ serve(async (req) => {
           const date = timestamp.substr(0, 8);
           const endpoint = `https://${bucket}.${accountId}.r2.cloudflarestorage.com`;
 
+          const contentType = 'application/octet-stream';
           const queryParams: Record<string, string> = {
             'X-Amz-Algorithm': 'AWS4-HMAC-SHA256',
             'X-Amz-Credential': `${accessKeyId}/${date}/${region}/s3/aws4_request`,
             'X-Amz-Date': timestamp,
             'X-Amz-Expires': '3600',
-            'X-Amz-SignedHeaders': 'host',
+            'X-Amz-SignedHeaders': 'content-type;host',
             'partNumber': part.toString(),
             'uploadId': uploadId
           };
 
           const canonicalQuery = Object.keys(queryParams).sort().map(k => `${encodeURIComponent(k)}=${encodeURIComponent(queryParams[k])}`).join('&');
-          const canonicalRequest = ['PUT', `/${encodeURIComponent(key).replace(/%2F/g, '/')}`, canonicalQuery, `host:${bucket}.${accountId}.r2.cloudflarestorage.com\n`, 'host', 'UNSIGNED-PAYLOAD'].join('\n');
+          const canonicalHeaders = `content-type:${contentType}\nhost:${bucket}.${accountId}.r2.cloudflarestorage.com\n`;
+          const signedHeaders = 'content-type;host';
+          
+          const canonicalRequest = [
+            'PUT',
+            `/${encodeURIComponent(key).replace(/%2F/g, '/')}`,
+            canonicalQuery,
+            canonicalHeaders,
+            signedHeaders,
+            'UNSIGNED-PAYLOAD'
+          ].join('\n');
+
           const stringToSign = ['AWS4-HMAC-SHA256', timestamp, `${date}/${region}/s3/aws4_request`, await sha256Hex(canonicalRequest)].join('\n');
           const signatureKey = await getSigningKey(secretAccessKey, date, region, 's3');
           const signature = Array.from(await hmacSha256Binary(signatureKey, stringToSign)).map(b => b.toString(16).padStart(2, '0')).join('');

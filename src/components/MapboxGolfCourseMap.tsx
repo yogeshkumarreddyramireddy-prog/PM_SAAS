@@ -19,6 +19,9 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, DragEndEvent } from '@dnd-kit/core';
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { SortableLayerItem } from '@/components/SortableLayerItem';
+import { AnalysisPanel } from '@/components/AnalysisPanel';
+import { MapAnalyticsEngine } from '@/components/MapAnalyticsEngine';
+import { VegetationIndex } from '@/lib/vegetation-indices';
 
 import { GolfCourseTileset } from "@/lib/tilesetService";
 
@@ -83,6 +86,15 @@ const MapboxGolfCourseMap = ({
   const [visibleVectorLayers, setVisibleVectorLayers] = useState<Set<string>>(new Set());
   const [showVectorLayerPanel, setShowVectorLayerPanel] = useState(false);
   const [vectorLayersAboveHealth, setVectorLayersAboveHealth] = useState(true);
+
+  // Analysis Panel States
+  const [analysisModeEnabled, setAnalysisModeEnabled] = useState(false);
+  const [analysisIndex, setAnalysisIndex] = useState<VegetationIndex>('RGB_VARI');
+  const [analysisRange, setAnalysisRange] = useState<[number, number]>([-0.5, 0.5]);
+  const [analysisModeMap, setAnalysisModeMap] = useState<'RGB' | 'Multispectral' | 'None'>('None');
+  const [analysisTileUrl, setAnalysisTileUrl] = useState<string | null>(null);
+  const [analysisHistogramData, setAnalysisHistogramData] = useState<Array<{ value: number; count: number }>>([]);
+  const [bandMapping, setBandMapping] = useState({ r: 0, g: 1, b: 2, nir: 3, re: 3 }); // re defaults to NIR (band 3); set to 4 for 5-band sensors
 
   // Map of content_files.id → original_filename for raster display names
   const [rasterFileNames, setRasterFileNames] = useState<Record<string, string>>({});
@@ -633,6 +645,44 @@ const MapboxGolfCourseMap = ({
 
     loadSelectedRasters();
   }, [showRasterLayers, selectedLayers, tilesets, mapReady, syncLayerOrder]);
+
+  // Sync Analysis engine mode when a raster layer selection changes
+  useEffect(() => {
+    if (selectedLayers.length > 0) {
+      const activeTileset = tilesets.find(t => t.id === selectedLayers[0]);
+      if (activeTileset) {
+        const isCog = activeTileset.format === 'cog';
+        const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+
+        if (isCog) {
+          // Pathway B: Multispectral COG — get a long-lived presigned R2 URL
+          setAnalysisModeMap('Multispectral');
+          setAnalysisIndex('MS_NDVI');
+          setAnalysisRange([-1, 1]);
+          // Fetch a presigned URL for the COG file (needs long expiry for byte-range requests)
+          import('@/lib/r2Service').then(({ R2Service }) => {
+            R2Service.getGetUrl(activeTileset.r2_folder_path, 4 * 3600)
+              .then(({ url }) => setAnalysisTileUrl(url))
+              .catch(err => {
+                console.error('Failed to get COG presigned URL:', err);
+                setAnalysisTileUrl(null);
+              });
+          });
+        } else {
+          // Pathway A: Standard RGB PNG tiles — route through tile-proxy
+          setAnalysisModeMap('RGB');
+          setAnalysisTileUrl(`${supabaseUrl}/functions/v1/tile-proxy/${encodeURIComponent(activeTileset.id)}/{z}/{x}/{y}.png`);
+          setAnalysisIndex('RGB_VARI');
+          setAnalysisRange([-0.5, 0.5]);
+        }
+      }
+    } else {
+      setAnalysisModeMap('None');
+      setAnalysisTileUrl(null);
+      setAnalysisModeEnabled(false);
+    }
+  }, [selectedLayers, tilesets]);
+
 
   // Update raster opacity dynamically
   useEffect(() => {
@@ -1537,16 +1587,43 @@ const MapboxGolfCourseMap = ({
           </div>
 
           {/* === Layers Toggle Button (top-left) === */}
-          <div className="absolute top-4 left-4 z-20">
+          <div className="absolute top-4 left-4 z-20 flex flex-col gap-3">
             <button
-              className="bg-background/95 backdrop-blur shadow-md border border-border rounded-lg px-3 py-2 flex items-center gap-2 text-sm font-semibold hover:bg-muted/60 transition-colors"
+              className="bg-background/95 backdrop-blur shadow-md border border-border rounded-lg px-3 py-2 flex items-center gap-2 text-sm font-semibold hover:bg-muted/60 transition-colors w-fit"
               onClick={() => setShowVectorLayerPanel(v => !v)}
             >
               <Layers className="w-4 h-4 text-primary" />
               <span>{t.map.layersBtn}</span>
               {showVectorLayerPanel && <X className="w-3 h-3 opacity-60 ml-0.5" />}
             </button>
+
+            {/* Dynamic Analysis Panel (Below Layers) */}
+            <AnalysisPanel
+               mapMode={analysisModeMap}
+               isEnabled={analysisModeEnabled}
+               onToggleEnable={setAnalysisModeEnabled}
+               selectedIndex={analysisIndex}
+               onSelectIndex={setAnalysisIndex}
+               range={analysisRange}
+               onRangeChange={setAnalysisRange}
+               histogramData={analysisHistogramData}
+               bandMapping={bandMapping}
+               onBandMappingChange={setBandMapping}
+            />
           </div>
+
+          {mapReady && (
+            <MapAnalyticsEngine
+              map={map.current}
+              isEnabled={analysisModeEnabled}
+              mode={analysisModeMap}
+              tileUrl={analysisTileUrl}
+              selectedIndex={analysisIndex}
+              range={analysisRange}
+              onHistogramData={setAnalysisHistogramData}
+              bandMapping={bandMapping}
+            />
+          )}
 
           {/* === Collapsible Left-Side Layer Panel (Teal Glossy Theme) === */}
           <div

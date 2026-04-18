@@ -2,7 +2,9 @@ const allowedOrigins = [
   "https://app.phytomaps.com",
   "https://turf.phytomaps.com",
   "http://localhost:3000",
-  "http://localhost:5173"
+  "http://localhost:5173",
+  "http://localhost:8080",
+  "http://localhost:8081"
 ]
 
 export function getCorsHeaders(origin: string | null, method: string = 'GET') {

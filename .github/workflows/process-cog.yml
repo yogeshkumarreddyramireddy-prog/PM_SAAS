@@ -1,0 +1,124 @@
+name: Process Cloud Optimized GeoTIFF (COG)
+
+on:
+  workflow_dispatch:
+    inputs:
+      file_id:
+        description: 'Content file ID from Supabase'
+        required: true
+        type: string
+      r2_key:
+        description: 'R2 object key of the uploaded Multispectral TIFF'
+        required: true
+        type: string
+      golf_course_id:
+        description: 'Golf course ID (integer)'
+        required: true
+        type: string
+      golf_course_name:
+        description: 'Golf course name (sanitized)'
+        required: true
+        type: string
+
+jobs:
+  process-cog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15 # Significantly faster than PNG tiling
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install GDAL and Python dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gdal-bin python3-gdal python3-pip
+          pip3 install boto3 requests
+
+      - name: Configure R2 Access
+        run: |
+          mkdir -p ~/.aws
+          cat > ~/.aws/credentials << EOF
+          [default]
+          aws_access_key_id=${{ secrets.R2_ACCESS_KEY_ID }}
+          aws_secret_access_key=${{ secrets.R2_SECRET_ACCESS_KEY }}
+          EOF
+          cat > ~/.aws/config << EOF
+          [default]
+          region = auto
+          EOF
+
+      - name: Download Raw TIFF from R2
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          echo "Downloading: ${{ inputs.r2_key }}"
+          aws s3 cp \
+            "s3://$R2_BUCKET/${{ inputs.r2_key }}" \
+            /tmp/input.tif \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+
+      - name: Extract Geospatial Metadata
+        id: metadata
+        run: |
+          # Reusing your existing awesome python extraction script
+          python3 scripts/extract_metadata.py /tmp/input.tif > /tmp/metadata.json
+          echo "bounds=$(python3 -c 'import json; m=json.load(open("/tmp/metadata.json")); print(json.dumps(m["bounds"]))')" >> $GITHUB_OUTPUT
+          echo "center_lat=$(python3 -c 'import json; m=json.load(open("/tmp/metadata.json")); print(m["center_lat"])')" >> $GITHUB_OUTPUT
+          echo "center_lon=$(python3 -c 'import json; m=json.load(open("/tmp/metadata.json")); print(m["center_lon"])')" >> $GITHUB_OUTPUT
+
+      - name: Convert to Cloud Optimized GeoTIFF (COG)
+        run: |
+          echo "Starting COG Conversion via GDAL..."
+          # This single command reorganizes the TIFF internally to support Byte-Range Requests
+          gdal_translate /tmp/input.tif /tmp/output_cog.tif \
+            -of COG \
+            -co COMPRESS=DEFLATE \
+            -co RESAMPLING=AVERAGE \
+            -co BIGTIFF=YES
+          
+          # Check size difference
+          ls -lh /tmp/input.tif /tmp/output_cog.tif
+
+      - name: Upload Single COG to R2
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          COURSE_NAME="${{ inputs.golf_course_name }}"
+          FILE_ID="${{ inputs.file_id }}"
+          # Note: We save it strictly as a single file instead of a folder array
+          R2_DESTINATION="${COURSE_NAME}/cogs/${FILE_ID}.tif"
+
+          echo "Uploading Single COG to R2: ${R2_DESTINATION}"
+
+          aws s3 cp \
+            /tmp/output_cog.tif \
+            "s3://$R2_BUCKET/${R2_DESTINATION}" \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --content-type "image/tiff"
+
+      - name: Register COG in Supabase
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          COURSE_NAME: ${{ inputs.golf_course_name }}
+          FILE_ID: ${{ inputs.file_id }}
+        run: |
+          R2_DESTINATION="${COURSE_NAME}/cogs/${FILE_ID}.tif"
+          echo "Registering COG: ${R2_DESTINATION}"
+          
+          curl -X POST "${SUPABASE_URL}/functions/v1/r2-complete-cog" \
+            -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"fileId\": \"${{ inputs.file_id }}\",
+              \"golfCourseId\": \"${{ inputs.golf_course_id }}\",
+              \"r2Key\": \"${R2_DESTINATION}\",
+              \"bounds\": ${{ steps.metadata.outputs.bounds }},
+              \"centerLat\": ${{ steps.metadata.outputs.center_lat }},
+              \"centerLon\": ${{ steps.metadata.outputs.center_lon }},
+              \"minZoom\": 14,
+              \"maxZoom\": 20
+            }"

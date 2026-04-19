@@ -4,115 +4,101 @@ import type { BitmapLayerProps } from '@deck.gl/layers';
 export interface VegetationIndexLayerProps extends BitmapLayerProps {
   shaderMath: string;
   range: [number, number];
-  /** Maps logical channels to physical RGBA bytes.
-   *  r/g/b: 0–2 = R/G/B channels; nir: 3 = Alpha channel.
-   *  re (Red-Edge): 0–3 selects from a second packed pixel where RE was stored.
-   *  For standard 4-band COGs packed as [R, G, B, NIR_as_Alpha], nir=3 and re=3
-   *  is a reasonable fallback (NDRE will be approximate). */
   bandMapping?: { r: number; g: number; b: number; nir: number; re: number };
 }
 
+const defaultBandMapping = { r: 0, g: 1, b: 2, nir: 3, re: 3 };
+
 const defaultProps = {
-  shaderMath: '(g - r) / (g + r - b + 0.000001)', // Default to VARI
-  range: [-1, 1],
-  bandMapping: { r: 0, g: 1, b: 2, nir: 3, re: 3 }, // re falls back to NIR by default
+  shaderMath: '(g - r) / (g + r - b + 0.000001)',
+  range: [-1, 1] as [number, number],
+  bandMapping: defaultBandMapping,
 };
 
 /**
- * A custom BitmapLayer that applies a vegetation index formula
- * directly on the GPU using a GLSL fragment shader.
+ * A custom BitmapLayer that applies a chosen vegetation index formula
+ * on the GPU via a GLSL fragment shader.
  *
- * Channels packed in the RGBA texture:
- *   R → logical red
- *   G → logical green
- *   B → logical blue
- *   A → NIR (near-infrared)
+ * ─── Strategy ────────────────────────────────────────────────────────────────
+ * Deck.GL v9 / Luma.GL v9 removed the old `model.setUniforms()` API and the
+ * old ShaderModule `getUniforms` callback pattern no longer auto-fires.
+ * Rather than fighting with the new UBO system, we take the simplest reliable
+ * approach: bake ALL values (range, band mapping, formula) directly into the
+ * GLSL source string at compile time. When any prop changes, the layer key
+ * changes and Deck.GL rebuilds the shader automatically.
  *
- * Red-Edge is mapped from the same texture via u_band_re. For 5-band sensors
- * where RE was stored separately, the bandMapping.re value can be updated to
- * point to the correct virtual channel once a second texture path is wired in.
- * For now RE falls back to NIR (channel 3) which gives approximate NDRE.
+ * ─── RGBA Texture Layout ─────────────────────────────────────────────────────
+ *   R → Band 0 (Red)
+ *   G → Band 1 (Green)
+ *   B → Band 2 (Blue  | NIR for 5-band sensors)
+ *   A → Band 3 (Alpha | NIR for 4-band RGB+alpha | RedEdge for 5-band)
  */
-// Custom Luma.GL shader module to safely bind uniforms in deck.gl v9
-const vegetationUniformsModule = {
-  name: 'vegetation_uniforms',
-  fs: `
-    uniform float u_range_min;
-    uniform float u_range_max;
-    uniform float u_band_r;
-    uniform float u_band_g;
-    uniform float u_band_b;
-    uniform float u_band_nir;
-    uniform float u_band_re;
-  `,
-  // Maps Deck.GL Layer props into WebGL uniforms matching the definitions above
-  getUniforms: (props: any) => {
-    if (!props) return {};
-    return {
-      u_range_min: props.range?.[0] ?? -1,
-      u_range_max: props.range?.[1] ?? 1,
-      u_band_r: props.bandMapping?.r ?? 0,
-      u_band_g: props.bandMapping?.g ?? 1,
-      u_band_b: props.bandMapping?.b ?? 2,
-      u_band_nir: props.bandMapping?.nir ?? 3,
-      u_band_re: props.bandMapping?.re ?? 3,
-    };
-  }
-};
-
 export class VegetationIndexLayer extends BitmapLayer<VegetationIndexLayerProps> {
   static layerName = 'VegetationIndexLayer';
   static defaultProps = defaultProps;
 
   getShaders() {
     const shaders = super.getShaders();
-    const { shaderMath } = this.props;
-    
-    // Mix in our custom uniform module for luma.gl v9 compatibility
-    shaders.modules = [...(shaders.modules || []), vegetationUniformsModule];
+
+    const {
+      shaderMath = defaultProps.shaderMath,
+      range = defaultProps.range,
+      bandMapping = defaultBandMapping,
+    } = this.props;
+
+    // Bake all values into the GLSL source so no uniform binding is needed.
+    const rangeMin = range[0].toFixed(8);
+    const rangeMax = range[1].toFixed(8);
+    const bR   = bandMapping.r.toFixed(1);
+    const bG   = bandMapping.g.toFixed(1);
+    const bB   = bandMapping.b.toFixed(1);
+    const bNir = bandMapping.nir.toFixed(1);
+    const bRe  = bandMapping.re.toFixed(1);
 
     shaders.inject = {
+      // Declare helper function in fragment shader
       'fs:#decl': `
-        // Returns the 0–1 value for the given channel index (0=R, 1=G, 2=B, 3=A)
-        float getBand(vec4 color, float index) {
-            if (index < 0.5) return color.r;
-            if (index < 1.5) return color.g;
-            if (index < 2.5) return color.b;
-            return color.a; // NIR stored in alpha
+        // Returns the 0-1 float value for texture channel index 0=R,1=G,2=B,3=A
+        float getBand(vec4 col, float idx) {
+          if (idx < 0.5) return col.r;
+          if (idx < 1.5) return col.g;
+          if (idx < 2.5) return col.b;
+          return col.a;
         }
       `,
-      'fs:DECKGL_FILTER_COLOR': `
-        // Extract logical channels based on configurable band mapping
-        float r = getBand(color, u_band_r);
-        float g = getBand(color, u_band_g);
-        float b = getBand(color, u_band_b);
-        float n = getBand(color, u_band_nir);
-        float e = getBand(color, u_band_re); // Red-Edge (falls back to NIR if unmapped)
 
-        // Apply the selected vegetation index formula
+      // Main vegetation index filter — all constants baked in at compile time
+      'fs:DECKGL_FILTER_COLOR': `
+        // Extract spectral channels (all constants, no uniforms needed)
+        float r = getBand(color, ${bR});
+        float g = getBand(color, ${bG});
+        float b = getBand(color, ${bB});
+        float n = getBand(color, ${bNir});
+        float e = getBand(color, ${bRe});
+
+        // Vegetation index formula (baked in)
         float val = ${shaderMath};
 
-        // Normalize to the user-defined range slider
-        float normalized = (val - u_range_min) / (u_range_max - u_range_min);
-        normalized = clamp(normalized, 0.0, 1.0);
+        // Map to [0,1] over the user's range (also baked in)
+        const float RANGE_MIN = ${rangeMin};
+        const float RANGE_MAX = ${rangeMax};
+        float denom = RANGE_MAX - RANGE_MIN;
+        float normalized = (denom > 0.0) ? clamp((val - RANGE_MIN) / denom, 0.0, 1.0) : 0.5;
 
-        // Color ramp: Red (0.0) → Yellow (0.5) → Green (1.0)
-        vec3 rgb;
+        // Color ramp: Red → Yellow → Green
+        vec3 outRgb;
         if (normalized < 0.5) {
-            rgb = mix(vec3(0.93, 0.26, 0.26), vec3(0.91, 0.70, 0.03), normalized * 2.0);
+          outRgb = mix(vec3(0.93, 0.26, 0.26), vec3(0.91, 0.70, 0.03), normalized * 2.0);
         } else {
-            rgb = mix(vec3(0.91, 0.70, 0.03), vec3(0.13, 0.77, 0.36), (normalized - 0.5) * 2.0);
+          outRgb = mix(vec3(0.91, 0.70, 0.03), vec3(0.13, 0.77, 0.36), (normalized - 0.5) * 2.0);
         }
 
-        // Preserve transparency for nodata pixels.
-        // NOTE: Float32 reflectance values are small (e.g. 0.003–0.13 range).
-        // We use a very low threshold so valid low-reflectance pixels are NOT discarded.
-        float total_refl = r + g + b + n + e;
-        color = vec4(rgb, total_refl > 0.0001 ? 1.0 : 0.0);
+        // Nodata = all bands zero. Use very small threshold to handle Float32 reflectance.
+        float total = r + g + b + n + e;
+        color = vec4(outRgb, total > 0.0001 ? 1.0 : 0.0);
       `
     };
 
     return shaders;
   }
-
 }

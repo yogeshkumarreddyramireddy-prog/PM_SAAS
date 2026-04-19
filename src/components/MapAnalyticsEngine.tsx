@@ -155,6 +155,42 @@ export function MapAnalyticsEngine({
 
   }, [map, isEnabled, mode, tileUrl, selectedIndex, range, bandMapping, overlay, config]);
 
+  // ─── Auto-Fly Logic ────────────────────────────────────────────────────────
+  // When a Multispectral COG is selected, automatically fly the map to its bounds.
+  const [hasFlownTo, setHasFlownTo] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (mode !== 'Multispectral' || !tileUrl || !map || hasFlownTo === tileUrl) return;
+
+    const flyToData = async () => {
+      try {
+        if (!cogLoaders[tileUrl]) {
+            cogLoaders[tileUrl] = new COGLoader(tileUrl);
+        }
+        await cogLoaders[tileUrl].init();
+        const bounds = cogLoaders[tileUrl].getBoundsWGS84();
+        
+        if (bounds) {
+          console.log('[MapAnalyticsEngine] Auto-flying to COG bounds:', bounds);
+          map.fitBounds([
+            [bounds[0], bounds[1]],
+            [bounds[2], bounds[3]]
+          ], { padding: 50, duration: 2000 });
+          setHasFlownTo(tileUrl);
+        }
+      } catch (e) {
+        console.warn('[MapAnalyticsEngine] Failed to auto-fly to COG bounds:', e);
+      }
+    };
+
+    flyToData();
+  }, [mode, tileUrl, map, hasFlownTo]);
+
+  // Reset fly-to state when layer is deselected
+  useEffect(() => {
+    if (mode === 'None') setHasFlownTo(null);
+  }, [mode]);
+
   // ─── Cleanup ────────────────────────────────────────────────────────────────
   useEffect(() => {
     return () => {

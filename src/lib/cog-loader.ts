@@ -1,6 +1,9 @@
 import * as GeoTIFF from 'geotiff';
 import proj4 from 'proj4';
 
+// Register common UTM Zone 32N definition (De Hattemse use case)
+proj4.defs('EPSG:32632', '+proj=utm +zone=32 +datum=WGS84 +units=m +no_defs');
+
 // ─── Tile helpers ─────────────────────────────────────────────────────────────
 
 /** Convert a Mapbox slippy-tile (x, y, z) to WGS84 lon/lat bounding box */
@@ -43,6 +46,9 @@ export class COGLoader {
   private isFloat32 = false;
   private is16Bit   = false;
 
+  // EPSG code read from the GeoTIFF's metadata (e.g. 32632 for UTM zone 32N)
+  private epsgCode: number | null = null;
+
   // proj4 reprojection function (lon/lat → native CRS), null if already geographic
   private project: ((lon: number, lat: number) => [number, number]) | null = null;
 
@@ -81,35 +87,43 @@ export class COGLoader {
     // CRS reprojection setup via proj4
     // geotiff.js exposes the EPSG code through geoKeyDirectory
     const geoKeys = (this.image as any).geoKeyDirectory || {};
-    const epsgCode: number | undefined =
-      geoKeys.ProjectedCSTypeGeoKey ||
-      geoKeys.GeographicTypeGeoKey;
+    const epsgCode = geoKeys.ProjectedCSTypeGeoKey || geoKeys.GeographicTypeGeoKey;
+    this.epsgCode = epsgCode || null;
 
-    if (epsgCode && epsgCode !== 4326) {
-      // Build a proj4 projection from the EPSG code.
-      // proj4 has built-in definitions for common EPSG codes including all UTM zones.
+    if (this.epsgCode && this.epsgCode !== 4326) {
       try {
-        const sourceDef = `EPSG:${epsgCode}`;
-        const destDef   = 'WGS84'; // proj4's WGS84 = EPSG:4326
+        const sourceDef = `EPSG:${this.epsgCode}`;
+        const destDef   = 'WGS84';
 
-        // Test that proj4 knows this CRS (throws if unknown)
-        proj4(destDef, sourceDef, [0, 0]);
+        // Check if we have a definition for this EPSG. 
+        // If not, we'll try to use a generic UTM definition if it looks like UTM.
+        if (!proj4.defs(sourceDef)) {
+            console.warn(`[COGLoader] No definition for EPSG:${this.epsgCode}, trying to identify UTM zone...`);
+            // Simple heuristic for UTM zones (EPSG 326xx or 327xx)
+            if (this.epsgCode >= 32601 && this.epsgCode <= 32660) {
+                const zone = this.epsgCode - 32600;
+                proj4.defs(sourceDef, `+proj=utm +zone=${zone} +datum=WGS84 +units=m +no_defs`);
+            } else if (this.epsgCode >= 32701 && this.epsgCode <= 32760) {
+                const zone = this.epsgCode - 32700;
+                proj4.defs(sourceDef, `+proj=utm +zone=${zone} +south +datum=WGS84 +units=m +no_defs`);
+            } else if (this.epsgCode === 3857) {
+                proj4.defs('EPSG:3857', '+proj=merc +a=6378137 +b=6378137 +lat_ts=0.0 +lon_0=0.0 +x_0=0.0 +y_0=0 +k=1.0 +units=m +nadgrids=@null +wktext +no_defs');
+            }
+        }
 
         // Store a forward projector: WGS84 lon/lat → native CRS
         this.project = (lon: number, lat: number) => {
-          const [px, py] = proj4(destDef, sourceDef, [lon, lat]);
-          return [px, py];
+          return proj4(destDef, sourceDef, [lon, lat]);
         };
 
-        console.log(`[COGLoader] CRS EPSG:${epsgCode} — using proj4 reprojection`);
+        console.log(`[COGLoader] CRS EPSG:${this.epsgCode} initialized successfully.`);
       } catch (e) {
-        console.warn(`[COGLoader] proj4 does not know EPSG:${epsgCode}, falling back to identity`, e);
+        console.warn(`[COGLoader] Failed to initialize projection for EPSG:${this.epsgCode}`, e);
         this.project = null;
       }
     } else {
-      // Geographic (lat/lon) — no reprojection needed
       this.project = null;
-      console.log('[COGLoader] CRS is geographic — no reprojection needed');
+      console.log('[COGLoader] CRS is WGS84 (geographic) or unknown.');
     }
 
     console.log(`[COGLoader] init: origin=(${this.originX}, ${this.originY}) res=(${this.pixelWidth}, ${this.pixelHeight}) size=${this.imgWidth}×${this.imgHeight} bands=${this.bandCount} float32=${this.isFloat32}`);
@@ -265,11 +279,43 @@ export class COGLoader {
     return rgba;
   }
 
-  // ─── Public helpers ───────────────────────────────────────────────────────
-
   /** Number of spectral bands (available after init()) */
   getBandCount(): number { return this.bandCount; }
 
   /** True if bands contain floating-point reflectance values */
   getIsFloat32(): boolean { return this.isFloat32; }
+
+  /**
+   * Returns the COG's bounding box in WGS84 [west, south, east, north].
+   * Must be called after init() resolves.
+   * Returns null if the image has not been initialized yet.
+   */
+  getBoundsWGS84(): [number, number, number, number] | null {
+    if (!this.image) return null;
+
+    // The four corners of the image in native CRS
+    const x0 = this.originX;
+    const y0 = this.originY;
+    const x1 = this.originX + this.pixelWidth  * this.imgWidth;
+    const y1 = this.originY + this.pixelHeight * this.imgHeight; // pixelHeight is negative
+
+    const minX = Math.min(x0, x1);
+    const maxX = Math.max(x0, x1);
+    const minY = Math.min(y0, y1);
+    const maxY = Math.max(y0, y1);
+
+    if (this.project && this.epsgCode) {
+      try {
+        const sourceDef = `EPSG:${this.epsgCode}`;
+        const sw = proj4(sourceDef, 'WGS84', [minX, minY]);
+        const ne = proj4(sourceDef, 'WGS84', [maxX, maxY]);
+        return [sw[0], sw[1], ne[0], ne[1]];
+      } catch (e) {
+        console.error('[COGLoader] Failed to invert projection for bounds:', e);
+        return null;
+      }
+    } else {
+      return [minX, minY, maxX, maxY];
+    }
+  }
 }

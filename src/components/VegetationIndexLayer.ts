@@ -104,9 +104,11 @@ export class VegetationIndexLayer extends BitmapLayer<VegetationIndexLayerProps>
             rgb = mix(vec3(0.91, 0.70, 0.03), vec3(0.13, 0.77, 0.36), (normalized - 0.5) * 2.0);
         }
 
-        // Preserve transparency for empty/nodata pixels (since alpha channel holds NIR, sum all bands instead)
+        // Preserve transparency for nodata pixels.
+        // NOTE: Float32 reflectance values are small (e.g. 0.003–0.13 range).
+        // We use a very low threshold so valid low-reflectance pixels are NOT discarded.
         float total_refl = r + g + b + n + e;
-        color = vec4(rgb, total_refl > 0.01 ? 1.0 : 0.0);
+        color = vec4(rgb, total_refl > 0.0001 ? 1.0 : 0.0);
       `
     };
 

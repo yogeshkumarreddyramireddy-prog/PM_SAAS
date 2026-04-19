@@ -660,7 +660,9 @@ const MapboxGolfCourseMap = ({
           setAnalysisTileUrl(null); // Clear old proxy URL to avoid geotiff.js 500 error
           setAnalysisIndex('MS_NDVI');
           setAnalysisRange([-1, 1]);
-          setBandMapping({ r: 0, g: 1, b: 0, nir: 2, re: 3 }); // Multispectral: R(B1), G(B2), NIR(B3), RE(B4)
+          // Sensor: Band0=Red, Band1=Green, Band2=NIR, Band3=RedEdge (packed into RGBA: R,G,B=NIR,A=RE)
+          // No blue band on this sensor — shader accesses b channel but formulas don't use it
+          setBandMapping({ r: 0, g: 1, b: 2, nir: 2, re: 3 }); // b=nir as proxy since no blue band
           // Fetch a presigned URL for the COG file (needs long expiry for byte-range requests)
           import('@/lib/r2Service').then(({ R2Service }) => {
             R2Service.getGetUrl(activeTileset.r2_folder_path, 4 * 3600)

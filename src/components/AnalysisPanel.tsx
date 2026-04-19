@@ -170,7 +170,7 @@ export function AnalysisPanel({
                                     <SelectValue />
                                 </SelectTrigger>
                                 <SelectContent className="bg-slate-900 border-white/10">
-                                    {(mapMode === 'RGB' ? [0, 1, 2] : [0, 1, 2, 3, 4, 5]).map((b) => (
+                                    {(mapMode === 'RGB' ? [0, 1, 2] : [0, 1, 2, 3]).map((b) => (
                                         <SelectItem key={b} value={b.toString()} className="text-[10px] focus:bg-sky-500/20">
                                             Band {b + 1}
                                         </SelectItem>

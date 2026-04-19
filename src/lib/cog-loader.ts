@@ -74,7 +74,6 @@ export class COGLoader {
         Math.min(this.imgHeight, window[3]),
       ];
 
-      // geotiff.js readRasters uses internal overviews automatically
       const raster = await this.image.readRasters({
         window: clamped,
         width: tileSize,
@@ -82,7 +81,8 @@ export class COGLoader {
         interleave: false,
       });
 
-      return this.rastersToRGBA(raster, tileSize);
+      const rgba = this.rastersToRGBA(raster, tileSize);
+      return new ImageData(rgba, tileSize, tileSize);
     } catch (err) {
       console.error('COG Tile Fetch Error:', err);
       return null;
@@ -128,7 +128,9 @@ export class COGLoader {
     const nir = bands[3] || bands[0];
 
     // Detect max value for normalization (uint16 COGs are common)
-    const maxVal = this.image?.getBitsPerSample() === 16 ? 65535 : 255;
+    const bps = this.image?.getBitsPerSample();
+    const is16Bit = Array.isArray(bps) ? bps[0] === 16 : bps === 16;
+    const maxVal = is16Bit ? 65535 : 255;
     const scale = 255 / maxVal;
 
     for (let i = 0; i < size * size; i++) {

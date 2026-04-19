@@ -656,14 +656,18 @@ const MapboxGolfCourseMap = ({
 
         if (isCog) {
           // Pathway B: Multispectral COG — get a long-lived presigned R2 URL
-          setAnalysisModeMap('Multispectral');
+          setAnalysisModeMap('Loading'); // Prevent immediate render with old URL
+          setAnalysisTileUrl(null); // Clear old proxy URL to avoid geotiff.js 500 error
           setAnalysisIndex('MS_NDVI');
           setAnalysisRange([-1, 1]);
           setBandMapping({ r: 0, g: 1, b: 0, nir: 2, re: 3 }); // Multispectral: R(B1), G(B2), NIR(B3), RE(B4)
           // Fetch a presigned URL for the COG file (needs long expiry for byte-range requests)
           import('@/lib/r2Service').then(({ R2Service }) => {
             R2Service.getGetUrl(activeTileset.r2_folder_path, 4 * 3600)
-              .then(({ url }) => setAnalysisTileUrl(url))
+              .then(({ url }) => {
+                  setAnalysisModeMap('Multispectral'); 
+                  setAnalysisTileUrl(url);
+              })
               .catch(err => {
                 console.error('Failed to get COG presigned URL:', err);
                 setAnalysisTileUrl(null);

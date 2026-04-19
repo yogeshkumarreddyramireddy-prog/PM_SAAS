@@ -310,7 +310,7 @@ serve(async (req) => {
             }
           }
         }
-        const url = await createAWS4Url(body.action === 'getPutUrl' ? 'PUT' : 'GET', bucket, accountId, body.key, accessKeyId, secretAccessKey, region, expiresIn, body.action === 'getPutUrl' ? 'UNSIGNED-PAYLOAD' : '');
+        const url = await createAWS4Url(body.action === 'getPutUrl' ? 'PUT' : 'GET', bucket, accountId, body.key, accessKeyId, secretAccessKey, region, expiresIn, 'UNSIGNED-PAYLOAD');
         return new Response(JSON.stringify({ url, key: body.key, method: body.action === 'getPutUrl' ? 'PUT' : 'GET' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
       }
 
@@ -377,7 +377,7 @@ serve(async (req) => {
           }
         }
 
-        const url = await createAWS4Url('GET', bucket, accountId, '', accessKeyId, secretAccessKey, region, 60, '');
+        const url = await createAWS4Url('GET', bucket, accountId, '', accessKeyId, secretAccessKey, region, 60, 'UNSIGNED-PAYLOAD');
         const resp = await fetch(url);
         const xmlText = await resp.text();
         // Simple parse: list <Key> elements (R2 returns XML)
@@ -412,7 +412,7 @@ serve(async (req) => {
         }
 
         // Generate signed URL
-        const signedUrl = await createAWS4Url('GET', bucket, accountId, body.key, accessKeyId, secretAccessKey, region, expiresIn, '');
+        const signedUrl = await createAWS4Url('GET', bucket, accountId, body.key, accessKeyId, secretAccessKey, region, expiresIn, 'UNSIGNED-PAYLOAD');
         return new Response(JSON.stringify({ url: signedUrl }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
       }
 

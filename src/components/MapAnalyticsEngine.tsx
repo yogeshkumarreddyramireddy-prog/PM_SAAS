@@ -135,7 +135,8 @@ export function MapAnalyticsEngine({
                 renderSubLayers: (props) => {
                     const { boundingBox } = props.tile;
                     return new VegetationIndexLayer(props, {
-                        data: props.data,
+                        data: null,
+                        image: props.data,
                         shaderMath: config.shaderMath,
                         range: range,
                         bandMapping: bandMapping,

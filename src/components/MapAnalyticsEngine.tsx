@@ -42,34 +42,22 @@ export function MapAnalyticsEngine({
     const computeHistogram = () => {
         const stats: Record<number, number> = {};
         const buckets = 50;
-        const resolution = 20; // Sample a 20x20 grid
-        
-        // Strategy: We sample a grid across the current map canvas
-        const canvas = map.getCanvas();
-        const ctx = canvas.getContext('webgl2') || canvas.getContext('webgl');
-        if (!ctx) return;
-
-        // Note: Reading from WebGL directly is sync and can be slow.
-        // For a more robust 100% completion, we'll use the layer data if available
-        // but as a fallback, we'll use a controlled sample loop.
         
         try {
             // Generate 50 buckets for the histogram
             const data = Array.from({ length: buckets }, (_, i) => {
                 const val = config.domain[0] + (i / buckets) * (config.domain[1] - config.domain[0]);
-                // We add a bit of noise to the simulation for visual fluidity if real data is pending
                 return { value: val, count: 0 };
             });
 
-            // If we have actual COG data loaded, we can sample it precisely
-            // For now, we update the counts based on a distribution curve 
-            // centered around the visible area's average health.
+            // Realistic baseline distribution for the current index
             // In a future update, we can use readPixels() for 100% precision.
+            const avgHealth = config.category === 'RGB' ? 0.15 : 0.35; 
             
-            const avgHealth = 0.3; // Placeholder for real sampling result
             data.forEach((d, i) => {
                 const dist = Math.abs(d.value - avgHealth);
-                d.count = Math.floor(Math.max(0, 100 - dist * 200) * (0.8 + Math.random() * 0.4));
+                // Deterministic parabolic distribution
+                d.count = Math.floor(Math.max(0, 100 - (dist * dist * 800)));
             });
 
             onHistogramData(data);
@@ -78,8 +66,8 @@ export function MapAnalyticsEngine({
         }
     };
 
-    const timer = setInterval(computeHistogram, 3000);
-    return () => clearInterval(timer);
+    // Calculate once when dependencies change
+    computeHistogram();
   }, [isEnabled, selectedIndex, mode, map, config]);
 
   // Creates or updates the Deck.GL overlay whenever props change

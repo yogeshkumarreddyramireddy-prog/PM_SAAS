@@ -192,15 +192,25 @@ serve(async (req) => {
 
   try {
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-    const supabase = createClient(supabaseUrl, supabaseKey);
-
+    // Standard pattern for auth: use ANON key and pass client Authorization header globally
+    const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
     const authHeader = req.headers.get('Authorization') || '';
-    const jwt = authHeader.replace('Bearer ', '');
-    if (!jwt) return new Response(JSON.stringify({ error: 'Missing Authorization' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 401 });
+    
+    // Client for auth verification
+    const supabaseAuthClient = createClient(supabaseUrl, supabaseAnonKey, {
+      global: { headers: { Authorization: authHeader } },
+      auth: { persistSession: false, autoRefreshToken: false }
+    });
 
-    const { data: { user }, error: userErr } = await supabase.auth.getUser(jwt);
-    if (userErr || !user) return new Response(JSON.stringify({ error: 'Unauthorized' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 401 });
+    if (!authHeader) return new Response(JSON.stringify({ error: 'Missing Authorization header' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 401 });
+
+    const { data: { user }, error: userErr } = await supabaseAuthClient.auth.getUser();
+    if (userErr || !user) return new Response(JSON.stringify({ success: false, error: 'Unauthorized', details: userErr?.message || 'No valid user session' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 401 });
+
+    // Client for admin operations
+    const supabase = createClient(supabaseUrl, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!, {
+      auth: { persistSession: false, autoRefreshToken: false }
+    });
 
     const { data: me, error: meErr } = await supabase.from('user_profiles').select('id, role, golf_course_id, approved').eq('id', user.id).single();
     if (meErr || !me) return new Response(JSON.stringify({ error: 'User not found' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 403 });

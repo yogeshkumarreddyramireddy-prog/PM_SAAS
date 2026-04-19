@@ -145,13 +145,19 @@ export function AnalysisPanel({
                 </summary>
                 
                 <div className="grid grid-cols-2 gap-x-4 gap-y-4 mt-5 p-3 rounded-xl bg-white/[0.02] border border-white/[0.05] shadow-inner">
-                    {[
-                        { label: 'Red Channel', key: 'r', color: 'text-red-400/80' },
-                        { label: 'Green Channel', key: 'g', color: 'text-green-400/80' },
-                        { label: 'Blue Channel', key: 'b', color: 'text-blue-400/80' },
-                        { label: 'NIR (Infrared)', key: 'nir', color: 'text-purple-400/80' },
-                        { label: 'Red-Edge', key: 're', color: 'text-orange-400/80' }
-                    ].map((item) => (
+                    {(mapMode === 'RGB'
+                      ? [
+                          { label: 'Red Channel', key: 'r', color: 'text-red-400/80' },
+                          { label: 'Green Channel', key: 'g', color: 'text-green-400/80' },
+                          { label: 'Blue Channel', key: 'b', color: 'text-blue-400/80' }
+                        ]
+                      : [
+                          { label: 'Red Channel', key: 'r', color: 'text-red-400/80' },
+                          { label: 'Green Channel', key: 'g', color: 'text-green-400/80' },
+                          { label: 'NIR (Infrared)', key: 'nir', color: 'text-purple-400/80' },
+                          { label: 'Red-Edge', key: 're', color: 'text-orange-400/80' }
+                        ]
+                    ).map((item) => (
                         <div key={item.key} className="flex flex-col gap-2">
                             <label className={`text-[9px] font-semibold tracking-wide ${item.color} flex items-center gap-1`}>
                               {item.label}
@@ -164,7 +170,7 @@ export function AnalysisPanel({
                                     <SelectValue />
                                 </SelectTrigger>
                                 <SelectContent className="bg-slate-900 border-white/10">
-                                    {[0, 1, 2, 3, 4, 5].map((b) => (
+                                    {(mapMode === 'RGB' ? [0, 1, 2] : [0, 1, 2, 3, 4, 5]).map((b) => (
                                         <SelectItem key={b} value={b.toString()} className="text-[10px] focus:bg-sky-500/20">
                                             Band {b + 1}
                                         </SelectItem>

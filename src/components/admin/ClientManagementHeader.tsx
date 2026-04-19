@@ -91,10 +91,10 @@ export const ClientManagementHeader = ({ searchTerm, onSearchChange, onAddClient
       </div>
 
       <Dialog open={showCourseModal} onOpenChange={handleCourseClose}>
-        <DialogContent>
+        <DialogContent aria-describedby="add-course-desc">
           <DialogHeader>
             <DialogTitle>Add New Golf Course</DialogTitle>
-            <DialogDescription>
+            <DialogDescription id="add-course-desc">
               Create a new standalone golf course. You can assign users to it later.
             </DialogDescription>
           </DialogHeader>

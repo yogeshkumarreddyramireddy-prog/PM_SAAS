@@ -659,6 +659,7 @@ const MapboxGolfCourseMap = ({
           setAnalysisModeMap('Multispectral');
           setAnalysisIndex('MS_NDVI');
           setAnalysisRange([-1, 1]);
+          setBandMapping({ r: 0, g: 1, b: 0, nir: 2, re: 3 }); // Multispectral: R(B1), G(B2), NIR(B3), RE(B4)
           // Fetch a presigned URL for the COG file (needs long expiry for byte-range requests)
           import('@/lib/r2Service').then(({ R2Service }) => {
             R2Service.getGetUrl(activeTileset.r2_folder_path, 4 * 3600)
@@ -674,6 +675,7 @@ const MapboxGolfCourseMap = ({
           setAnalysisTileUrl(`${supabaseUrl}/functions/v1/tile-proxy/${encodeURIComponent(activeTileset.id)}/{z}/{x}/{y}.png`);
           setAnalysisIndex('RGB_VARI');
           setAnalysisRange([-0.5, 0.5]);
+          setBandMapping({ r: 0, g: 1, b: 2, nir: 0, re: 0 }); // RGB: R(B1), G(B2), B(B3)
         }
       }
     } else {

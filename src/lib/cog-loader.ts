@@ -90,19 +90,45 @@ export class COGLoader {
   }
 
   /**
+   * Convert WGS84 lon, lat to Web Mercator (EPSG:3857) meters
+   */
+  private lonLatToWebMercator(lon: number, lat: number): [number, number] {
+    const x = (lon * 20037508.34) / 180;
+    let y = Math.log(Math.tan(((90 + lat) * Math.PI) / 360)) / (Math.PI / 180);
+    y = (y * 20037508.34) / 180;
+    return [x, y];
+  }
+
+  /**
    * Convert a geographic bbox (WGS84 lon/lat) into pixel coordinates
    * using the image's actual geotransform.
    */
   private geoBBoxToPixelWindow(
     minLon: number, minLat: number, maxLon: number, maxLat: number
   ): [number, number, number, number] {
-    // pixelWidth is degrees per pixel in X; pixelHeight is negative (top→bottom)
-    const xMin = Math.round((minLon - this.originX) / this.pixelWidth);
-    const xMax = Math.round((maxLon - this.originX) / this.pixelWidth);
+    let pMinX = minLon;
+    let pMinY = minLat;
+    let pMaxX = maxLon;
+    let pMaxY = maxLat;
 
-    // originY is top latitude; pixelHeight is negative, so larger lat = smaller pixel Y
-    const yMin = Math.round((this.originY - maxLat) / Math.abs(this.pixelHeight));
-    const yMax = Math.round((this.originY - minLat) / Math.abs(this.pixelHeight));
+    // Detect if the GeoTIFF origin is projected (meters) rather than geographic (degrees)
+    const isProjected = this.originX > 180 || this.originX < -180;
+    if (isProjected) {
+      const minProj = this.lonLatToWebMercator(minLon, minLat);
+      const maxProj = this.lonLatToWebMercator(maxLon, maxLat);
+      pMinX = minProj[0];
+      pMinY = minProj[1];
+      pMaxX = maxProj[0];
+      pMaxY = maxProj[1];
+    }
+
+    // pixelWidth is projection units per pixel in X; pixelHeight is usually negative (top→bottom)
+    const xMin = Math.round((pMinX - this.originX) / this.pixelWidth);
+    const xMax = Math.round((pMaxX - this.originX) / this.pixelWidth);
+
+    // originY is top; pixelHeight is negative, so larger Y value = smaller pixel Y
+    const yMin = Math.round((this.originY - pMaxY) / Math.abs(this.pixelHeight));
+    const yMax = Math.round((this.originY - pMinY) / Math.abs(this.pixelHeight));
 
     return [xMin, yMin, xMax, yMax];
   }

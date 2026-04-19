@@ -33,6 +33,33 @@ const defaultProps = {
  * point to the correct virtual channel once a second texture path is wired in.
  * For now RE falls back to NIR (channel 3) which gives approximate NDRE.
  */
+// Custom Luma.GL shader module to safely bind uniforms in deck.gl v9
+const vegetationUniformsModule = {
+  name: 'vegetation_uniforms',
+  fs: `
+    uniform float u_range_min;
+    uniform float u_range_max;
+    uniform float u_band_r;
+    uniform float u_band_g;
+    uniform float u_band_b;
+    uniform float u_band_nir;
+    uniform float u_band_re;
+  `,
+  // Maps Deck.GL Layer props into WebGL uniforms matching the definitions above
+  getUniforms: (props: any) => {
+    if (!props) return {};
+    return {
+      u_range_min: props.range?.[0] ?? -1,
+      u_range_max: props.range?.[1] ?? 1,
+      u_band_r: props.bandMapping?.r ?? 0,
+      u_band_g: props.bandMapping?.g ?? 1,
+      u_band_b: props.bandMapping?.b ?? 2,
+      u_band_nir: props.bandMapping?.nir ?? 3,
+      u_band_re: props.bandMapping?.re ?? 3,
+    };
+  }
+};
+
 export class VegetationIndexLayer extends BitmapLayer<VegetationIndexLayerProps> {
   static layerName = 'VegetationIndexLayer';
   static defaultProps = defaultProps;
@@ -40,17 +67,12 @@ export class VegetationIndexLayer extends BitmapLayer<VegetationIndexLayerProps>
   getShaders() {
     const shaders = super.getShaders();
     const { shaderMath } = this.props;
+    
+    // Mix in our custom uniform module for luma.gl v9 compatibility
+    shaders.modules = [...(shaders.modules || []), vegetationUniformsModule];
 
     shaders.inject = {
       'fs:#decl': `
-        uniform float u_range_min;
-        uniform float u_range_max;
-        uniform float u_band_r;
-        uniform float u_band_g;
-        uniform float u_band_b;
-        uniform float u_band_nir;
-        uniform float u_band_re;
-
         // Returns the 0–1 value for the given channel index (0=R, 1=G, 2=B, 3=A)
         float getBand(vec4 color, float index) {
             if (index < 0.5) return color.r;
@@ -91,29 +113,4 @@ export class VegetationIndexLayer extends BitmapLayer<VegetationIndexLayerProps>
     return shaders;
   }
 
-  draw(opts: any) {
-    const { range, bandMapping } = this.props as VegetationIndexLayerProps;
-    const bm = bandMapping ?? defaultProps.bandMapping;
-    
-    // Calculate the custom uniforms we need to pass into luma.gl
-    const uniforms: Record<string, number> = {
-        u_range_min:  range?.[0] ?? -1,
-        u_range_max:  range?.[1] ?? 1,
-        u_band_r:     bm.r,
-        u_band_g:     bm.g,
-        u_band_b:     bm.b,
-        u_band_nir:   bm.nir,
-        u_band_re:    bm.re,
-    };
-
-    // For deck.gl v8 backward compatibility
-    if (this.state.model && typeof this.state.model.setUniforms === 'function') {
-      this.state.model.setUniforms(uniforms);
-    }
-    
-    // For deck.gl v9+ uniform merging (injects before Model rendering)
-    opts.uniforms = { ...(opts.uniforms || {}), ...uniforms };
-
-    super.draw(opts);
-  }
 }

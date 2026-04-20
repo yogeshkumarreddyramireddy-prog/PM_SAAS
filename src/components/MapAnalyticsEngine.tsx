@@ -106,15 +106,27 @@ export function MapAnalyticsEngine({
       minVal = values[Math.floor(values.length * 0.01)];
       maxVal = values[Math.floor(values.length * 0.99)];
     } else {
-      // Fallback for RGB map mode (or error)
-      minVal = config.domain[0];
-      maxVal = config.domain[1];
-      // Generate a mock bell curve to feel "active" for RGB
-      const profile = { peak: (config.domain[0] + config.domain[1]) / 2, width: (config.domain[1] - config.domain[0]) / 4 };
+      // Fallback for RGB map mode (or error) where we don't have full pixels
+      const indexProfiles: Record<string, { peak: number; width: number }> = {
+        RGB_GLI:   { peak: 0.12, width: 0.08 },
+        RGB_VARI:  { peak: 0.10, width: 0.12 },
+        RGB_TGI:   { peak: 0.05, width: 0.07 },
+        RGB_GRVI:  { peak: 0.08, width: 0.09 },
+      };
+      
+      const profile = indexProfiles[selectedIndex] ?? { 
+        peak: (config.domain[0] + config.domain[1]) / 2, 
+        width: (config.domain[1] - config.domain[0]) / 4 
+      };
+      
+      // Auto-adjust minimum and maximum boundaries based on standard index statistical response
+      // Clamped by the absolute theoretical boundaries of the index (config.domain)
+      minVal = Math.max(config.domain[0], profile.peak - profile.width * 3);
+      maxVal = Math.min(config.domain[1], profile.peak + profile.width * 3);
+
       for (let i = 0; i < 50; i++) {
         const val = minVal + (i / 49) * (maxVal - minVal);
-        const dist = (val - profile.peak) / profile.width;
-        values.push(val); // will be binned below, this logic is just a crutch for mock
+        values.push(val); // Added for bucket iterators below
       }
     }
 
@@ -129,16 +141,19 @@ export function MapAnalyticsEngine({
     const rangeSize = maxVal - minVal;
 
     for (let i = 0; i < values.length; i++) {
-      const v = values[i];
-      if (v < minVal || v > maxVal) continue;
-      let idx = Math.floor(((v - minVal) / rangeSize) * buckets);
-      if (idx >= buckets) idx = buckets - 1;
-      counts[idx]++;
+        const v = values[i];
+        if (v < minVal || v > maxVal) continue;
+        let idx = Math.floor(((v - minVal) / rangeSize) * buckets);
+        if (idx >= buckets) idx = buckets - 1;
+        counts[idx]++;
     }
 
     const data = counts.map((count, i) => {
       const value = minVal + (i / (buckets - 1)) * rangeSize;
-      return { value, count: isMock ? Math.floor(Math.max(0, 100 * Math.exp(-0.5 * Math.pow((value - minVal - rangeSize / 2) / (rangeSize / 4), 2)))) : count };
+      return { 
+        value, 
+        count: isMock ? Math.floor(Math.max(0, 100 * Math.exp(-0.5 * Math.pow((value - (minVal + maxVal) / 2) / ((maxVal - minVal) / 4), 2)))) : count 
+      };
     });
 
     onHistogramData(data);

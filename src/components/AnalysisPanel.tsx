@@ -113,14 +113,36 @@ export function AnalysisPanel({
 
           {/* Slider Controls */}
           <div className="px-1 mt-4 relative">
-             <Slider
-               min={activeConfig.domain[0]}
-               max={activeConfig.domain[1]}
-               step={0.01}
-               value={range}
-               onValueChange={(val: number[]) => onRangeChange(val as [number, number])}
-               className="my-4"
-             />
+             {(() => {
+               // Compute dynamic boundaries from true data
+               let dMin = activeConfig.domain[0];
+               let dMax = activeConfig.domain[1];
+               if (histogramData.length > 0) {
+                 const minV = Math.min(...histogramData.map(d => d.value));
+                 const maxV = Math.max(...histogramData.map(d => d.value));
+                 // Only use dynamic if valid numbers
+                 if (isFinite(minV) && isFinite(maxV) && maxV > minV) {
+                   dMin = minV;
+                   dMax = maxV;
+                 }
+               }
+               // Ensure current range is clamped to new dynamic slider domains to avoid Radix UI crashes
+               const safeRange = [
+                 Math.max(dMin, Math.min(dMax, range[0])),
+                 Math.max(dMin, Math.min(dMax, range[1]))
+               ];
+
+               return (
+                 <Slider
+                   min={dMin}
+                   max={dMax}
+                   step={(dMax - dMin) / 100}
+                   value={safeRange}
+                   onValueChange={(val: number[]) => onRangeChange(val as [number, number])}
+                   className="my-4"
+                 />
+               );
+             })()}
              
              {/* Slider Labels */}
              <div className="flex justify-between items-center text-xs text-white">

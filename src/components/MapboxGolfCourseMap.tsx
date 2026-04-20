@@ -1657,6 +1657,7 @@ const MapboxGolfCourseMap = ({
               range={analysisRange}
               onHistogramData={setAnalysisHistogramData}
               bandMapping={bandMapping}
+              onDataRange={setAnalysisRange}
             />
           )}
 

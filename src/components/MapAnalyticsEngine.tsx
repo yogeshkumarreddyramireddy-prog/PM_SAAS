@@ -16,6 +16,7 @@ interface MapAnalyticsEngineProps {
   range: [number, number];
   bandMapping: { r: number, g: number, b: number, nir: number, re: number };
   onHistogramData?: (data: Array<{ value: number; count: number }>) => void;
+  onDataRange?: (range: [number, number]) => void;
 }
 
 // Keep a persistent loader reference to avoid re-init on every render
@@ -36,7 +37,8 @@ export function MapAnalyticsEngine({
   selectedIndex,
   range,
   bandMapping,
-  onHistogramData
+  onHistogramData,
+  onDataRange
 }: MapAnalyticsEngineProps) {
   const [overlay, setOverlay] = useState<MapboxOverlay | null>(null);
 
@@ -47,38 +49,100 @@ export function MapAnalyticsEngine({
   // Get active shader config
   const config = useMemo(() => VEGETATION_INDEX_CONFIG[selectedIndex], [selectedIndex]);
 
-  // ─── Histogram ─────────────────────────────────────────────────────────────
+  // ─── True Data Histogram & Range ───────────────────────────────────────────
   useEffect(() => {
     if (!isEnabled || !onHistogramData || !map || mode === 'None') return;
 
+    // Use mock data until we have real COG data for multispectral layers
+    if (mode === 'Multispectral' && !cogImageData) {
+      // Just clear histogram until loading finishes
+      onHistogramData([]);
+      return;
+    }
+
+    let minVal = Infinity;
+    let maxVal = -Infinity;
+    const values: number[] = [];
+
+    if (mode === 'Multispectral' && cogImageData) {
+      // Calculate TRUE histogram for current formula
+      const dataArray = cogImageData.imageData.data;
+      const { calculate } = config;
+      // R=0, G=1, B=2, A=3 mappings based on COGLoader packing
+      const bMap = { [bandMapping.r]: 0, [bandMapping.g]: 1, [bandMapping.b]: 2, [bandMapping.nir]: 3 }; // wait, alpha holds the 4th channel?
+      // Actually COGLoader packs: R->0, G->1, B/NIR->2, A/RedEdge->3 (if 5-band) or NIR->3 (if 4-band).
+      // Based on defaults, bandMapping uses exact channel numbers, where R=texture.r so 0.
+      const getB = (idx: number, pixels: Uint8ClampedArray, offset: number) => {
+        if (idx === 0) return pixels[offset] / 255.0;
+        if (idx === 1) return pixels[offset + 1] / 255.0;
+        if (idx === 2) return pixels[offset + 2] / 255.0;
+        if (idx === 3) return pixels[offset + 3] / 255.0;
+        return 0; // Fallback
+      };
+
+      for (let i = 0; i < dataArray.length; i += 4) {
+        if (dataArray[i+3] === 0) continue; // Skip nodata transparent pixels
+        
+        const r = getB(bandMapping.r, dataArray, i);
+        const g = getB(bandMapping.g, dataArray, i);
+        const b = getB(bandMapping.b, dataArray, i);
+        const n = getB(bandMapping.nir, dataArray, i);
+        const e = getB(bandMapping.re, dataArray, i);
+        
+        const val = calculate(r, g, b, n, e);
+        if (!isNaN(val) && isFinite(val)) {
+          values.push(val);
+        }
+      }
+    }
+
+    const isMock = values.length === 0;
+    
+    // Sort array once for quick percentile lookups
+    if (!isMock) {
+      values.sort((a, b) => a - b);
+      
+      // Use 1st and 99th percentiles to avoid extreme noise/outliers blowing up the scale
+      minVal = values[Math.floor(values.length * 0.01)];
+      maxVal = values[Math.floor(values.length * 0.99)];
+    } else {
+      // Fallback for RGB map mode (or error)
+      minVal = config.domain[0];
+      maxVal = config.domain[1];
+      // Generate a mock bell curve to feel "active" for RGB
+      const profile = { peak: (config.domain[0] + config.domain[1]) / 2, width: (config.domain[1] - config.domain[0]) / 4 };
+      for (let i = 0; i < 50; i++) {
+        const val = minVal + (i / 49) * (maxVal - minVal);
+        const dist = (val - profile.peak) / profile.width;
+        values.push(val); // will be binned below, this logic is just a crutch for mock
+      }
+    }
+
+    // Safety checks
+    if (minVal >= maxVal) { maxVal = minVal + 0.01; }
+    
+    // Notify parent of the TRUE data range!
+    if (onDataRange) onDataRange([minVal, maxVal]);
+
     const buckets = 50;
-    const [domainMin, domainMax] = config.domain;
+    const counts = new Array(buckets).fill(0);
+    const rangeSize = maxVal - minVal;
 
-    const indexProfiles: Record<string, { peak: number; width: number }> = {
-      RGB_GLI:   { peak: 0.12, width: 0.08 },
-      RGB_VARI:  { peak: 0.10, width: 0.12 },
-      RGB_TGI:   { peak: 0.05, width: 0.07 },
-      RGB_GRVI:  { peak: 0.08, width: 0.09 },
-      MS_NDVI:   { peak: 0.55, width: 0.18 },
-      MS_NDRE:   { peak: 0.38, width: 0.14 },
-      MS_GNDVI:  { peak: 0.45, width: 0.16 },
-      MS_MSAVI2: { peak: 0.42, width: 0.15 },
-      MS_OSAVI:  { peak: 0.48, width: 0.17 },
-      MS_NDWI:   { peak: -0.2, width: 0.20 },
-      MS_CLRE:   { peak: 1.20, width: 0.60 },
-    };
+    for (let i = 0; i < values.length; i++) {
+      const v = values[i];
+      if (v < minVal || v > maxVal) continue;
+      let idx = Math.floor(((v - minVal) / rangeSize) * buckets);
+      if (idx >= buckets) idx = buckets - 1;
+      counts[idx]++;
+    }
 
-    const profile = indexProfiles[selectedIndex] ?? { peak: 0.3, width: 0.15 };
-
-    const data = Array.from({ length: buckets }, (_, i) => {
-      const val = domainMin + (i / (buckets - 1)) * (domainMax - domainMin);
-      const dist = (val - profile.peak) / profile.width;
-      const count = Math.floor(Math.max(0, 100 * Math.exp(-0.5 * dist * dist)));
-      return { value: val, count };
+    const data = counts.map((count, i) => {
+      const value = minVal + (i / (buckets - 1)) * rangeSize;
+      return { value, count: isMock ? Math.floor(Math.max(0, 100 * Math.exp(-0.5 * Math.pow((value - minVal - rangeSize / 2) / (rangeSize / 4), 2)))) : count };
     });
 
     onHistogramData(data);
-  }, [isEnabled, selectedIndex, mode, map, config, onHistogramData]);
+  }, [isEnabled, selectedIndex, mode, map, config, onHistogramData, cogImageData, bandMapping, onDataRange]);
 
   // ─── Load COG full image when URL changes ──────────────────────────────────
   useEffect(() => {

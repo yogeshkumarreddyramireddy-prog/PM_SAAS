@@ -12,8 +12,8 @@ proj4.defs('EPSG:32633', '+proj=utm +zone=33 +datum=WGS84 +units=m +no_defs');
  * Streams Cloud Optimized GeoTIFF data from a presigned URL using geotiff.js
  * byte-range requests.
  *
- * Primary rendering strategy: `getFullImage()` reads the entire COG at a
- * manageable output resolution and returns an ImageData + WGS84 bounds tuple
+ * Primary rendering strategy: `getFullImage()` reads a COG overview (small
+ * pre-rendered thumbnail) and returns an ImageData + WGS84 bounds tuple
  * that can be passed directly to a Deck.GL BitmapLayer.
  *
  * Handles:
@@ -27,7 +27,7 @@ export class COGLoader {
   private image: GeoTIFF.GeoTIFFImage | null = null;
   private url: string;
 
-  // Geotransform (native CRS units)
+  // Geotransform (native CRS units — from the full-res IFD)
   private originX = 0;
   private originY = 0;
   private pixelWidth = 0;
@@ -55,8 +55,10 @@ export class COGLoader {
   async init() {
     if (this.tiff) return;
 
+    console.log('[COGLoader] Starting init, fetching TIFF header...');
     this.tiff  = await GeoTIFF.fromUrl(this.url, { allowFullFile: false });
     this.image = await this.tiff.getImage();
+    console.log('[COGLoader] TIFF header loaded OK');
 
     // Geotransform
     const resolution = this.image.getResolution();
@@ -73,34 +75,30 @@ export class COGLoader {
     const bps = this.image.getBitsPerSample();
     const bps0 = Array.isArray(bps) ? bps[0] : bps;
     this.is16Bit   = bps0 === 16;
-    // geotiff.js exposes sample format: 1=uint, 2=int, 3=float
     const sf = (this.image as any).fileDirectory?.SampleFormat;
     const sf0 = Array.isArray(sf) ? sf[0] : sf;
     this.isFloat32 = sf0 === 3;     // IEEE floating point
 
     // CRS reprojection setup via proj4
-    // Try multiple tag paths — GDAL may write the code under different keys
     const geoKeys = (this.image as any).geoKeyDirectory || {};
     const fileDir  = (this.image as any).fileDirectory   || {};
     const epsgCode =
-      geoKeys.ProjectedCSTypeGeoKey        ||  // projected (UTM etc.)
-      geoKeys.ProjectedCRSGeoKey           ||  // newer GeoTIFF spec alias
-      geoKeys.GeographicTypeGeoKey         ||  // geographic (WGS84)
-      fileDir.EPSG                         ||  // sometimes written here by GDAL
+      geoKeys.ProjectedCSTypeGeoKey        ||
+      geoKeys.ProjectedCRSGeoKey           ||
+      geoKeys.GeographicTypeGeoKey         ||
+      fileDir.EPSG                         ||
       null;
     this.epsgCode = epsgCode || null;
 
-    // ── Auto-detect UTM from coordinate magnitudes ──────────────────────────
-    // If EPSG is missing/wrong (4326) but the origin is clearly in projected meters,
-    // estimate the UTM zone.
+    // Auto-detect UTM from coordinate magnitudes
     const looksLikeUTM = Math.abs(this.originX) > 180 || Math.abs(this.originY) > 90;
     if (looksLikeUTM && (!this.epsgCode || this.epsgCode === 4326)) {
       const isNorth = this.originY > 0;
       let zone: number;
       if (this.originX >= 100000 && this.originX <= 900000) {
-        zone = this.originX < 600000 ? 32 : 33; // rough split for Europe
+        zone = this.originX < 600000 ? 32 : 33;
       } else {
-        zone = 32; // safe default
+        zone = 32;
       }
       const autoEpsg = isNorth ? 32600 + zone : 32700 + zone;
       console.warn(`[COGLoader] Origin (${this.originX.toFixed(0)}, ${this.originY.toFixed(0)}) looks like UTM. EPSG from tags: ${this.epsgCode ?? 'none'}, auto-guessing EPSG:${autoEpsg} (zone ${zone}${isNorth ? 'N' : 'S'})`);
@@ -112,9 +110,8 @@ export class COGLoader {
         const sourceDef = `EPSG:${this.epsgCode}`;
         const destDef   = 'WGS84';
 
-        // Register definition if missing
         if (!proj4.defs(sourceDef)) {
-          console.warn(`[COGLoader] No definition for EPSG:${this.epsgCode}, registering UTM def...`);
+          console.warn(`[COGLoader] No proj4 def for EPSG:${this.epsgCode}, registering...`);
           if (this.epsgCode >= 32601 && this.epsgCode <= 32660) {
             const zone = this.epsgCode - 32600;
             proj4.defs(sourceDef, `+proj=utm +zone=${zone} +datum=WGS84 +units=m +no_defs`);
@@ -126,207 +123,164 @@ export class COGLoader {
           }
         }
 
-        // this.project: WGS84 lon/lat → source CRS (used in geoBBoxToPixelWindow)
         this.project = (lon: number, lat: number) => proj4(destDef, sourceDef, [lon, lat]) as [number, number];
 
-        // Sanity check: origin should now map to valid WGS84 coords
         const testWgs84 = proj4(sourceDef, destDef, [this.originX, this.originY]);
         console.log(`[COGLoader] CRS EPSG:${this.epsgCode} → WGS84 origin check: lon=${testWgs84[0].toFixed(5)}, lat=${testWgs84[1].toFixed(5)}`);
       } catch (e) {
-        console.warn(`[COGLoader] Failed to initialize projection for EPSG:${this.epsgCode}`, e);
+        console.warn(`[COGLoader] Failed to init projection for EPSG:${this.epsgCode}`, e);
         this.project = null;
       }
     } else {
       this.project = null;
       if (!looksLikeUTM) {
-        console.log('[COGLoader] CRS is WGS84 (geographic) — no reprojection needed.');
+        console.log('[COGLoader] CRS is WGS84 — no reprojection needed.');
       }
     }
 
-    console.log(`[COGLoader] init: origin=(${this.originX}, ${this.originY}) res=(${this.pixelWidth}, ${this.pixelHeight}) size=${this.imgWidth}×${this.imgHeight} bands=${this.bandCount} float32=${this.isFloat32}`);
+    console.log(`[COGLoader] init complete: origin=(${this.originX}, ${this.originY}) size=${this.imgWidth}×${this.imgHeight} bands=${this.bandCount} float32=${this.isFloat32}`);
   }
 
   // ─── getFullImage ──────────────────────────────────────────────────────────
   /**
-   * Reads the entire COG at a reduced output resolution and returns:
-   *   - imageData: the pixel data as a WebGL-compatible RGBA Uint8ClampedArray
-   *   - bounds: [west, south, east, north] in WGS84 (for BitmapLayer)
+   * Reads a COG overview image (pre-rendered thumbnail stored inside the COG)
+   * and returns pixel data + WGS84 bounds.
    *
-   * This is the primary rendering strategy for drone survey COGs (small areas).
-   * Use maxOutputSize to cap the texture size (default 1024 prevents OOM).
+   * COGs store progressively smaller copies of the image (overviews/pyramids).
+   * We pick a small overview (~256-1024px) that can be fetched in a single
+   * byte-range request, rather than reading the full 218 MB raster.
    */
-  async getFullImage(maxOutputSize = 1024): Promise<{ imageData: ImageData; bounds: [number, number, number, number] } | null> {
+  async getFullImage(targetSize = 1024): Promise<{ imageData: ImageData; bounds: [number, number, number, number] } | null> {
     await this.init();
-    if (!this.image) return null;
+    if (!this.tiff || !this.image) return null;
 
-    // Get WGS84 bounds first
     const bounds = this.getBoundsWGS84();
     if (!bounds) {
-      console.error('[COGLoader] Cannot get WGS84 bounds for full image read');
+      console.error('[COGLoader] Cannot compute WGS84 bounds');
       return null;
     }
 
-    // Determine output size — keep aspect ratio, cap to maxOutputSize
-    const aspect = this.imgWidth / this.imgHeight;
-    let outW: number, outH: number;
-    if (aspect >= 1) {
-      outW = maxOutputSize;
-      outH = Math.round(maxOutputSize / aspect);
-    } else {
-      outH = maxOutputSize;
-      outW = Math.round(maxOutputSize * aspect);
-    }
-
-    console.log(`[COGLoader] Reading full image at ${outW}×${outH} (native: ${this.imgWidth}×${this.imgHeight})`);
-
     try {
-      const raster = await this.image.readRasters({
-        width:     outW,
-        height:    outH,
-        interleave: false,
-      });
+      // ── Find the best overview ──────────────────────────────────────────
+      // COGs store the full-res image as IFD 0, then progressively smaller
+      // overviews as IFD 1, 2, 3, etc. We want one close to targetSize.
+      const imageCount = await this.tiff.getImageCount();
+      console.log(`[COGLoader] COG has ${imageCount} IFDs (1 full-res + ${imageCount - 1} overviews)`);
 
-      const rgba = this.rastersToRGBA(raster, outW, outH);
-      const imageData = new ImageData(rgba, outW, outH);
-      return { imageData, bounds };
-    } catch (err) {
-      console.error('[COGLoader] getFullImage error:', err);
-      return null;
-    }
-  }
+      let bestImage = this.image;   // fallback: full res
+      let bestW = this.imgWidth;
+      let bestH = this.imgHeight;
+      let bestIdx = 0;
 
-  // ─── getTile (kept for compatibility) ──────────────────────────────────────
-  /** @deprecated Use getFullImage() instead for better results with small drone COGs */
-  async getTile(x: number, y: number, z: number, tileSize: number = 256): Promise<ImageData | null> {
-    await this.init();
-    if (!this.image) return null;
+      for (let i = 0; i < imageCount; i++) {
+        const img = await this.tiff.getImage(i);
+        const w = img.getWidth();
+        const h = img.getHeight();
+        console.log(`[COGLoader]   IFD ${i}: ${w}×${h}`);
 
-    try {
-      const [minLon, minLat, maxLon, maxLat] = tileToBBox(x, y, z);
-      const window = this.geoBBoxToPixelWindow(minLon, minLat, maxLon, maxLat);
+        // Pick the smallest overview that is >= targetSize on its long edge,
+        // or the smallest available if all are smaller.
+        const longEdge = Math.max(w, h);
+        const bestLongEdge = Math.max(bestW, bestH);
 
-      // Skip tiles completely outside image bounds
-      if (
-        window[0] >= this.imgWidth  || window[1] >= this.imgHeight ||
-        window[2] <= 0              || window[3] <= 0
-      ) {
-        return null;
+        if (longEdge >= targetSize && longEdge < bestLongEdge) {
+          bestImage = img;
+          bestW = w;
+          bestH = h;
+          bestIdx = i;
+        } else if (bestLongEdge > targetSize && longEdge < bestLongEdge) {
+          // Current best is too big, this one is smaller → prefer it
+          bestImage = img;
+          bestW = w;
+          bestH = h;
+          bestIdx = i;
+        }
       }
 
-      // Clamp to image extents
-      const clamped: [number, number, number, number] = [
-        Math.max(0, window[0]),
-        Math.max(0, window[1]),
-        Math.min(this.imgWidth,  window[2]),
-        Math.min(this.imgHeight, window[3]),
-      ];
+      // If even the smallest overview is too big, use the very last (smallest) IFD
+      if (Math.max(bestW, bestH) > targetSize * 2 && imageCount > 1) {
+        const lastImg = await this.tiff.getImage(imageCount - 1);
+        bestImage = lastImg;
+        bestW = lastImg.getWidth();
+        bestH = lastImg.getHeight();
+        bestIdx = imageCount - 1;
+      }
 
-      const raster = await this.image.readRasters({
-        window:    clamped,
-        width:     tileSize,
-        height:    tileSize,
-        interleave: false,
-      });
+      console.log(`[COGLoader] Using IFD ${bestIdx} (${bestW}×${bestH}) for rendering`);
 
-      const rgba = this.rastersToRGBA(raster, tileSize, tileSize);
-      return new ImageData(rgba, tileSize, tileSize);
+      // ── Read the overview's pixel data ──────────────────────────────────
+      // Read at native resolution of the overview — NO resampling needed.
+      // This is fast because the overview is small (e.g. 289×189 = ~55K pixels).
+      console.log(`[COGLoader] Reading rasters from overview ${bestIdx}...`);
+      const rasterResult = await bestImage.readRasters({ interleave: false });
+      console.log(`[COGLoader] Rasters read OK. Band count: ${(rasterResult as any).length || 'N/A'}`);
+
+      // Detect data type from this specific overview image
+      const ovBps = bestImage.getBitsPerSample();
+      const ovBps0 = Array.isArray(ovBps) ? ovBps[0] : ovBps;
+      const ovSf = (bestImage as any).fileDirectory?.SampleFormat;
+      const ovSf0 = Array.isArray(ovSf) ? ovSf[0] : ovSf;
+      const ovIsFloat32 = ovSf0 === 3;
+      const ovIs16Bit = ovBps0 === 16;
+
+      const rgba = this.rastersToRGBAStatic(rasterResult, bestW, bestH, ovIsFloat32, ovIs16Bit);
+      console.log(`[COGLoader] RGBA packed: ${rgba.length} bytes (${bestW}×${bestH}×4)`);
+
+      const imageData = new ImageData(rgba, bestW, bestH);
+      console.log(`[COGLoader] ✅ Full image ready: ${bestW}×${bestH}, bounds=[${bounds.map(b => b.toFixed(6)).join(', ')}]`);
+
+      return { imageData, bounds };
     } catch (err) {
-      console.error('[COGLoader] getTile error:', err);
+      console.error('[COGLoader] ❌ getFullImage error:', err);
       return null;
     }
   }
 
-  // ─── Coordinate conversion ────────────────────────────────────────────────
+  // ─── RGBA packing (static — works with any image, not just this.image) ────
 
-  private geoBBoxToPixelWindow(
-    minLon: number, minLat: number, maxLon: number, maxLat: number
-  ): [number, number, number, number] {
-
-    let pMinX: number, pMinY: number, pMaxX: number, pMaxY: number;
-
-    if (this.project) {
-      // Reproject all four corners, then take the outer bbox
-      const corners = [
-        this.project(minLon, minLat),
-        this.project(maxLon, minLat),
-        this.project(minLon, maxLat),
-        this.project(maxLon, maxLat),
-      ];
-      pMinX = Math.min(...corners.map(c => c[0]));
-      pMaxX = Math.max(...corners.map(c => c[0]));
-      pMinY = Math.min(...corners.map(c => c[1]));
-      pMaxY = Math.max(...corners.map(c => c[1]));
-    } else {
-      pMinX = minLon; pMaxX = maxLon;
-      pMinY = minLat; pMaxY = maxLat;
-    }
-
-    // pixelWidth > 0 (left→right), pixelHeight < 0 (top→bottom)
-    const xMin = Math.round((pMinX - this.originX) / this.pixelWidth);
-    const xMax = Math.round((pMaxX - this.originX) / this.pixelWidth);
-    // originY is the TOP edge; subtract to go down
-    const yMin = Math.round((this.originY - pMaxY) / Math.abs(this.pixelHeight));
-    const yMax = Math.round((this.originY - pMinY) / Math.abs(this.pixelHeight));
-
-    return [xMin, yMin, xMax, yMax];
-  }
-
-  // ─── RGBA packing ─────────────────────────────────────────────────────────
-
-  /**
-   * Converts raw raster bands into a WebGL-compatible RGBA Uint8ClampedArray.
-   *
-   * Band layout packed into RGBA texture:
-   *   R → logical Red (band 0)
-   *   G → logical Green (band 1)
-   *   B → logical Blue / NIR-proxy (band 2)
-   *   A → NIR (band 3 if ≥ 4 bands, else 255)
-   *
-   * For 5-band multispectral: R=band0(Red), G=band1(Green), B=band2(NIR), A=band3(RedEdge)
-   *
-   * Float32 reflectance (0.0–1.0 range) is scaled ×255 directly.
-   * 16-bit integer is scaled from 65535 → 255.
-   * 8-bit is copied as-is.
-   */
-  private rastersToRGBA(rasters: any, width: number, height: number): Uint8ClampedArray {
+  private rastersToRGBAStatic(
+    rasters: any,
+    width: number,
+    height: number,
+    isFloat32: boolean,
+    is16Bit: boolean
+  ): Uint8ClampedArray {
     const size  = width * height;
     const rgba  = new Uint8ClampedArray(size * 4);
     const bands = Array.isArray(rasters) ? rasters : [rasters];
     const n     = bands.length;
 
-    const r   = bands[0];                     // Red
-    const g   = bands[1] ?? bands[0];          // Green
-    let bPacked: any;  // Band to store in Blue channel of texture
-    let aPacked: any;  // Band to store in Alpha channel of texture
+    const r   = bands[0];
+    const g   = bands[1] ?? bands[0];
+    let bPacked: any;
+    let aPacked: any;
 
     if (n >= 5) {
-      // 5-band: [Red, Green, NIR, RedEdge, Mask] — no blue channel
       bPacked = bands[2]; // NIR → Blue slot
       aPacked = bands[3]; // RedEdge → Alpha slot
     } else if (n >= 4) {
-      // 4-band: either [R,G,B,NIR] multispectral or [R,G,B,Alpha] RGB
-      bPacked = bands[2]; // Blue or NIR
-      aPacked = bands[3]; // NIR or Alpha mask
-    } else if (n >= 3) {
-      // 3-band RGB
       bPacked = bands[2];
-      aPacked = null; // Will be set to 255 (fully opaque)
+      aPacked = bands[3];
+    } else if (n >= 3) {
+      bPacked = bands[2];
+      aPacked = null;
     } else {
       bPacked = bands[0];
       aPacked = null;
     }
 
-    // Determine per-band scale factor:
-    //   Float32 reflectance : ×255  (values sit in 0–1)
-    //   16-bit integer       : 255 / 65535
-    //   8-bit integer        : 1.0
     let scale: number;
-    if (this.isFloat32) {
-      scale = 255;   // 0.13 reflectance → 33 — full range preserved in shader via uniform
-    } else if (this.is16Bit) {
+    if (isFloat32) {
+      scale = 255;
+    } else if (is16Bit) {
       scale = 255 / 65535;
     } else {
       scale = 1;
+    }
+
+    // Log first pixel for debugging
+    if (size > 0) {
+      console.log(`[COGLoader] Pixel[0] raw: band0=${r[0]}, band1=${g?.[0]}, band2=${bPacked?.[0]}, band3=${aPacked?.[0]}, scale=${scale}, isFloat32=${isFloat32}`);
     }
 
     for (let i = 0; i < size; i++) {
@@ -334,6 +288,11 @@ export class COGLoader {
       rgba[i * 4 + 1] = Math.round((g[i]          ?? 0) * scale);
       rgba[i * 4 + 2] = Math.round((bPacked?.[i]  ?? 0) * scale);
       rgba[i * 4 + 3] = aPacked ? Math.round((aPacked[i] ?? 0) * scale) : 255;
+    }
+
+    // Log first pixel RGBA for debugging
+    if (size > 0) {
+      console.log(`[COGLoader] Pixel[0] RGBA: R=${rgba[0]}, G=${rgba[1]}, B=${rgba[2]}, A=${rgba[3]}`);
     }
 
     return rgba;
@@ -348,16 +307,14 @@ export class COGLoader {
   /**
    * Returns the COG's bounding box in WGS84 [west, south, east, north].
    * Must be called after init() resolves.
-   * Returns null if the image has not been initialized yet.
    */
   getBoundsWGS84(): [number, number, number, number] | null {
     if (!this.image) return null;
 
-    // The four corners of the image in native CRS
     const x0 = this.originX;
     const y0 = this.originY;
     const x1 = this.originX + this.pixelWidth  * this.imgWidth;
-    const y1 = this.originY + this.pixelHeight * this.imgHeight; // pixelHeight is negative
+    const y1 = this.originY + this.pixelHeight * this.imgHeight;
 
     const minX = Math.min(x0, x1);
     const maxX = Math.max(x0, x1);
@@ -369,32 +326,19 @@ export class COGLoader {
         const sourceDef = `EPSG:${this.epsgCode}`;
         const sw = proj4(sourceDef, 'WGS84', [minX, minY]);
         const ne = proj4(sourceDef, 'WGS84', [maxX, maxY]);
-        // Validate output
         if (isNaN(sw[0]) || isNaN(sw[1]) || isNaN(ne[0]) || isNaN(ne[1])) {
           console.error('[COGLoader] Projection produced NaN bounds');
           return null;
         }
+        console.log(`[COGLoader] Bounds WGS84: [${sw[0].toFixed(6)}, ${sw[1].toFixed(6)}, ${ne[0].toFixed(6)}, ${ne[1].toFixed(6)}]`);
         return [sw[0], sw[1], ne[0], ne[1]];
       } catch (e) {
-        console.error('[COGLoader] Failed to invert projection for bounds:', e);
+        console.error('[COGLoader] Failed to project bounds:', e);
         return null;
       }
     } else {
-      // Already WGS84
-      if (isNaN(minX) || isNaN(minY) || isNaN(maxX) || isNaN(maxY)) return null;
+      console.log(`[COGLoader] Bounds (native/WGS84): [${minX.toFixed(6)}, ${minY.toFixed(6)}, ${maxX.toFixed(6)}, ${maxY.toFixed(6)}]`);
       return [minX, minY, maxX, maxY];
     }
   }
-}
-
-// ─── Tile helpers (kept for legacy getTile) ────────────────────────────────────
-
-/** Convert a Mapbox slippy-tile (x, y, z) to WGS84 lon/lat bounding box */
-function tileToBBox(x: number, y: number, z: number): [number, number, number, number] {
-  const n = Math.PI - (2 * Math.PI * y) / Math.pow(2, z);
-  const north = (180 / Math.PI) * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
-  const south = (180 / Math.PI) * Math.atan(0.5 * (Math.exp(n - (2 * Math.PI) / Math.pow(2, z)) - Math.exp(-(n - (2 * Math.PI) / Math.pow(2, z)))));
-  const west  = (x / Math.pow(2, z)) * 360 - 180;
-  const east  = ((x + 1) / Math.pow(2, z)) * 360 - 180;
-  return [west, south, east, north];
 }

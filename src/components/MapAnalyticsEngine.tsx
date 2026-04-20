@@ -102,17 +102,20 @@ export function MapAnalyticsEngine({
         if (!cogLoaders[tileUrl]) {
           cogLoaders[tileUrl] = new COGLoader(tileUrl);
         }
-        console.log('[MapAnalyticsEngine] Loading full COG image from:', tileUrl);
-        const result = await cogLoaders[tileUrl].getFullImage(1024);
-        if (result && loadingRef.current === tileUrl) {
-          console.log('[MapAnalyticsEngine] COG image loaded. Bounds:', result.bounds);
+        console.log('[MapAnalyticsEngine] Loading full COG image...');
+        const result = await cogLoaders[tileUrl].getFullImage(512);
+        console.log('[MapAnalyticsEngine] getFullImage returned:', result ? `${result.imageData.width}×${result.imageData.height}` : 'null');
+        if (result) {
+          console.log('[MapAnalyticsEngine] ✅ Setting COG image data, bounds:', result.bounds);
           cogImageCache[tileUrl] = result;
           setCogImageData(result);
+        } else {
+          console.error('[MapAnalyticsEngine] ❌ getFullImage returned null!');
         }
       } catch (e) {
-        console.error('[MapAnalyticsEngine] Failed to load COG full image:', e);
+        console.error('[MapAnalyticsEngine] ❌ Failed to load COG full image:', e);
       } finally {
-        if (loadingRef.current === tileUrl) loadingRef.current = null;
+        loadingRef.current = null;
       }
     };
 

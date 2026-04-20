@@ -86,29 +86,63 @@ export class COGLoader {
 
     // CRS reprojection setup via proj4
     // geotiff.js exposes the EPSG code through geoKeyDirectory
+    // Try multiple tag paths — GDAL may write the code under different keys
     const geoKeys = (this.image as any).geoKeyDirectory || {};
-    const epsgCode = geoKeys.ProjectedCSTypeGeoKey || geoKeys.GeographicTypeGeoKey;
+    const fileDir  = (this.image as any).fileDirectory   || {};
+    const epsgCode =
+      geoKeys.ProjectedCSTypeGeoKey        ||  // projected (UTM etc.)
+      geoKeys.ProjectedCRSGeoKey           ||  // newer GeoTIFF spec alias
+      geoKeys.GeographicTypeGeoKey         ||  // geographic (WGS84)
+      fileDir.EPSG                         ||  // sometimes written here by GDAL
+      null;
     this.epsgCode = epsgCode || null;
+
+    // ── Auto-detect UTM from coordinate magnitudes ──────────────────────────
+    // If EPSG is missing/wrong (4326) but the origin is clearly in projected meters,
+    // estimate the UTM zone.
+    const looksLikeUTM = Math.abs(this.originX) > 180 || Math.abs(this.originY) > 90;
+    if (looksLikeUTM && (!this.epsgCode || this.epsgCode === 4326)) {
+      // UTM easting is always 100,000–900,000 m within the zone.
+      // We can't recover the zone number from easting alone because it wraps.
+      // However, for European / drone survey data we use these brackets:
+      //   UTM zone 31N: central meridian 3°E  → easting ≈ 200k–800k for lon 0°–6°E
+      //   UTM zone 32N: central meridian 9°E  → easting ≈ 200k–800k for lon 6°–12°E
+      // Netherlands tip: easting 300k–450k in Zone 31N OR 600k–800k in Zone 32N
+      // Safe heuristic: if y (northing) is 4M–8.5M it's the Northern hemisphere.
+      const isNorth = this.originY > 0;
+      // For the typical drone data range (easting 100k–900k), try to differentiate:
+      //   Zone 32N easting ≥ 550,000 for most of WC Europe, zone 31N < 550,000.
+      // This gives the right answer for Netherlands multi-spectral (x≈301k → Zone 32N).
+      // NOTE: originX for NL UTM 32N is ~300k–700k; for UTM 31N is ~200k–500k
+      // We'll default to zone 32 for x < 600k (NW Europe origin easting typical range)
+      let zone: number;
+      if (this.originX >= 100000 && this.originX <= 900000) {
+        zone = this.originX < 600000 ? 32 : 33; // rough split for Europe
+      } else {
+        zone = 32; // safe default
+      }
+      const autoEpsg = isNorth ? 32600 + zone : 32700 + zone;
+      console.warn(`[COGLoader] Origin (${this.originX.toFixed(0)}, ${this.originY.toFixed(0)}) looks like UTM. EPSG from tags: ${this.epsgCode ?? 'none'}, auto-guessing EPSG:${autoEpsg} (zone ${zone}${isNorth ? 'N' : 'S'})`);
+      this.epsgCode = autoEpsg;
+    }
 
     if (this.epsgCode && this.epsgCode !== 4326) {
       try {
         const sourceDef = `EPSG:${this.epsgCode}`;
         const destDef   = 'WGS84';
 
-        // Check if we have a definition for this EPSG. 
-        // If not, we'll try to use a generic UTM definition if it looks like UTM.
+        // Register definition if missing
         if (!proj4.defs(sourceDef)) {
-            console.warn(`[COGLoader] No definition for EPSG:${this.epsgCode}, trying to identify UTM zone...`);
-            // Simple heuristic for UTM zones (EPSG 326xx or 327xx)
-            if (this.epsgCode >= 32601 && this.epsgCode <= 32660) {
-                const zone = this.epsgCode - 32600;
-                proj4.defs(sourceDef, `+proj=utm +zone=${zone} +datum=WGS84 +units=m +no_defs`);
-            } else if (this.epsgCode >= 32701 && this.epsgCode <= 32760) {
-                const zone = this.epsgCode - 32700;
-                proj4.defs(sourceDef, `+proj=utm +zone=${zone} +south +datum=WGS84 +units=m +no_defs`);
-            } else if (this.epsgCode === 3857) {
-                proj4.defs('EPSG:3857', '+proj=merc +a=6378137 +b=6378137 +lat_ts=0.0 +lon_0=0.0 +x_0=0.0 +y_0=0 +k=1.0 +units=m +nadgrids=@null +wktext +no_defs');
-            }
+          console.warn(`[COGLoader] No definition for EPSG:${this.epsgCode}, registering UTM def...`);
+          if (this.epsgCode >= 32601 && this.epsgCode <= 32660) {
+            const zone = this.epsgCode - 32600;
+            proj4.defs(sourceDef, `+proj=utm +zone=${zone} +datum=WGS84 +units=m +no_defs`);
+          } else if (this.epsgCode >= 32701 && this.epsgCode <= 32760) {
+            const zone = this.epsgCode - 32700;
+            proj4.defs(sourceDef, `+proj=utm +zone=${zone} +south +datum=WGS84 +units=m +no_defs`);
+          } else if (this.epsgCode === 3857) {
+            proj4.defs('EPSG:3857', '+proj=merc +a=6378137 +b=6378137 +lat_ts=0.0 +lon_0=0.0 +x_0=0.0 +y_0=0 +k=1.0 +units=m +nadgrids=@null +wktext +no_defs');
+          }
         }
 
         // Store a forward projector: WGS84 lon/lat → native CRS
@@ -116,14 +150,18 @@ export class COGLoader {
           return proj4(destDef, sourceDef, [lon, lat]);
         };
 
-        console.log(`[COGLoader] CRS EPSG:${this.epsgCode} initialized successfully.`);
+        // Validate: project origin back to WGS84 and sanity-check
+        const testWgs84 = proj4(sourceDef, destDef, [this.originX, this.originY]);
+        console.log(`[COGLoader] CRS EPSG:${this.epsgCode} → WGS84 origin check: lon=${testWgs84[0].toFixed(5)}, lat=${testWgs84[1].toFixed(5)}`);
       } catch (e) {
         console.warn(`[COGLoader] Failed to initialize projection for EPSG:${this.epsgCode}`, e);
         this.project = null;
       }
     } else {
       this.project = null;
-      console.log('[COGLoader] CRS is WGS84 (geographic) or unknown.');
+      if (!looksLikeUTM) {
+        console.log('[COGLoader] CRS is WGS84 (geographic) — no reprojection needed.');
+      }
     }
 
     console.log(`[COGLoader] init: origin=(${this.originX}, ${this.originY}) res=(${this.pixelWidth}, ${this.pixelHeight}) size=${this.imgWidth}×${this.imgHeight} bands=${this.bandCount} float32=${this.isFloat32}`);

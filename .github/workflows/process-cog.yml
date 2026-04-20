@@ -68,18 +68,28 @@ jobs:
           echo "center_lat=$(python3 -c 'import json; m=json.load(open("/tmp/metadata.json")); print(m["center_lat"])')" >> $GITHUB_OUTPUT
           echo "center_lon=$(python3 -c 'import json; m=json.load(open("/tmp/metadata.json")); print(m["center_lon"])')" >> $GITHUB_OUTPUT
 
-      - name: Convert to Cloud Optimized GeoTIFF (COG)
+      - name: Reproject to WGS84 and Convert to Cloud Optimized GeoTIFF (COG)
         run: |
-          echo "Starting COG Conversion via GDAL..."
-          # This single command reorganizes the TIFF internally to support Byte-Range Requests
-          gdal_translate /tmp/input.tif /tmp/output_cog.tif \
+          echo "Step 1: Reprojecting to WGS84 (EPSG:4326) via gdalwarp..."
+          # Web map renderers (Mapbox, Deck.GL) require geographic coordinates.
+          # The raw drone TIFF is in UTM (projected, meters). We must reproject first.
+          gdalwarp \
+            -t_srs EPSG:4326 \
+            -r bilinear \
+            -of GTiff \
+            -co BIGTIFF=YES \
+            /tmp/input.tif \
+            /tmp/reprojected.tif
+
+          echo "Step 2: Converting reprojected TIFF to Cloud Optimized GeoTIFF..."
+          gdal_translate /tmp/reprojected.tif /tmp/output_cog.tif \
             -of COG \
             -co COMPRESS=DEFLATE \
             -co RESAMPLING=AVERAGE \
             -co BIGTIFF=YES
-          
-          # Check size difference
-          ls -lh /tmp/input.tif /tmp/output_cog.tif
+
+          echo "Size comparison:"
+          ls -lh /tmp/input.tif /tmp/reprojected.tif /tmp/output_cog.tif
 
       - name: Upload Single COG to R2
         env:

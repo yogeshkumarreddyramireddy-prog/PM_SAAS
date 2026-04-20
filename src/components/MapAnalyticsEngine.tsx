@@ -150,10 +150,16 @@ export function MapAnalyticsEngine({
 
     const data = counts.map((count, i) => {
       const value = minVal + (i / (buckets - 1)) * rangeSize;
-      return { 
-        value, 
-        count: isMock ? Math.floor(Math.max(0, 100 * Math.exp(-0.5 * Math.pow((value - (minVal + maxVal) / 2) / ((maxVal - minVal) / 4), 2)))) : count 
-      };
+      let mockCount = count;
+      if (isMock) {
+        // Base bell curve
+        const base = Math.max(0, 100 * Math.exp(-0.5 * Math.pow((value - (minVal + maxVal) / 2) / ((maxVal - minVal) / 4), 2)));
+        // Add random high-frequency organic noise/jitter unique to this specific bin 
+        // to make it look like real environmental data instead of a smooth math curve
+        const jitter = (Math.sin(i * 13.43) * 0.4 + Math.sin(i * 2.3) * 0.5 + Math.random() * 0.3) * (base * 0.3);
+        mockCount = Math.floor(Math.max(0, base + jitter));
+      }
+      return { value, count: isMock ? mockCount : count };
     });
 
     onHistogramData(data);

@@ -170,13 +170,15 @@ export function MapAnalyticsEngine({
         await cogLoaders[tileUrl].init();
         const bounds = cogLoaders[tileUrl].getBoundsWGS84();
         
-        if (bounds) {
+        if (bounds && !isNaN(bounds[0]) && !isNaN(bounds[1]) && !isNaN(bounds[2]) && !isNaN(bounds[3])) {
           console.log('[MapAnalyticsEngine] Auto-flying to COG bounds:', bounds);
           map.fitBounds([
             [bounds[0], bounds[1]],
             [bounds[2], bounds[3]]
           ], { padding: 50, duration: 2000 });
           setHasFlownTo(tileUrl);
+        } else {
+          console.warn('[MapAnalyticsEngine] Invalid bounds returned for autofly:', bounds);
         }
       } catch (e) {
         console.warn('[MapAnalyticsEngine] Failed to auto-fly to COG bounds:', e);

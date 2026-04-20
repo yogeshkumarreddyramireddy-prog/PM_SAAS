@@ -103,7 +103,7 @@ export function MapAnalyticsEngine({
           cogLoaders[tileUrl] = new COGLoader(tileUrl);
         }
         console.log('[MapAnalyticsEngine] Loading full COG image...');
-        const result = await cogLoaders[tileUrl].getFullImage(512);
+        const result = await cogLoaders[tileUrl].getFullImage(2048);
         console.log('[MapAnalyticsEngine] getFullImage returned:', result ? `${result.imageData.width}×${result.imageData.height}` : 'null');
         if (result) {
           console.log('[MapAnalyticsEngine] ✅ Setting COG image data, bounds:', result.bounds);

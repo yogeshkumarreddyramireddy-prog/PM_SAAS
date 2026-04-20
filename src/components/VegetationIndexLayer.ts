@@ -85,12 +85,23 @@ export class VegetationIndexLayer extends BitmapLayer<VegetationIndexLayerProps>
         float denom = RANGE_MAX - RANGE_MIN;
         float normalized = (denom > 0.0) ? clamp((val - RANGE_MIN) / denom, 0.0, 1.0) : 0.5;
 
-        // Color ramp: Red → Yellow → Green
+        // Color ramp: RdYlGn (5-stop Brewer scale)
+        // Red -> Orange -> Yellow -> Light Green -> Dark Green
+        vec3 col1 = vec3(0.843, 0.098, 0.110); // #d7191c
+        vec3 col2 = vec3(0.992, 0.682, 0.380); // #fdae61
+        vec3 col3 = vec3(1.000, 1.000, 0.749); // #ffffbf
+        vec3 col4 = vec3(0.651, 0.851, 0.416); // #a6d96a
+        vec3 col5 = vec3(0.102, 0.588, 0.255); // #1a9641
+        
         vec3 outRgb;
-        if (normalized < 0.5) {
-          outRgb = mix(vec3(0.93, 0.26, 0.26), vec3(0.91, 0.70, 0.03), normalized * 2.0);
+        if (normalized < 0.25) {
+          outRgb = mix(col1, col2, normalized * 4.0);
+        } else if (normalized < 0.5) {
+          outRgb = mix(col2, col3, (normalized - 0.25) * 4.0);
+        } else if (normalized < 0.75) {
+          outRgb = mix(col3, col4, (normalized - 0.5) * 4.0);
         } else {
-          outRgb = mix(vec3(0.91, 0.70, 0.03), vec3(0.13, 0.77, 0.36), (normalized - 0.5) * 2.0);
+          outRgb = mix(col4, col5, (normalized - 0.75) * 4.0);
         }
 
         // Nodata = all bands zero. Use very small threshold to handle Float32 reflectance.

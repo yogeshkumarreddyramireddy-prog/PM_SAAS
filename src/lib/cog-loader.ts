@@ -215,13 +215,15 @@ export class COGLoader {
       const rasterResult = await bestImage.readRasters({ interleave: false });
       console.log(`[COGLoader] Rasters read OK. Band count: ${(rasterResult as any).length || 'N/A'}`);
 
-      // Detect data type from this specific overview image
+      // Detect data type from the ACTUAL array returned by readRasters.
+      // The SampleFormat tag is often missing in overview IFDs, so we check
+      // the typed array constructor instead — this is 100% reliable.
+      const bandsArr = Array.isArray(rasterResult) ? rasterResult : [rasterResult];
+      const ovIsFloat32 = bandsArr[0] instanceof Float32Array || bandsArr[0] instanceof Float64Array;
       const ovBps = bestImage.getBitsPerSample();
       const ovBps0 = Array.isArray(ovBps) ? ovBps[0] : ovBps;
-      const ovSf = (bestImage as any).fileDirectory?.SampleFormat;
-      const ovSf0 = Array.isArray(ovSf) ? ovSf[0] : ovSf;
-      const ovIsFloat32 = ovSf0 === 3;
-      const ovIs16Bit = ovBps0 === 16;
+      const ovIs16Bit = !ovIsFloat32 && ovBps0 === 16;
+      console.log(`[COGLoader] Data type: Float32=${ovIsFloat32}, 16bit=${ovIs16Bit}, arrayType=${bandsArr[0]?.constructor?.name}`);
 
       const rgba = this.rastersToRGBAStatic(rasterResult, bestW, bestH, ovIsFloat32, ovIs16Bit);
       console.log(`[COGLoader] RGBA packed: ${rgba.length} bytes (${bestW}×${bestH}×4)`);
@@ -250,14 +252,23 @@ export class COGLoader {
     const bands = Array.isArray(rasters) ? rasters : [rasters];
     const n     = bands.length;
 
+    // Band packing into RGBA texture for the vegetation index shader:
+    //   R channel → band 0 (Red)
+    //   G channel → band 1 (Green)
+    //   B channel → band 2 (NIR for 5-band / Blue for 3-4 band)
+    //   A channel → band 3 (RedEdge for 5-band / NIR for 4-band)
+    //
+    // CRITICAL: Alpha is ALWAYS 255 for visibility. The shader reads the
+    // spectral data from R/G/B/A channels; we cannot use alpha for opacity
+    // because low reflectance values (0.03) would round to 0 → transparent.
     const r   = bands[0];
     const g   = bands[1] ?? bands[0];
     let bPacked: any;
-    let aPacked: any;
+    let aPacked: any;  // Band stored in alpha channel (for shader access, NOT opacity)
 
     if (n >= 5) {
       bPacked = bands[2]; // NIR → Blue slot
-      aPacked = bands[3]; // RedEdge → Alpha slot
+      aPacked = bands[3]; // RedEdge → Alpha slot (but forced opaque below)
     } else if (n >= 4) {
       bPacked = bands[2];
       aPacked = bands[3];
@@ -284,10 +295,22 @@ export class COGLoader {
     }
 
     for (let i = 0; i < size; i++) {
-      rgba[i * 4]     = Math.round((r[i]          ?? 0) * scale);
-      rgba[i * 4 + 1] = Math.round((g[i]          ?? 0) * scale);
-      rgba[i * 4 + 2] = Math.round((bPacked?.[i]  ?? 0) * scale);
-      rgba[i * 4 + 3] = aPacked ? Math.round((aPacked[i] ?? 0) * scale) : 255;
+      const rv = (r[i]         ?? 0) * scale;
+      const gv = (g[i]         ?? 0) * scale;
+      const bv = (bPacked?.[i] ?? 0) * scale;
+      const av = aPacked ? (aPacked[i] ?? 0) * scale : 0;
+
+      rgba[i * 4]     = Math.round(rv);
+      rgba[i * 4 + 1] = Math.round(gv);
+      rgba[i * 4 + 2] = Math.round(bv);
+      rgba[i * 4 + 3] = Math.round(av);
+
+      // Pixel is considered "valid" if any spectral band has data.
+      // Force alpha=255 for valid pixels so the BitmapLayer draws them.
+      // Nodata pixels (all bands zero) stay transparent.
+      if (rv > 0.01 || gv > 0.01 || bv > 0.01 || av > 0.01) {
+        rgba[i * 4 + 3] = 255;
+      }
     }
 
     // Log first pixel RGBA for debugging

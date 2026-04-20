@@ -1,30 +1,24 @@
 import * as GeoTIFF from 'geotiff';
 import proj4 from 'proj4';
 
-// Register common UTM Zone 32N definition (De Hattemse use case)
+// Register common UTM Zone definitions upfront for fast access
+proj4.defs('EPSG:32631', '+proj=utm +zone=31 +datum=WGS84 +units=m +no_defs');
 proj4.defs('EPSG:32632', '+proj=utm +zone=32 +datum=WGS84 +units=m +no_defs');
-
-// ─── Tile helpers ─────────────────────────────────────────────────────────────
-
-/** Convert a Mapbox slippy-tile (x, y, z) to WGS84 lon/lat bounding box */
-function tileToBBox(x: number, y: number, z: number): [number, number, number, number] {
-  const n = Math.PI - (2 * Math.PI * y) / Math.pow(2, z);
-  const north = (180 / Math.PI) * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
-  const south = (180 / Math.PI) * Math.atan(0.5 * (Math.exp(n - (2 * Math.PI) / Math.pow(2, z)) - Math.exp(-(n - (2 * Math.PI) / Math.pow(2, z)))));
-  const west  = (x / Math.pow(2, z)) * 360 - 180;
-  const east  = ((x + 1) / Math.pow(2, z)) * 360 - 180;
-  return [west, south, east, north];
-}
+proj4.defs('EPSG:32633', '+proj=utm +zone=33 +datum=WGS84 +units=m +no_defs');
 
 // ─── COGLoader ────────────────────────────────────────────────────────────────
 
 /**
- * Streams Cloud Optimized GeoTIFF tiles from a presigned URL using geotiff.js
+ * Streams Cloud Optimized GeoTIFF data from a presigned URL using geotiff.js
  * byte-range requests.
+ *
+ * Primary rendering strategy: `getFullImage()` reads the entire COG at a
+ * manageable output resolution and returns an ImageData + WGS84 bounds tuple
+ * that can be passed directly to a Deck.GL BitmapLayer.
  *
  * Handles:
  *  • Any projected CRS (UTM, Web Mercator, etc.) via proj4 reprojection
- *  • Float32 reflectance data (0–1 range) — not crushed by /255 normalization
+ *  • Float32 reflectance data (0–1 range)
  *  • 8-bit and 16-bit integer data
  *  • 4-band RGB+Alpha and 4/5-band multispectral sensors
  */
@@ -85,7 +79,6 @@ export class COGLoader {
     this.isFloat32 = sf0 === 3;     // IEEE floating point
 
     // CRS reprojection setup via proj4
-    // geotiff.js exposes the EPSG code through geoKeyDirectory
     // Try multiple tag paths — GDAL may write the code under different keys
     const geoKeys = (this.image as any).geoKeyDirectory || {};
     const fileDir  = (this.image as any).fileDirectory   || {};
@@ -102,19 +95,7 @@ export class COGLoader {
     // estimate the UTM zone.
     const looksLikeUTM = Math.abs(this.originX) > 180 || Math.abs(this.originY) > 90;
     if (looksLikeUTM && (!this.epsgCode || this.epsgCode === 4326)) {
-      // UTM easting is always 100,000–900,000 m within the zone.
-      // We can't recover the zone number from easting alone because it wraps.
-      // However, for European / drone survey data we use these brackets:
-      //   UTM zone 31N: central meridian 3°E  → easting ≈ 200k–800k for lon 0°–6°E
-      //   UTM zone 32N: central meridian 9°E  → easting ≈ 200k–800k for lon 6°–12°E
-      // Netherlands tip: easting 300k–450k in Zone 31N OR 600k–800k in Zone 32N
-      // Safe heuristic: if y (northing) is 4M–8.5M it's the Northern hemisphere.
       const isNorth = this.originY > 0;
-      // For the typical drone data range (easting 100k–900k), try to differentiate:
-      //   Zone 32N easting ≥ 550,000 for most of WC Europe, zone 31N < 550,000.
-      // This gives the right answer for Netherlands multi-spectral (x≈301k → Zone 32N).
-      // NOTE: originX for NL UTM 32N is ~300k–700k; for UTM 31N is ~200k–500k
-      // We'll default to zone 32 for x < 600k (NW Europe origin easting typical range)
       let zone: number;
       if (this.originX >= 100000 && this.originX <= 900000) {
         zone = this.originX < 600000 ? 32 : 33; // rough split for Europe
@@ -140,17 +121,15 @@ export class COGLoader {
           } else if (this.epsgCode >= 32701 && this.epsgCode <= 32760) {
             const zone = this.epsgCode - 32700;
             proj4.defs(sourceDef, `+proj=utm +zone=${zone} +south +datum=WGS84 +units=m +no_defs`);
-          } else if (this.epsgCode === 3857) {
-            proj4.defs('EPSG:3857', '+proj=merc +a=6378137 +b=6378137 +lat_ts=0.0 +lon_0=0.0 +x_0=0.0 +y_0=0 +k=1.0 +units=m +nadgrids=@null +wktext +no_defs');
+          } else {
+            throw new Error(`Unsupported EPSG:${this.epsgCode} — cannot auto-register`);
           }
         }
 
-        // Store a forward projector: WGS84 lon/lat → native CRS
-        this.project = (lon: number, lat: number) => {
-          return proj4(destDef, sourceDef, [lon, lat]);
-        };
+        // this.project: WGS84 lon/lat → source CRS (used in geoBBoxToPixelWindow)
+        this.project = (lon: number, lat: number) => proj4(destDef, sourceDef, [lon, lat]) as [number, number];
 
-        // Validate: project origin back to WGS84 and sanity-check
+        // Sanity check: origin should now map to valid WGS84 coords
         const testWgs84 = proj4(sourceDef, destDef, [this.originX, this.originY]);
         console.log(`[COGLoader] CRS EPSG:${this.epsgCode} → WGS84 origin check: lon=${testWgs84[0].toFixed(5)}, lat=${testWgs84[1].toFixed(5)}`);
       } catch (e) {
@@ -167,8 +146,57 @@ export class COGLoader {
     console.log(`[COGLoader] init: origin=(${this.originX}, ${this.originY}) res=(${this.pixelWidth}, ${this.pixelHeight}) size=${this.imgWidth}×${this.imgHeight} bands=${this.bandCount} float32=${this.isFloat32}`);
   }
 
-  // ─── getTile ───────────────────────────────────────────────────────────────
+  // ─── getFullImage ──────────────────────────────────────────────────────────
+  /**
+   * Reads the entire COG at a reduced output resolution and returns:
+   *   - imageData: the pixel data as a WebGL-compatible RGBA Uint8ClampedArray
+   *   - bounds: [west, south, east, north] in WGS84 (for BitmapLayer)
+   *
+   * This is the primary rendering strategy for drone survey COGs (small areas).
+   * Use maxOutputSize to cap the texture size (default 1024 prevents OOM).
+   */
+  async getFullImage(maxOutputSize = 1024): Promise<{ imageData: ImageData; bounds: [number, number, number, number] } | null> {
+    await this.init();
+    if (!this.image) return null;
 
+    // Get WGS84 bounds first
+    const bounds = this.getBoundsWGS84();
+    if (!bounds) {
+      console.error('[COGLoader] Cannot get WGS84 bounds for full image read');
+      return null;
+    }
+
+    // Determine output size — keep aspect ratio, cap to maxOutputSize
+    const aspect = this.imgWidth / this.imgHeight;
+    let outW: number, outH: number;
+    if (aspect >= 1) {
+      outW = maxOutputSize;
+      outH = Math.round(maxOutputSize / aspect);
+    } else {
+      outH = maxOutputSize;
+      outW = Math.round(maxOutputSize * aspect);
+    }
+
+    console.log(`[COGLoader] Reading full image at ${outW}×${outH} (native: ${this.imgWidth}×${this.imgHeight})`);
+
+    try {
+      const raster = await this.image.readRasters({
+        width:     outW,
+        height:    outH,
+        interleave: false,
+      });
+
+      const rgba = this.rastersToRGBA(raster, outW, outH);
+      const imageData = new ImageData(rgba, outW, outH);
+      return { imageData, bounds };
+    } catch (err) {
+      console.error('[COGLoader] getFullImage error:', err);
+      return null;
+    }
+  }
+
+  // ─── getTile (kept for compatibility) ──────────────────────────────────────
+  /** @deprecated Use getFullImage() instead for better results with small drone COGs */
   async getTile(x: number, y: number, z: number, tileSize: number = 256): Promise<ImageData | null> {
     await this.init();
     if (!this.image) return null;
@@ -200,7 +228,7 @@ export class COGLoader {
         interleave: false,
       });
 
-      const rgba = this.rastersToRGBA(raster, tileSize);
+      const rgba = this.rastersToRGBA(raster, tileSize, tileSize);
       return new ImageData(rgba, tileSize, tileSize);
     } catch (err) {
       console.error('[COGLoader] getTile error:', err);
@@ -210,10 +238,6 @@ export class COGLoader {
 
   // ─── Coordinate conversion ────────────────────────────────────────────────
 
-  /**
-   * Converts a WGS84 lon/lat bounding box → pixel window in the image's CRS.
-   * Handles geographic and all projected CRS (UTM, Web Mercator, etc.)
-   */
   private geoBBoxToPixelWindow(
     minLon: number, minLat: number, maxLon: number, maxLat: number
   ): [number, number, number, number] {
@@ -256,24 +280,22 @@ export class COGLoader {
    *   R → logical Red (band 0)
    *   G → logical Green (band 1)
    *   B → logical Blue / NIR-proxy (band 2)
-   *   A → NIR (band 3 if ≥ 4 bands, else band 0)
+   *   A → NIR (band 3 if ≥ 4 bands, else 255)
+   *
+   * For 5-band multispectral: R=band0(Red), G=band1(Green), B=band2(NIR), A=band3(RedEdge)
    *
    * Float32 reflectance (0.0–1.0 range) is scaled ×255 directly.
    * 16-bit integer is scaled from 65535 → 255.
    * 8-bit is copied as-is.
-   *
-   * For RGB COGs with an alpha mask in band 4: the mask is used as real alpha.
    */
-  private rastersToRGBA(rasters: any, size: number): Uint8ClampedArray {
-    const rgba  = new Uint8ClampedArray(size * size * 4);
+  private rastersToRGBA(rasters: any, width: number, height: number): Uint8ClampedArray {
+    const size  = width * height;
+    const rgba  = new Uint8ClampedArray(size * 4);
     const bands = Array.isArray(rasters) ? rasters : [rasters];
     const n     = bands.length;
 
     const r   = bands[0];                     // Red
     const g   = bands[1] ?? bands[0];          // Green
-    // For 5-band multispectral (no blue): pack NIR into Blue slot, RedEdge into Alpha
-    // For 4-band RGB+alpha: pack R,G,B into RGB, alpha mask into Alpha
-    // For 3-band RGB: pack R,G,B, alpha=255
     let bPacked: any;  // Band to store in Blue channel of texture
     let aPacked: any;  // Band to store in Alpha channel of texture
 
@@ -307,7 +329,7 @@ export class COGLoader {
       scale = 1;
     }
 
-    for (let i = 0; i < size * size; i++) {
+    for (let i = 0; i < size; i++) {
       rgba[i * 4]     = Math.round((r[i]          ?? 0) * scale);
       rgba[i * 4 + 1] = Math.round((g[i]          ?? 0) * scale);
       rgba[i * 4 + 2] = Math.round((bPacked?.[i]  ?? 0) * scale);
@@ -347,13 +369,32 @@ export class COGLoader {
         const sourceDef = `EPSG:${this.epsgCode}`;
         const sw = proj4(sourceDef, 'WGS84', [minX, minY]);
         const ne = proj4(sourceDef, 'WGS84', [maxX, maxY]);
+        // Validate output
+        if (isNaN(sw[0]) || isNaN(sw[1]) || isNaN(ne[0]) || isNaN(ne[1])) {
+          console.error('[COGLoader] Projection produced NaN bounds');
+          return null;
+        }
         return [sw[0], sw[1], ne[0], ne[1]];
       } catch (e) {
         console.error('[COGLoader] Failed to invert projection for bounds:', e);
         return null;
       }
     } else {
+      // Already WGS84
+      if (isNaN(minX) || isNaN(minY) || isNaN(maxX) || isNaN(maxY)) return null;
       return [minX, minY, maxX, maxY];
     }
   }
+}
+
+// ─── Tile helpers (kept for legacy getTile) ────────────────────────────────────
+
+/** Convert a Mapbox slippy-tile (x, y, z) to WGS84 lon/lat bounding box */
+function tileToBBox(x: number, y: number, z: number): [number, number, number, number] {
+  const n = Math.PI - (2 * Math.PI * y) / Math.pow(2, z);
+  const north = (180 / Math.PI) * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
+  const south = (180 / Math.PI) * Math.atan(0.5 * (Math.exp(n - (2 * Math.PI) / Math.pow(2, z)) - Math.exp(-(n - (2 * Math.PI) / Math.pow(2, z)))));
+  const west  = (x / Math.pow(2, z)) * 360 - 180;
+  const east  = ((x + 1) / Math.pow(2, z)) * 360 - 180;
+  return [west, south, east, north];
 }

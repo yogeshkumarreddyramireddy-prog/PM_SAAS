@@ -1,7 +1,8 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import mapboxgl from 'mapbox-gl';
 import { MapboxOverlay } from '@deck.gl/mapbox';
 import { TileLayer } from '@deck.gl/geo-layers';
+import { BitmapLayer } from '@deck.gl/layers';
 import { VegetationIndexLayer } from './VegetationIndexLayer';
 import { COGLoader } from '../lib/cog-loader';
 import { VEGETATION_INDEX_CONFIG, VegetationIndex } from '../lib/vegetation-indices';
@@ -20,6 +21,13 @@ interface MapAnalyticsEngineProps {
 // Keep a persistent loader reference to avoid re-init on every render
 const cogLoaders: Record<string, COGLoader> = {};
 
+// Cache the full image data to avoid re-reading from R2 on every prop change
+interface CachedCOGImage {
+  imageData: ImageData;
+  bounds: [number, number, number, number];
+}
+const cogImageCache: Record<string, CachedCOGImage> = {};
+
 export function MapAnalyticsEngine({
   map,
   isEnabled,
@@ -32,20 +40,20 @@ export function MapAnalyticsEngine({
 }: MapAnalyticsEngineProps) {
   const [overlay, setOverlay] = useState<MapboxOverlay | null>(null);
 
+  // Track if we've loaded COG image data for the current URL
+  const [cogImageData, setCogImageData] = useState<CachedCOGImage | null>(null);
+  const loadingRef = useRef<string | null>(null);
+
   // Get active shader config
   const config = useMemo(() => VEGETATION_INDEX_CONFIG[selectedIndex], [selectedIndex]);
 
   // ─── Histogram ─────────────────────────────────────────────────────────────
-  // Generates a simulated distribution per index type.
-  // Each index has a different typical distribution shape.
   useEffect(() => {
     if (!isEnabled || !onHistogramData || !map || mode === 'None') return;
 
     const buckets = 50;
     const [domainMin, domainMax] = config.domain;
 
-    // Different health profiles per index category/formula
-    // This varies meaningfully per index while we await real pixel readback
     const indexProfiles: Record<string, { peak: number; width: number }> = {
       RGB_GLI:   { peak: 0.12, width: 0.08 },
       RGB_VARI:  { peak: 0.10, width: 0.12 },
@@ -72,21 +80,62 @@ export function MapAnalyticsEngine({
     onHistogramData(data);
   }, [isEnabled, selectedIndex, mode, map, config, onHistogramData]);
 
-  // ─── Layer construction ────────────────────────────────────────────────────
-  // We include range + bandMapping in the layer ID so Deck.GL fully tears down
-  // and rebuilds the layer (recompiling the shader) whenever these change.
+  // ─── Load COG full image when URL changes ──────────────────────────────────
   useEffect(() => {
-    if (!map || !map.isStyleLoaded() || !isEnabled || !tileUrl || mode === 'None') {
-      if (overlay) overlay.setProps({ layers: [] });
+    if (mode !== 'Multispectral' || !tileUrl || !isEnabled) {
+      setCogImageData(null);
       return;
     }
 
-    // Create the overlay once and keep it alive
-    if (!overlay) {
-      const newOverlay = new MapboxOverlay({ interleaved: true, layers: [] });
-      map.addControl(newOverlay as unknown as mapboxgl.IControl);
-      setOverlay(newOverlay);
-      return; // state update will re-trigger this effect
+    // Already cached
+    if (cogImageCache[tileUrl]) {
+      setCogImageData(cogImageCache[tileUrl]);
+      return;
+    }
+
+    // Already loading
+    if (loadingRef.current === tileUrl) return;
+    loadingRef.current = tileUrl;
+
+    const loadFullImage = async () => {
+      try {
+        if (!cogLoaders[tileUrl]) {
+          cogLoaders[tileUrl] = new COGLoader(tileUrl);
+        }
+        console.log('[MapAnalyticsEngine] Loading full COG image from:', tileUrl);
+        const result = await cogLoaders[tileUrl].getFullImage(1024);
+        if (result && loadingRef.current === tileUrl) {
+          console.log('[MapAnalyticsEngine] COG image loaded. Bounds:', result.bounds);
+          cogImageCache[tileUrl] = result;
+          setCogImageData(result);
+        }
+      } catch (e) {
+        console.error('[MapAnalyticsEngine] Failed to load COG full image:', e);
+      } finally {
+        if (loadingRef.current === tileUrl) loadingRef.current = null;
+      }
+    };
+
+    loadFullImage();
+  }, [mode, tileUrl, isEnabled]);
+
+  // ─── Overlay initialization ─────────────────────────────────────────────────
+  useEffect(() => {
+    if (!map || !map.isStyleLoaded()) return;
+    if (overlay) return; // already created
+
+    const newOverlay = new MapboxOverlay({ interleaved: true, layers: [] });
+    map.addControl(newOverlay as unknown as mapboxgl.IControl);
+    setOverlay(newOverlay);
+  }, [map, overlay]);
+
+  // ─── Layer construction ────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!overlay) return;
+
+    if (!map || !map.isStyleLoaded() || !isEnabled || !tileUrl || mode === 'None') {
+      overlay.setProps({ layers: [] });
+      return;
     }
 
     // Stable key that changes when shader needs to recompile
@@ -95,6 +144,7 @@ export function MapAnalyticsEngine({
     let layers: any[] = [];
 
     if (mode === 'RGB') {
+      // RGB tiles served by tile-proxy — use standard TileLayer
       layers = [
         new TileLayer({
           id: `deck-analysis-rgb-${shaderKey}`,
@@ -102,7 +152,7 @@ export function MapAnalyticsEngine({
           minZoom: 0,
           maxZoom: 22,
           tileSize: 256,
-          renderSubLayers: (props) => {
+          renderSubLayers: (props: any) => {
             const { boundingBox } = props.tile;
             return new VegetationIndexLayer(props, {
               data: null,
@@ -118,79 +168,65 @@ export function MapAnalyticsEngine({
           }
         })
       ];
-    } else if (mode === 'Multispectral') {
-      // Reuse loader for the same URL; create a new one if URL changes
-      if (!cogLoaders[tileUrl]) {
-        cogLoaders[tileUrl] = new COGLoader(tileUrl);
-      }
+    } else if (mode === 'Multispectral' && cogImageData) {
+      // Multispectral COG — render the whole image as a single BitmapLayer
+      // The VegetationIndexLayer extends BitmapLayer and applies the index shader.
+      // bounds: [west, south, east, north] in WGS84
+      const { imageData, bounds } = cogImageData;
+      console.log(`[MapAnalyticsEngine] Rendering COG BitmapLayer. bounds=${JSON.stringify(bounds)} size=${imageData.width}×${imageData.height}`);
 
       layers = [
-        new TileLayer({
+        new VegetationIndexLayer({
           id: `deck-analysis-cog-${shaderKey}`,
-          data: tileUrl,
-          minZoom: 0,
-          maxZoom: 22,
-          tileSize: 256,
-          getTileData: (tile: any) =>
-            cogLoaders[tileUrl].getTile(tile.index.x, tile.index.y, tile.index.z),
-          renderSubLayers: (props) => {
-            const { boundingBox } = props.tile;
-            return new VegetationIndexLayer(props, {
-              data: null,
-              image: props.data,
-              shaderMath: config.shaderMath,
-              range: range,
-              bandMapping: bandMapping,
-              bounds: [
-                boundingBox[0][0], boundingBox[0][1],
-                boundingBox[1][0], boundingBox[1][1]
-              ],
-            });
-          }
+          image: imageData,
+          bounds: [bounds[0], bounds[1], bounds[2], bounds[3]] as [number, number, number, number],
+          shaderMath: config.shaderMath,
+          range: range,
+          bandMapping: bandMapping,
+          opacity: 1,
+          pickable: false,
         })
       ];
+    } else if (mode === 'Multispectral' && !cogImageData) {
+      // Still loading — keep existing layers to avoid flicker
+      return;
     }
 
     overlay.setProps({ layers });
 
-  }, [map, isEnabled, mode, tileUrl, selectedIndex, range, bandMapping, overlay, config]);
+  }, [map, isEnabled, mode, tileUrl, selectedIndex, range, bandMapping, overlay, config, cogImageData]);
 
   // ─── Auto-Fly Logic ────────────────────────────────────────────────────────
-  // When a Multispectral COG is selected, automatically fly the map to its bounds.
+  // When COG image is loaded, fly the map to its bounds.
   const [hasFlownTo, setHasFlownTo] = useState<string | null>(null);
 
   useEffect(() => {
     if (mode !== 'Multispectral' || !tileUrl || !map || hasFlownTo === tileUrl) return;
+    if (!cogImageData) return;
 
-    const flyToData = async () => {
+    const bounds = cogImageData.bounds;
+    if (bounds && !isNaN(bounds[0]) && !isNaN(bounds[1]) && !isNaN(bounds[2]) && !isNaN(bounds[3])) {
+      console.log('[MapAnalyticsEngine] Auto-flying to COG bounds:', bounds);
       try {
-        if (!cogLoaders[tileUrl]) {
-            cogLoaders[tileUrl] = new COGLoader(tileUrl);
-        }
-        await cogLoaders[tileUrl].init();
-        const bounds = cogLoaders[tileUrl].getBoundsWGS84();
-        
-        if (bounds && !isNaN(bounds[0]) && !isNaN(bounds[1]) && !isNaN(bounds[2]) && !isNaN(bounds[3])) {
-          console.log('[MapAnalyticsEngine] Auto-flying to COG bounds:', bounds);
-          map.fitBounds([
-            [bounds[0], bounds[1]],
-            [bounds[2], bounds[3]]
-          ], { padding: 50, duration: 2000 });
-          setHasFlownTo(tileUrl);
-        } else {
-          console.warn('[MapAnalyticsEngine] Invalid bounds returned for autofly:', bounds);
-        }
-      } catch (e) {
-        console.warn('[MapAnalyticsEngine] Failed to auto-fly to COG bounds:', e);
+        map.fitBounds(
+          [[bounds[0], bounds[1]], [bounds[2], bounds[3]]],
+          { padding: 80, duration: 2000, maxZoom: 21 }
+        );
+        setHasFlownTo(tileUrl);
+      } catch(e) {
+        console.warn('[MapAnalyticsEngine] fitBounds error:', e);
       }
-    };
-
-    flyToData();
-  }, [mode, tileUrl, map, hasFlownTo]);
+    } else {
+      console.warn('[MapAnalyticsEngine] Invalid bounds for autofly:', bounds);
+    }
+  }, [mode, tileUrl, map, hasFlownTo, cogImageData]);
 
   // Reset fly-to state when layer is deselected
   useEffect(() => {
-    if (mode === 'None') setHasFlownTo(null);
+    if (mode === 'None') {
+      setHasFlownTo(null);
+      setCogImageData(null);
+    }
   }, [mode]);
 
   // ─── Cleanup ────────────────────────────────────────────────────────────────

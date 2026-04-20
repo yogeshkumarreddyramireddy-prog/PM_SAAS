@@ -651,21 +651,27 @@ const MapboxGolfCourseMap = ({
     if (selectedLayers.length > 0) {
       const activeTileset = tilesets.find(t => t.id === selectedLayers[0]);
       if (activeTileset) {
-        const isCog = activeTileset.format === 'cog';
+        // A tileset is COG if:
+        //  - format is explicitly 'cog', OR
+        //  - cog_source_key is set (the actual .tif file key in R2)
+        const isCog = activeTileset.format === 'cog' || !!(activeTileset as any).cog_source_key;
+        const cogKey = (activeTileset as any).cog_source_key as string | undefined;
         const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 
-        if (isCog) {
+        if (isCog && cogKey) {
           // Pathway B: Multispectral COG — get a long-lived presigned R2 URL
-          setAnalysisModeMap('Loading'); // Prevent immediate render with old URL
+          // Use 'None' not 'Loading' — engine ignores None and won't flash old layers
+          setAnalysisModeMap('None');
           setAnalysisTileUrl(null); // Clear old proxy URL to avoid geotiff.js 500 error
           setAnalysisIndex('MS_NDVI');
           setAnalysisRange([-1, 1]);
           // Sensor: Band0=Red, Band1=Green, Band2=NIR, Band3=RedEdge (packed into RGBA: R,G,B=NIR,A=RE)
           // No blue band on this sensor — shader accesses b channel but formulas don't use it
           setBandMapping({ r: 0, g: 1, b: 2, nir: 2, re: 3 }); // b=nir as proxy since no blue band
-          // Fetch a presigned URL for the COG file (needs long expiry for byte-range requests)
+          // Fetch a presigned URL for the COG .tif file (needs long expiry for byte-range requests)
+          // IMPORTANT: pass cogKey (the actual .tif path), NOT r2_folder_path (the tile folder)
           import('@/lib/r2Service').then(({ R2Service }) => {
-            R2Service.getGetUrl(activeTileset.r2_folder_path, 4 * 3600)
+            R2Service.getGetUrl(cogKey, 4 * 3600)
               .then(({ url }) => {
                   setAnalysisModeMap('Multispectral'); 
                   setAnalysisTileUrl(url);
@@ -690,6 +696,7 @@ const MapboxGolfCourseMap = ({
       setAnalysisModeEnabled(false);
     }
   }, [selectedLayers, tilesets]);
+
 
 
   // Update raster opacity dynamically

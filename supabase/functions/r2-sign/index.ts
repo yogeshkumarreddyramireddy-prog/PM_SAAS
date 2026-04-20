@@ -217,7 +217,8 @@ serve(async (req) => {
     if (!me.approved && me.role !== 'admin') return new Response(JSON.stringify({ error: 'User not approved' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 403 });
 
     const body: SignedUrlRequest = await req.json();
-    const expiresIn = Math.min(Math.max(body.expiresInSeconds ?? 900, 60), 3600);
+    // FIX: Raised cap from 3600s (1h) to 14400s (4h) to support long COG streaming sessions
+    const expiresIn = Math.min(Math.max(body.expiresInSeconds ?? 900, 60), 14400);
 
     const accountId = Deno.env.get('CLOUDFLARE_R2_ACCOUNT_ID') || Deno.env.get('R2_ACCOUNT_ID') || '';
     const accessKeyId = Deno.env.get('CLOUDFLARE_R2_ACCESS_KEY_ID') || Deno.env.get('R2_ACCESS_KEY_ID') || '';
@@ -236,8 +237,39 @@ serve(async (req) => {
 
         // Admin can access any path, clients can only access their course's path
         if (me.role !== 'admin' && me.golf_course_id) {
+          // Check if it's a COG file path (CourseName/cogs/file-id.tif)
+          if (body.key.includes('/cogs/')) {
+            const { data: cogTileset, error: cogErr } = await supabase
+              .from('golf_course_tilesets')
+              .select('golf_course_id')
+              .eq('cog_source_key', body.key)
+              .single();
+
+            if (cogErr || !cogTileset) {
+              // Fallback: check by course name prefix
+              const coursePrefix = body.key.split('/cogs/')[0];
+              const { data: fallback } = await supabase
+                .from('golf_course_tilesets')
+                .select('golf_course_id')
+                .ilike('r2_folder_path', `${coursePrefix}%`)
+                .limit(1)
+                .single();
+              if (!fallback || fallback.golf_course_id !== me.golf_course_id) {
+                return new Response(JSON.stringify({ error: 'Forbidden - COG not available to you' }), {
+                  headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 403
+                });
+              }
+            } else if (cogTileset.golf_course_id !== me.golf_course_id) {
+              const { data: cgc } = await supabase.from('client_golf_courses').select('golf_course_id')
+                .eq('client_id', me.id).eq('golf_course_id', cogTileset.golf_course_id).eq('is_active', true).single();
+              if (!cgc) {
+                return new Response(JSON.stringify({ error: 'Forbidden - COG not available to you' }), {
+                  headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 403
+                });
+              }
+            }
           // Check if it's a tile path (golf-course-name/tiles/z/x/y.png)
-          if (body.key.includes('/tiles/')) {
+          } else if (body.key.includes('/tiles/')) {
             // Extract course name from key (e.g., "golf-course-name" from "golf-course-name/tiles/15/5242/12663.png")
             const courseName = body.key.split('/tiles/')[0];
 

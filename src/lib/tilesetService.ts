@@ -28,6 +28,8 @@ export interface GolfCourseTileset {
     updated_at: string;
     // Links to the origin content_file record for display name lookup
     source_file_id?: string | null;
+    // R2 object key for the Cloud Optimized GeoTIFF (.tif) file — only set for format='cog' rows
+    cog_source_key?: string | null;
 }
 
 export type TilesetInsert = Partial<GolfCourseTileset>;

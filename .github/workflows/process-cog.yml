@@ -105,20 +105,63 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           COURSE_NAME: ${{ inputs.golf_course_name }}
           FILE_ID: ${{ inputs.file_id }}
+          GOLF_COURSE_ID: ${{ inputs.golf_course_id }}
         run: |
           R2_DESTINATION="${COURSE_NAME}/cogs/${FILE_ID}.tif"
           echo "Registering COG: ${R2_DESTINATION}"
           
-          curl -X POST "${SUPABASE_URL}/functions/v1/r2-complete-cog" \
+          REGISTER_RESULT=$(curl -s -w "\n%{http_code}" -X POST "${SUPABASE_URL}/functions/v1/r2-complete-cog" \
             -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
             -H "Content-Type: application/json" \
             -d "{
-              \"fileId\": \"${{ inputs.file_id }}\",
-              \"golfCourseId\": \"${{ inputs.golf_course_id }}\",
+              \"fileId\": \"${FILE_ID}\",
+              \"golfCourseId\": \"${GOLF_COURSE_ID}\",
               \"r2Key\": \"${R2_DESTINATION}\",
+              \"courseName\": \"${COURSE_NAME}\",
               \"bounds\": ${{ steps.metadata.outputs.bounds }},
               \"centerLat\": ${{ steps.metadata.outputs.center_lat }},
               \"centerLon\": ${{ steps.metadata.outputs.center_lon }},
               \"minZoom\": 14,
               \"maxZoom\": 20
-            }"
+            }")
+
+          HTTP_STATUS=$(echo "$REGISTER_RESULT" | tail -1)
+          BODY=$(echo "$REGISTER_RESULT" | head -n -1)
+          echo "Register response (${HTTP_STATUS}): ${BODY}"
+
+          if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
+            echo "ERROR: Failed to register COG tileset (HTTP ${HTTP_STATUS})"
+            exit 1
+          fi
+
+          echo "COG registered successfully"
+
+      - name: Update content file status to published
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          FILE_ID: ${{ inputs.file_id }}
+          COURSE_NAME: ${{ inputs.golf_course_name }}
+        run: |
+          TILED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          R2_DESTINATION="${COURSE_NAME}/cogs/${FILE_ID}.tif"
+
+          UPDATE_RESULT=$(curl -s -w "\n%{http_code}" -X PATCH "${SUPABASE_URL}/rest/v1/content_files?id=eq.${FILE_ID}" \
+            -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"status\": \"published\",
+              \"is_tile_map\": true,
+              \"metadata\": {\"cog_complete\": true, \"cog_key\": \"${R2_DESTINATION}\", \"tiled_at\": \"${TILED_AT}\"}
+            }")
+
+          HTTP_STATUS=$(echo "$UPDATE_RESULT" | tail -1)
+          BODY=$(echo "$UPDATE_RESULT" | head -n -1)
+          echo "Update response (${HTTP_STATUS}): ${BODY}"
+
+          if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
+            echo "WARNING: Failed to update content file status (HTTP ${HTTP_STATUS})"
+          else
+            echo "Content file status updated to 'published'"
+          fi

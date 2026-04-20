@@ -131,8 +131,8 @@ export function MapAnalyticsEngine({
           minZoom: 0,
           maxZoom: 22,
           tileSize: 256,
-          getTileData: ({ x, y, z }: { x: number; y: number; z: number }) =>
-            cogLoaders[tileUrl].getTile(x, y, z),
+          getTileData: (tile: any) =>
+            cogLoaders[tileUrl].getTile(tile.index.x, tile.index.y, tile.index.z),
           renderSubLayers: (props) => {
             const { boundingBox } = props.tile;
             return new VegetationIndexLayer(props, {

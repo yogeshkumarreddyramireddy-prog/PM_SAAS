@@ -129,6 +129,12 @@ const MapboxGolfCourseMap = ({
   }, [tilesets, healthMapTilesets, vectorLayers]);
 
   // Stable function to sync Mapbox z-index to drag order
+  // Helper: check if a tileset ID belongs to a COG (skip from Mapbox layer order)
+  const isCogTilesetId = useCallback((tilesetId: string) => {
+    const ts = tilesets.find(t => t.id === tilesetId);
+    return ts ? (ts.format === 'cog' || !!(ts as any).cog_source_key) : false;
+  }, [tilesets]);
+
   const syncLayerOrder = useCallback(() => {
     if (!map.current || !map.current.isStyleLoaded() || layerOrder.length === 0) return;
     
@@ -197,7 +203,13 @@ const MapboxGolfCourseMap = ({
           // Standard Raster or Health Map layers
           applyLayerState(layerId, shouldBeVisible);
         }
-      } else if (layerId.startsWith('tileset-layer-') || layerId.startsWith('health-map-layer-')) {
+      } else if (layerId.startsWith('tileset-layer-')) {
+          // COG tilesets render in Deck.GL and have no Mapbox layer — silently skip
+          const tilesetId = layerId.replace('tileset-layer-', '');
+          if (!isCogTilesetId(tilesetId)) {
+            console.log(`⚠️ Layer ${layerId} in order list but NOT FOUND on map style.`);
+          }
+      } else if (layerId.startsWith('health-map-layer-')) {
           console.log(`⚠️ Layer ${layerId} in order list but NOT FOUND on map style.`);
       }
     });
@@ -595,6 +607,14 @@ const MapboxGolfCourseMap = ({
           return;
         }
 
+        // COG tilesets render via Deck.GL (byte-range streaming), NOT via tile-proxy.
+        // Skip adding a Mapbox raster source/layer for them — it would 404 and spam warnings.
+        const isCogTileset = tileset.format === 'cog' || !!(tileset as any).cog_source_key;
+        if (isCogTileset) {
+          console.log(`🌐 Skipping Mapbox raster layer for COG tileset: ${tileset.name} — rendered via Deck.GL`);
+          return;
+        }
+
         const sourceId = `tileset-source-${tileset.id}`;
         const layerId = `tileset-layer-${tileset.id}`;
         const tileUrlTemplate = `${supabaseUrl}/functions/v1/tile-proxy/${encodeURIComponent(tileset.id)}/{z}/{x}/{y}.png`;
@@ -660,25 +680,25 @@ const MapboxGolfCourseMap = ({
 
         if (isCog && cogKey) {
           // Pathway B: Multispectral COG — get a long-lived presigned R2 URL
-          // Use 'None' not 'Loading' — engine ignores None and won't flash old layers
           setAnalysisModeMap('None');
-          setAnalysisTileUrl(null); // Clear old proxy URL to avoid geotiff.js 500 error
+          setAnalysisTileUrl(null); // Clear old proxy URL
           setAnalysisIndex('MS_NDVI');
           setAnalysisRange([-1, 1]);
-          // Sensor: Band0=Red, Band1=Green, Band2=NIR, Band3=RedEdge (packed into RGBA: R,G,B=NIR,A=RE)
-          // No blue band on this sensor — shader accesses b channel but formulas don't use it
-          setBandMapping({ r: 0, g: 1, b: 2, nir: 2, re: 3 }); // b=nir as proxy since no blue band
+          setBandMapping({ r: 0, g: 1, b: 2, nir: 2, re: 3 });
+          // Auto-enable the analysis panel so user sees the overlay immediately
+          setAnalysisModeEnabled(true);
           // Fetch a presigned URL for the COG .tif file (needs long expiry for byte-range requests)
-          // IMPORTANT: pass cogKey (the actual .tif path), NOT r2_folder_path (the tile folder)
           import('@/lib/r2Service').then(({ R2Service }) => {
             R2Service.getGetUrl(cogKey, 4 * 3600)
               .then(({ url }) => {
+                  console.log('[COG] Got presigned URL, enabling Multispectral mode');
                   setAnalysisModeMap('Multispectral'); 
                   setAnalysisTileUrl(url);
               })
               .catch(err => {
-                console.error('Failed to get COG presigned URL:', err);
+                console.error('[COG] Failed to get presigned URL:', err);
                 setAnalysisTileUrl(null);
+                setAnalysisModeEnabled(false);
               });
           });
         } else {

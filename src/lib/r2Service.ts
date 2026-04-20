@@ -60,41 +60,38 @@ export class R2Service {
 
   private static async callFunction(body: Record<string, unknown>) {
     try {
-      const { data: { session } } = await supabase.auth.getSession()
-      const jwt = session?.access_token
+      console.log('Calling R2 function:', EDGE_FUNCTION, 'action:', body.action)
 
-      if (!jwt) {
-        throw new Error('No authentication token available')
-      }
-
-      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
-      if (!supabaseUrl) {
-        throw new Error('VITE_SUPABASE_URL environment variable is not set')
-      }
-
-      const url = `${supabaseUrl}/functions/v1/${EDGE_FUNCTION}`
-      console.log('Calling R2 function:', url, 'with body:', body)
-
-      const resp = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${jwt}`
-        },
-        body: JSON.stringify(body)
+      // Use supabase.functions.invoke() which automatically handles
+      // auth token refresh — avoids 401 errors from stale getSession() tokens.
+      const { data, error } = await supabase.functions.invoke(EDGE_FUNCTION, {
+        body: body,
       })
 
-      console.log('R2 function response status:', resp.status)
-
-      if (!resp.ok) {
-        const text = await resp.text()
-        console.error('R2 function error response:', text)
-        throw new Error(`Edge function error: ${resp.status} ${text}`)
+      if (error) {
+        console.error('R2 function error:', error)
+        // If it's an auth error, try refreshing the session once and retrying
+        if (error.message?.includes('401') || error.message?.includes('Unauthorized') || error.message?.includes('Auth')) {
+          console.log('R2 function auth error — refreshing session and retrying...')
+          const { error: refreshError } = await supabase.auth.refreshSession()
+          if (refreshError) {
+            throw new Error(`Auth refresh failed: ${refreshError.message}`)
+          }
+          // Retry once
+          const { data: retryData, error: retryError } = await supabase.functions.invoke(EDGE_FUNCTION, {
+            body: body,
+          })
+          if (retryError) {
+            throw new Error(`R2 function retry failed: ${retryError.message}`)
+          }
+          console.log('R2 function retry success:', retryData)
+          return retryData
+        }
+        throw new Error(`R2 function error: ${error.message}`)
       }
 
-      const result = await resp.json()
-      console.log('R2 function success:', result)
-      return result
+      console.log('R2 function success:', data)
+      return data
     } catch (error) {
       console.error('R2Service callFunction error:', error)
       if (error instanceof Error) {

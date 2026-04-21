@@ -306,11 +306,9 @@ export class COGLoader {
       rgba[i * 4 + 3] = Math.round(av);
 
       // Pixel is considered "valid" if any spectral band has data.
-      // Force alpha=255 for valid pixels so the BitmapLayer draws them.
-      // Nodata pixels (all bands zero) stay transparent.
-      if (rv > 0.01 || gv > 0.01 || bv > 0.01 || av > 0.01) {
-        rgba[i * 4 + 3] = 255;
-      }
+      // The VegetationIndexLayer custom shader handles nodata pixels by checking
+      // if all spectral channels sum to zero, so we do NOT need to force alpha=255 here.
+      // Doing so would permanently destroy the RedEdge data stored in the Alpha channel!
     }
 
     // Log first pixel RGBA for debugging

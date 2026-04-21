@@ -101,7 +101,7 @@ export const VEGETATION_INDEX_CONFIG: Record<VegetationIndex, VegetationIndexInf
     // Theoretical range: [-1, ∞). Practical for vegetation: [-1, 8].
     // Negative values occur when NIR < RedEdge (stressed/non-vegetated areas).
     // Healthy dense vegetation typically produces values of 1–5.
-    name: 'Chlorophyll Red-Edge',
+    name: 'CI-RedEdge',
     category: 'Multispectral',
     shaderMath: '(n / (e + 0.000001)) - 1.0',
     calculate: (r, g, b, n, e) => (n / (e + 0.000001)) - 1.0,

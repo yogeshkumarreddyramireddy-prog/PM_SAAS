@@ -95,7 +95,7 @@ const MapboxGolfCourseMap = ({
   const [analysisModeMap, setAnalysisModeMap] = useState<'RGB' | 'Multispectral' | 'None'>('None');
   const [analysisTileUrl, setAnalysisTileUrl] = useState<string | null>(null);
   const [analysisHistogramData, setAnalysisHistogramData] = useState<Array<{ value: number; count: number }>>([]);
-  const [bandMapping, setBandMapping] = useState({ r: 0, g: 1, b: 2, nir: 3, re: 3 }); // re defaults to NIR (band 3); set to 4 for 5-band sensors
+  const [bandMapping, setBandMapping] = useState({ r: 0, g: 1, b: 2, nir: 2, re: 3 }); // NIR=Band 3, RedEdge=Band 4
 
   // When the user picks a new index, reset the range to that index's theoretical domain
   // so stale values from the previous index don't persist in the slider labels.

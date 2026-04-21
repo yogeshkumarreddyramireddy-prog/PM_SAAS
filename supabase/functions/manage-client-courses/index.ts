@@ -26,12 +26,12 @@ serve(async (req) => {
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
 
     const supabaseAnon = createClient(supabaseUrl, supabaseAnonKey, {
+      global: { headers: { Authorization: authHeader } },
       auth: { autoRefreshToken: false, persistSession: false }
     })
     
     // Verify user is authenticated
-    const token = authHeader.replace('Bearer ', '')
-    const { data: { user }, error: authError } = await supabaseAnon.auth.getUser(token)
+    const { data: { user }, error: authError } = await supabaseAnon.auth.getUser()
     
     if (authError || !user) {
       console.error("Auth error:", authError)

@@ -1665,8 +1665,10 @@ const MapboxGolfCourseMap = ({
             </div>
           </div>
 
-          {/* === Layers Toggle Button (top-left) === */}
-          <div className="absolute top-4 left-4 z-20 flex flex-col gap-3">
+          {/* === Top-Left: Layers Card + Analysis Panel (stacked column) === */}
+          <div className="absolute top-4 left-4 z-20 flex flex-col gap-3 w-80">
+
+            {/* ── Layers toggle button ── */}
             <button
               className="bg-background/95 backdrop-blur shadow-md border border-border rounded-lg px-3 py-2 flex items-center gap-2 text-sm font-semibold hover:bg-muted/60 transition-colors w-fit"
               onClick={() => setShowVectorLayerPanel(v => !v)}
@@ -1676,7 +1678,90 @@ const MapboxGolfCourseMap = ({
               {showVectorLayerPanel && <X className="w-3 h-3 opacity-60 ml-0.5" />}
             </button>
 
-            {/* Dynamic Analysis Panel (Below Layers) */}
+            {/* ── Floating Layers Card (collapsible, scrollable, theme-matched) ── */}
+            {showVectorLayerPanel && (
+              <div className="w-80 bg-background/95 backdrop-blur-md shadow-md border border-border/50 rounded-xl overflow-hidden">
+                {/* Card header */}
+                <div className="flex items-center justify-between px-4 py-3 border-b border-border/50">
+                  <div className="flex items-center gap-2">
+                    <Layers className="w-4 h-4 text-primary" />
+                    <span className="font-semibold text-sm tracking-wide text-foreground">{t.map.panelTitle}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={toggleAllUnifiedLayers}
+                      className="text-[11px] font-bold text-primary hover:text-primary/80 transition-colors uppercase tracking-wider px-2 py-0.5 rounded hover:bg-primary/10"
+                    >
+                      {allLayersVisible ? t.map.hideAll : t.map.showAll}
+                    </button>
+                    <button
+                      onClick={() => setShowVectorLayerPanel(false)}
+                      className="p-1 rounded-md hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Scrollable layer list — capped so it never pushes Analysis panel off screen */}
+                <ScrollArea className="max-h-52">
+                  <div className="p-3 space-y-1">
+                    {/* Sub-label */}
+                    <span className="block text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50 mb-2 px-1">{t.map.drawOrder}</span>
+
+                    {unifiedLayers.length > 0 ? (
+                      <DndContext
+                        sensors={sensors}
+                        collisionDetection={closestCenter}
+                        onDragEnd={handleDragEnd}
+                      >
+                        <SortableContext
+                          items={unifiedLayers.map(l => l.id)}
+                          strategy={verticalListSortingStrategy}
+                        >
+                          {unifiedLayers.map((layer) => (
+                            <SortableLayerItem
+                              key={layer.id}
+                              id={layer.id}
+                              name={layer.name}
+                              isVisible={layer.isVisible}
+                              type={layer.type}
+                              color={layer.color}
+                              onToggle={handleUnifiedLayerToggle}
+                              editLabel={layer.editLabel}
+                              editDate={layer.editDate}
+                              onEdit={isAdmin ? handleLayerEdit : undefined}
+                            />
+                          ))}
+                        </SortableContext>
+                      </DndContext>
+                    ) : (
+                      <div className="text-center py-6 text-muted-foreground/50 text-sm">
+                        {t.map.noLayers}
+                      </div>
+                    )}
+                  </div>
+                </ScrollArea>
+
+                {/* Opacity slider — pinned below the scroll area, never scrolls away */}
+                {selectedLayers.length > 0 && showRasterLayers && (
+                  <div className="px-4 py-3 border-t border-border/40">
+                    <div className="flex justify-between text-[11px] font-semibold text-muted-foreground mb-2 uppercase tracking-wide">
+                      <span>{t.map.baseImageryOpacity}</span>
+                      <span className="text-foreground">{Math.round(rasterOpacity * 100)}%</span>
+                    </div>
+                    <input
+                      type="range" min="0" max="1" step="0.05"
+                      value={rasterOpacity}
+                      onChange={e => setRasterOpacity(parseFloat(e.target.value))}
+                      className="w-full h-1.5 mt-1 accent-primary rounded-full appearance-none cursor-pointer"
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ── Analysis / Plant Health Panel (always below layers card) ── */}
             <AnalysisPanel
                mapMode={analysisModeMap}
                isEnabled={analysisModeEnabled}
@@ -1688,6 +1773,7 @@ const MapboxGolfCourseMap = ({
                histogramData={analysisHistogramData}
                bandMapping={bandMapping}
                onBandMappingChange={setBandMapping}
+               isAdmin={isAdmin}
             />
           </div>
 
@@ -1705,92 +1791,7 @@ const MapboxGolfCourseMap = ({
             />
           )}
 
-          {/* === Collapsible Left-Side Layer Panel (Teal Glossy Theme) === */}
-          <div
-            className={`absolute top-0 left-0 h-full bg-teal-950/95 text-teal-50 backdrop-blur-md border-r border-teal-800/60 shadow-2xl z-20 flex flex-col transition-all duration-300 ease-in-out overflow-hidden ${
-              showVectorLayerPanel ? 'w-80' : 'w-0'
-            }`}
-          >
-            <div className="flex flex-col h-full w-80">
-              {/* Panel Header */}
-              <div className="flex items-center justify-between px-5 py-4 border-b border-teal-800/80 shrink-0 bg-teal-900/40">
-                <div className="flex items-center gap-2.5">
-                  <Layers className="w-4 h-4 text-teal-400" />
-                  <span className="font-semibold text-[15px] tracking-wide text-teal-50">{t.map.panelTitle}</span>
-                </div>
-                <button
-                  onClick={() => setShowVectorLayerPanel(false)}
-                  className="p-1.5 rounded-md hover:bg-teal-800 transition-colors text-teal-400 hover:text-teal-100"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
 
-              {/* Show All / Hide All */}
-              <div className="px-5 py-3 border-b border-teal-800/40 bg-teal-900/20 flex justify-between items-center shrink-0">
-                <span className="text-[11px] font-bold uppercase tracking-widest text-teal-200/60">{t.map.drawOrder}</span>
-                <button 
-                  onClick={toggleAllUnifiedLayers}
-                  className="text-[11px] font-bold text-teal-400 hover:text-teal-200 transition-colors uppercase tracking-wider bg-teal-900/40 hover:bg-teal-800/60 px-2 py-1 rounded"
-                >
-                  {allLayersVisible ? t.map.hideAll : t.map.showAll}
-                </button>
-              </div>
-
-              <ScrollArea className="flex-1">
-                <div className="p-4 space-y-4">
-                  {unifiedLayers.length > 0 ? (
-                    <DndContext 
-                      sensors={sensors}
-                      collisionDetection={closestCenter}
-                      onDragEnd={handleDragEnd}
-                    >
-                      <SortableContext
-                        items={unifiedLayers.map(l => l.id)}
-                        strategy={verticalListSortingStrategy}
-                      >
-                        {unifiedLayers.map((layer) => (
-                          <SortableLayerItem
-                            key={layer.id}
-                            id={layer.id}
-                            name={layer.name}
-                            isVisible={layer.isVisible}
-                            type={layer.type}
-                            color={layer.color}
-                            onToggle={handleUnifiedLayerToggle}
-                            editLabel={layer.editLabel}
-                            editDate={layer.editDate}
-                            onEdit={isAdmin ? handleLayerEdit : undefined}
-                          />
-                        ))}
-                      </SortableContext>
-                    </DndContext>
-                  ) : (
-                    <div className="text-center py-8 text-teal-200/50 text-sm">
-                      {t.map.noLayers}
-                    </div>
-                  )}
-                  
-                  {/* Raster Opacity slider for all imagery */}
-                  {selectedLayers.length > 0 && showRasterLayers && (
-                    <div className="mt-6 px-3 py-3 bg-teal-900/40 rounded-lg border border-teal-800/60 border-t border-t-teal-600/20">
-                      <div className="flex justify-between text-[11px] font-semibold text-teal-300 mb-2 uppercase tracking-wide">
-                        <span>{t.map.baseImageryOpacity}</span>
-                        <span className="text-teal-100">{Math.round(rasterOpacity * 100)}%</span>
-                      </div>
-                      <input
-                        type="range" min="0" max="1" step="0.05"
-                        value={rasterOpacity}
-                        onChange={e => setRasterOpacity(parseFloat(e.target.value))}
-                        className="w-full h-1.5 mt-1 accent-teal-400 bg-teal-800/80 rounded-full appearance-none cursor-pointer"
-                      />
-                    </div>
-                  )}
-
-                </div>
-              </ScrollArea>
-            </div>
-          </div>
 
           {/* Swipe Selectors – bottom-center, only when active */}
           {swipeEnabled && (

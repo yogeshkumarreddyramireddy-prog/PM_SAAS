@@ -85,8 +85,14 @@ export const useDeleteGolfCourse = () => {
 
   return useMutation({
     mutationFn: async (id: number) => {
+      // Force session refresh before invoking
+      const { data: { session } } = await supabase.auth.getSession()
+
       const { data, error } = await supabase.functions.invoke('manage-client-courses', {
-        body: { action: 'delete-course', courseId: id }
+        body: { action: 'delete-course', courseId: id },
+        headers: session?.access_token ? {
+          Authorization: `Bearer ${session.access_token}`
+        } : undefined
       })
 
       if (error) throw error
@@ -119,8 +125,14 @@ export const useAssignGolfCourse = () => {
 
   return useMutation({
     mutationFn: async ({ clientId, golfCourseId }: { clientId: string, golfCourseId: number }) => {
+      // Force session refresh before invoking
+      const { data: { session } } = await supabase.auth.getSession()
+      
       const { data, error } = await supabase.functions.invoke('manage-client-courses', {
-        body: { action: 'assign', clientId, golfCourseId }
+        body: { action: 'assign', clientId, golfCourseId },
+        headers: session?.access_token ? {
+          Authorization: `Bearer ${session.access_token}`
+        } : undefined
       })
 
       if (error) throw error
@@ -152,8 +164,14 @@ export const useRemoveGolfCourse = () => {
 
   return useMutation({
     mutationFn: async ({ clientId, golfCourseId }: { clientId: string, golfCourseId: number }) => {
+      // Force session refresh before invoking
+      const { data: { session } } = await supabase.auth.getSession()
+      
       const { data, error } = await supabase.functions.invoke('manage-client-courses', {
-        body: { action: 'remove', clientId, golfCourseId }
+        body: { action: 'remove', clientId, golfCourseId },
+        headers: session?.access_token ? {
+          Authorization: `Bearer ${session.access_token}`
+        } : undefined
       })
 
       if (error) throw error

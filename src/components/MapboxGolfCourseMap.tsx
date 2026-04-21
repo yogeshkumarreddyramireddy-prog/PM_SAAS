@@ -21,7 +21,8 @@ import { arrayMove, SortableContext, sortableKeyboardCoordinates, verticalListSo
 import { SortableLayerItem } from '@/components/SortableLayerItem';
 import { AnalysisPanel } from '@/components/AnalysisPanel';
 import { MapAnalyticsEngine } from '@/components/MapAnalyticsEngine';
-import { VegetationIndex } from '@/lib/vegetation-indices';
+import { VegetationIndex, VEGETATION_INDEX_CONFIG } from '@/lib/vegetation-indices';
+
 
 import { GolfCourseTileset } from "@/lib/tilesetService";
 
@@ -95,6 +96,14 @@ const MapboxGolfCourseMap = ({
   const [analysisTileUrl, setAnalysisTileUrl] = useState<string | null>(null);
   const [analysisHistogramData, setAnalysisHistogramData] = useState<Array<{ value: number; count: number }>>([]);
   const [bandMapping, setBandMapping] = useState({ r: 0, g: 1, b: 2, nir: 3, re: 3 }); // re defaults to NIR (band 3); set to 4 for 5-band sensors
+
+  // When the user picks a new index, reset the range to that index's theoretical domain
+  // so stale values from the previous index don't persist in the slider labels.
+  const handleSelectIndex = useCallback((index: VegetationIndex) => {
+    setAnalysisIndex(index);
+    const cfg = VEGETATION_INDEX_CONFIG[index];
+    if (cfg) setAnalysisRange([cfg.domain[0], cfg.domain[1]]);
+  }, []);
 
   // Map of content_files.id → original_filename for raster display names
   const [rasterFileNames, setRasterFileNames] = useState<Record<string, string>>({});
@@ -434,7 +443,9 @@ const MapboxGolfCourseMap = ({
         initialCenter = [primaryTileset.center_lon, primaryTileset.center_lat];
         initialZoom = primaryTileset.default_zoom;
         initialMinZoom = primaryTileset.min_zoom;
-        initialMaxZoom = primaryTileset.max_zoom;
+        // Do NOT clamp the map's max view zoom to the tileset's processing boundaries.
+        // Allow the user to "over-zoom" deeply into the pixels (up to zoom 24).
+        initialMaxZoom = 24;
         useBounds = true;
         boundsCoords = [
           [primaryTileset.min_lon, primaryTileset.min_lat],
@@ -666,56 +677,74 @@ const MapboxGolfCourseMap = ({
     loadSelectedRasters();
   }, [showRasterLayers, selectedLayers, tilesets, mapReady, syncLayerOrder]);
 
-  // Sync Analysis engine mode when a raster layer selection changes
+  // Sync Analysis engine mode based on the topmost VISIBLE raster layer in draw order.
+  // Draw order is maintained by `layerOrder` (index 0 = top).
+  // When multiple layers are visible, the topmost one determines whether the
+  // AnalysisPanel shows RGB or Multispectral vegetation indices.
   useEffect(() => {
-    if (selectedLayers.length > 0) {
-      const activeTileset = tilesets.find(t => t.id === selectedLayers[0]);
-      if (activeTileset) {
-        // A tileset is COG if:
-        //  - format is explicitly 'cog', OR
-        //  - cog_source_key is set (the actual .tif file key in R2)
-        const isCog = activeTileset.format === 'cog' || !!(activeTileset as any).cog_source_key;
-        const cogKey = (activeTileset as any).cog_source_key as string | undefined;
-        const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+    // Walk layerOrder from top (index 0) → bottom to find first visible raster tileset
+    let topmostTileset: GolfCourseTileset | null = null;
 
-        if (isCog && cogKey) {
-          // Pathway B: Multispectral COG — get a long-lived presigned R2 URL
-          setAnalysisModeMap('None');
-          setAnalysisTileUrl(null); // Clear old proxy URL
-          setAnalysisIndex('MS_NDVI');
-          setAnalysisRange([-1, 1]);
-          setBandMapping({ r: 0, g: 1, b: 2, nir: 2, re: 3 });
-          // Auto-enable the analysis panel so user sees the overlay immediately
-          setAnalysisModeEnabled(true);
-          // Fetch a presigned URL for the COG .tif file (needs long expiry for byte-range requests)
-          import('@/lib/r2Service').then(({ R2Service }) => {
-            R2Service.getGetUrl(cogKey, 4 * 3600)
-              .then(({ url }) => {
-                  console.log('[COG] Got presigned URL, enabling Multispectral mode');
-                  setAnalysisModeMap('Multispectral'); 
-                  setAnalysisTileUrl(url);
-              })
-              .catch(err => {
-                console.error('[COG] Failed to get presigned URL:', err);
-                setAnalysisTileUrl(null);
-                setAnalysisModeEnabled(false);
-              });
-          });
-        } else {
-          // Pathway A: Standard RGB PNG tiles — route through tile-proxy
-          setAnalysisModeMap('RGB');
-          setAnalysisTileUrl(`${supabaseUrl}/functions/v1/tile-proxy/${encodeURIComponent(activeTileset.id)}/{z}/{x}/{y}.png`);
-          setAnalysisIndex('RGB_VARI');
-          setAnalysisRange([-0.5, 0.5]);
-          setBandMapping({ r: 0, g: 1, b: 2, nir: 0, re: 0 }); // RGB: R(B1), G(B2), B(B3)
-        }
+    for (const layerId of layerOrder) {
+      // Only tileset-layers drive analysis mode (health maps are pre-rendered,
+      // vector layers have no pixel data for vegetation index computation)
+      if (!layerId.startsWith('tileset-layer-')) continue;
+
+      const rawId = layerId.replace('tileset-layer-', '');
+      // Must be both selected AND raster visibility is on
+      if (!showRasterLayers || !selectedLayers.includes(rawId)) continue;
+
+      const ts = tilesets.find(t => t.id === rawId);
+      if (ts) {
+        topmostTileset = ts;
+        break;
       }
-    } else {
+    }
+
+    if (!topmostTileset) {
+      // No visible raster layers → disable analysis
       setAnalysisModeMap('None');
       setAnalysisTileUrl(null);
       setAnalysisModeEnabled(false);
+      return;
     }
-  }, [selectedLayers, tilesets]);
+
+    const isCog = topmostTileset.format === 'cog' || !!(topmostTileset as any).cog_source_key;
+    const cogKey = (topmostTileset as any).cog_source_key as string | undefined;
+    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+
+    if (isCog && cogKey) {
+      // Pathway B: Multispectral COG — get a long-lived presigned R2 URL
+      setAnalysisModeMap('None');
+      setAnalysisTileUrl(null); // Clear old proxy URL
+      setAnalysisIndex('MS_NDVI');
+      setAnalysisRange([-1, 1]);
+      setBandMapping({ r: 0, g: 1, b: 2, nir: 2, re: 3 });
+      // Auto-enable the analysis panel so user sees the overlay immediately
+      setAnalysisModeEnabled(true);
+      // Fetch a presigned URL for the COG .tif file (needs long expiry for byte-range requests)
+      import('@/lib/r2Service').then(({ R2Service }) => {
+        R2Service.getGetUrl(cogKey, 4 * 3600)
+          .then(({ url }) => {
+              console.log('[COG] Got presigned URL, enabling Multispectral mode');
+              setAnalysisModeMap('Multispectral'); 
+              setAnalysisTileUrl(url);
+          })
+          .catch(err => {
+            console.error('[COG] Failed to get presigned URL:', err);
+            setAnalysisTileUrl(null);
+            setAnalysisModeEnabled(false);
+          });
+      });
+    } else {
+      // Pathway A: Standard RGB PNG tiles — route through tile-proxy
+      setAnalysisModeMap('RGB');
+      setAnalysisTileUrl(`${supabaseUrl}/functions/v1/tile-proxy/${encodeURIComponent(topmostTileset.id)}/{z}/{x}/{y}.png`);
+      setAnalysisIndex('RGB_VARI');
+      setAnalysisRange([-0.5, 0.5]);
+      setBandMapping({ r: 0, g: 1, b: 2, nir: 0, re: 0 }); // RGB: R(B1), G(B2), B(B3)
+    }
+  }, [selectedLayers, tilesets, layerOrder, showRasterLayers]);
 
 
 
@@ -1561,7 +1590,22 @@ const MapboxGolfCourseMap = ({
   const handleUnifiedLayerToggle = (id: string, isVisible: boolean) => {
     if (id.startsWith('tileset-layer-')) {
       const rawId = id.replace('tileset-layer-', '');
-      if (isVisible && !showRasterLayers) setShowRasterLayers(true);
+      if (isVisible) {
+        if (!showRasterLayers) setShowRasterLayers(true);
+        
+        // Auto-fly to RGB Orthomosaic when toggled on
+        const tileset = tilesets.find(t => t.id === rawId);
+        const isCog = tileset ? (tileset.format === 'cog' || !!(tileset as any).cog_source_key) : false;
+        
+        // We only fly here for standard formats (RGB). Multispectral COG layers 
+        // are handled dynamically by MapAnalyticsEngine once byte-data loads.
+        if (tileset && !isCog && tileset.min_lon !== undefined && map.current) {
+          map.current.fitBounds(
+            [[tileset.min_lon, tileset.min_lat], [tileset.max_lon, tileset.max_lat]],
+            { padding: 80, duration: 2000, maxZoom: 21 }
+          );
+        }
+      }
       setSelectedLayers(prev => isVisible ? (prev.includes(rawId) ? prev : [...prev, rawId]) : prev.filter(x => x !== rawId));
     }
     else if (id.startsWith('health-map-layer-')) {
@@ -1638,7 +1682,7 @@ const MapboxGolfCourseMap = ({
                isEnabled={analysisModeEnabled}
                onToggleEnable={setAnalysisModeEnabled}
                selectedIndex={analysisIndex}
-               onSelectIndex={setAnalysisIndex}
+               onSelectIndex={handleSelectIndex}
                range={analysisRange}
                onRangeChange={setAnalysisRange}
                histogramData={analysisHistogramData}

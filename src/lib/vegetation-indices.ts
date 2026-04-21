@@ -54,6 +54,9 @@ export const VEGETATION_INDEX_CONFIG: Record<VegetationIndex, VegetationIndexInf
   },
   'MS_NDRE': {
     id: 'MS_NDRE',
+    // Barnes et al. (2000) — NDRE = (NIR - RedEdge) / (NIR + RedEdge)
+    // Theoretical range: [-1, 1]. Healthy vegetation: ~0.20–0.45.
+    // RedEdge band (~710–730 nm) is sensitive to chlorophyll concentration.
     name: 'NDRE (Normalized Difference Red Edge)',
     category: 'Multispectral',
     shaderMath: '(n - e) / (n + e + 0.000001)',
@@ -94,10 +97,14 @@ export const VEGETATION_INDEX_CONFIG: Record<VegetationIndex, VegetationIndexInf
   },
   'MS_CLRE': {
     id: 'MS_CLRE',
+    // Gitelson et al. (2003) — CLREdge = (NIR / RedEdge) − 1
+    // Theoretical range: [-1, ∞). Practical for vegetation: [-1, 8].
+    // Negative values occur when NIR < RedEdge (stressed/non-vegetated areas).
+    // Healthy dense vegetation typically produces values of 1–5.
     name: 'Chlorophyll Red-Edge',
     category: 'Multispectral',
     shaderMath: '(n / (e + 0.000001)) - 1.0',
     calculate: (r, g, b, n, e) => (n / (e + 0.000001)) - 1.0,
-    domain: [0, 5]
+    domain: [-1, 8]
   }
 };

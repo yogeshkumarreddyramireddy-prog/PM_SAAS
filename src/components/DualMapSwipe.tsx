@@ -87,6 +87,8 @@ export const DualMapSwipe = ({
       style: styleCopy,
       center: map.getCenter(),
       zoom: map.getZoom(),
+      minZoom: map.getMinZoom(),
+      maxZoom: map.getMaxZoom(),
       bearing: map.getBearing(),
       pitch: map.getPitch(),
       accessToken: mapboxAccessToken

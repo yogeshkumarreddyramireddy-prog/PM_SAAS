@@ -11,7 +11,7 @@ interface MapAnalyticsEngineProps {
   map: mapboxgl.Map | null;
   isEnabled: boolean;
   mode: 'RGB' | 'Multispectral' | 'None';
-  tileUrl: string | null; 
+  tileUrl: string | null;
   selectedIndex: VegetationIndex;
   range: [number, number];
   bandMapping: { r: number, g: number, b: number, nir: number, re: number };
@@ -81,14 +81,14 @@ export function MapAnalyticsEngine({
       };
 
       for (let i = 0; i < dataArray.length; i += 4) {
-        if (dataArray[i+3] === 0) continue; // Skip nodata transparent pixels
-        
+        if (dataArray[i + 3] === 0) continue; // Skip nodata transparent pixels
+
         const r = getB(bandMapping.r, dataArray, i);
         const g = getB(bandMapping.g, dataArray, i);
         const b = getB(bandMapping.b, dataArray, i);
         const n = getB(bandMapping.nir, dataArray, i);
         const e = getB(bandMapping.re, dataArray, i);
-        
+
         const val = calculate(r, g, b, n, e);
         if (!isNaN(val) && isFinite(val)) {
           values.push(val);
@@ -97,11 +97,11 @@ export function MapAnalyticsEngine({
     }
 
     const isMock = values.length === 0;
-    
+
     // Sort array once for quick percentile lookups
     if (!isMock) {
       values.sort((a, b) => a - b);
-      
+
       // Use 1st and 99th percentiles to avoid extreme noise/outliers blowing up the scale
       minVal = values[Math.floor(values.length * 0.01)];
       maxVal = values[Math.floor(values.length * 0.99)];
@@ -112,13 +112,23 @@ export function MapAnalyticsEngine({
         RGB_VARI:  { peak: 0.10, width: 0.12 },
         RGB_TGI:   { peak: 0.05, width: 0.07 },
         RGB_GRVI:  { peak: 0.08, width: 0.09 },
+        // Multispectral indices — representative healthy turf/vegetation profiles
+        // NDRE (Barnes et al. 2000): healthy vegetation ~0.20–0.45
+        MS_NDVI:   { peak: 0.55, width: 0.15 },
+        MS_NDRE:   { peak: 0.30, width: 0.12 },
+        MS_GNDVI:  { peak: 0.45, width: 0.15 },
+        MS_MSAVI2: { peak: 0.45, width: 0.15 },
+        MS_OSAVI:  { peak: 0.45, width: 0.15 },
+        MS_NDWI:   { peak: -0.20, width: 0.15 },
+        // CLREdge (Gitelson et al. 2003): healthy vegetation ~1.0–3.5
+        MS_CLRE:   { peak: 2.0, width: 1.2 },
       };
-      
-      const profile = indexProfiles[selectedIndex] ?? { 
-        peak: (config.domain[0] + config.domain[1]) / 2, 
-        width: (config.domain[1] - config.domain[0]) / 4 
+
+      const profile = indexProfiles[selectedIndex] ?? {
+        peak: (config.domain[0] + config.domain[1]) / 2,
+        width: (config.domain[1] - config.domain[0]) / 4
       };
-      
+
       // Auto-adjust minimum and maximum boundaries based on standard index statistical response
       // Clamped by the absolute theoretical boundaries of the index (config.domain)
       minVal = Math.max(config.domain[0], profile.peak - profile.width * 3);
@@ -132,7 +142,7 @@ export function MapAnalyticsEngine({
 
     // Safety checks
     if (minVal >= maxVal) { maxVal = minVal + 0.01; }
-    
+
     // Notify parent of the TRUE data range!
     if (onDataRange) onDataRange([minVal, maxVal]);
 
@@ -141,11 +151,11 @@ export function MapAnalyticsEngine({
     const rangeSize = maxVal - minVal;
 
     for (let i = 0; i < values.length; i++) {
-        const v = values[i];
-        if (v < minVal || v > maxVal) continue;
-        let idx = Math.floor(((v - minVal) / rangeSize) * buckets);
-        if (idx >= buckets) idx = buckets - 1;
-        counts[idx]++;
+      const v = values[i];
+      if (v < minVal || v > maxVal) continue;
+      let idx = Math.floor(((v - minVal) / rangeSize) * buckets);
+      if (idx >= buckets) idx = buckets - 1;
+      counts[idx]++;
     }
 
     const data = counts.map((count, i) => {
@@ -301,7 +311,7 @@ export function MapAnalyticsEngine({
           { padding: 80, duration: 2000, maxZoom: 21 }
         );
         setHasFlownTo(tileUrl);
-      } catch(e) {
+      } catch (e) {
         console.warn('[MapAnalyticsEngine] fitBounds error:', e);
       }
     } else {

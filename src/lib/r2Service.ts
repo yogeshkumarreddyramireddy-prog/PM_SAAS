@@ -70,24 +70,29 @@ export class R2Service {
 
       if (error) {
         console.error('R2 function error:', error)
-        // If it's an auth error, try refreshing the session once and retrying
-        if (error.message?.includes('401') || error.message?.includes('Unauthorized') || error.message?.includes('Auth')) {
-          console.log('R2 function auth error — refreshing session and retrying...')
-          const { error: refreshError } = await supabase.auth.refreshSession()
-          if (refreshError) {
-            throw new Error(`Auth refresh failed: ${refreshError.message}`)
-          }
-          // Retry once
-          const { data: retryData, error: retryError } = await supabase.functions.invoke(EDGE_FUNCTION, {
-            body: body,
-          })
-          if (retryError) {
-            throw new Error(`R2 function retry failed: ${retryError.message}`)
-          }
-          console.log('R2 function retry success:', retryData)
-          return retryData
+        
+        // FunctionsHttpError often hides the actual 401 status in its opaque message.
+        // The safest approach for edge functions that require auth is to attempt ONE session refresh
+        // and retry if any error occurs, just in case it's an expired token issue.
+        console.log('Attempting to refresh session and retry R2 function...')
+        const { error: refreshError } = await supabase.auth.refreshSession()
+        
+        if (refreshError) {
+          console.error('Auth refresh failed:', refreshError)
+          throw new Error(`R2 function error: ${error.message} (Auth refresh also failed)`)
         }
-        throw new Error(`R2 function error: ${error.message}`)
+        
+        // Retry once
+        const { data: retryData, error: retryError } = await supabase.functions.invoke(EDGE_FUNCTION, {
+          body: body,
+        })
+        
+        if (retryError) {
+          throw new Error(`R2 function retry failed: ${retryError.message}`)
+        }
+        
+        console.log('R2 function retry success:', retryData)
+        return retryData
       }
 
       console.log('R2 function success:', data)

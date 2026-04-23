@@ -22,7 +22,11 @@ import { SortableLayerItem } from '@/components/SortableLayerItem';
 import { AnalysisPanel } from '@/components/AnalysisPanel';
 import { MapAnalyticsEngine } from '@/components/MapAnalyticsEngine';
 import { VegetationIndex, VEGETATION_INDEX_CONFIG } from '@/lib/vegetation-indices';
-
+import { useDrawingManager } from '@/hooks/useDrawingManager';
+import { VectorizationToolbar } from './VectorizationToolbar';
+import { AnnotationDialog } from './AnnotationDialog';
+import { DrawPlotsPanel } from './DrawPlotsPanel';
+import { MeasurementTooltip } from './MeasurementTooltip';
 
 import { GolfCourseTileset } from "@/lib/tilesetService";
 
@@ -81,6 +85,9 @@ const MapboxGolfCourseMap = ({
   const animationRef = useRef<number | null>(null);
   const mapInitializedRef = useRef(false);
   const [mapReady, setMapReady] = useState(false);
+
+  // Vectorization & Drawing Tools
+  const drawing = useDrawingManager(map.current, Number(golfCourseId) || null, mapReady);
   
   // Vector layer states
   const [vectorLayers, setVectorLayers] = useState<VectorLayer[]>([]);
@@ -1633,6 +1640,40 @@ const MapboxGolfCourseMap = ({
             ref={setMapContainerRef}
             className="absolute inset-0 w-full h-full"
           />
+
+          {/* Vectorization Tools */}
+          <VectorizationToolbar 
+            activeTool={drawing.activeTool} 
+            setActiveTool={drawing.setActiveTool} 
+            onImportClick={() => {
+              const input = document.createElement('input');
+              input.type = 'file';
+              input.accept = '.geojson,.json,.zip';
+              input.onchange = (e) => {
+                const file = (e.target as HTMLInputElement).files?.[0];
+                if (file) drawing.importFile(file);
+              };
+              input.click();
+            }} 
+            onExportGeoJSON={drawing.exportGeoJSON} 
+          />
+          <AnnotationDialog 
+            open={!!drawing.pendingAnnotation} 
+            onOpenChange={(open) => {
+              if (!open) drawing.cancelDrawing();
+            }}
+            pendingAnnotation={drawing.pendingAnnotation}
+            onSave={drawing.savePendingAnnotation}
+          />
+          {drawing.activeTool === 'draw_plots' && (
+            <DrawPlotsPanel 
+              onClose={() => drawing.setActiveTool(null)}
+              config={drawing.plotGrid}
+              onConfigChange={drawing.updatePlotGrid}
+              onConfirm={drawing.confirmPlotGrid}
+            />
+          )}
+          <MeasurementTooltip measurement={drawing.currentMeasurement} position={drawing.tooltipPosition} />
 
           {/* === Top-Right: Nav Controls + Compare Toggle === */}
           <div className="absolute top-4 right-4 flex flex-col items-end gap-2 z-20">

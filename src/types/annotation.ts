@@ -43,3 +43,13 @@ export interface PendingAnnotation {
   area?: number;
   length?: number;
 }
+
+export interface DragState {
+  isDragging: boolean;
+  type: 'translate' | 'vertex' | 'scale' | 'rotate' | null;
+  annotationId?: string;
+  vertexIndex?: number;
+  startLngLat?: [number, number];
+  startGeometry?: Geometry;
+  startCentroid?: [number, number];
+}

@@ -1655,7 +1655,9 @@ const MapboxGolfCourseMap = ({
               };
               input.click();
             }} 
-            onExportGeoJSON={drawing.exportGeoJSON} 
+            onExportGeoJSON={drawing.exportGeoJSON}
+            onUndo={drawing.undoLastEdit}
+            canUndo={drawing.canUndo}
           />
           <AnnotationDialog 
             open={!!drawing.pendingAnnotation} 

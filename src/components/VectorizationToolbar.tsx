@@ -6,7 +6,8 @@ import {
   Grid3X3, 
   Upload, 
   BoxSelect, 
-  Download 
+  Download,
+  Undo2
 } from 'lucide-react';
 import { DrawingTool } from '@/types/annotation';
 import { cn } from '@/lib/utils';
@@ -17,14 +18,17 @@ interface VectorizationToolbarProps {
   setActiveTool: (tool: DrawingTool) => void;
   onImportClick: () => void;
   onExportGeoJSON: () => void;
-  // If we wanted to add Export Shapefile, we could add it as an option in a dropdown here
+  onUndo: () => void;
+  canUndo: boolean;
 }
 
 export const VectorizationToolbar: React.FC<VectorizationToolbarProps> = ({
   activeTool,
   setActiveTool,
   onImportClick,
-  onExportGeoJSON
+  onExportGeoJSON,
+  onUndo,
+  canUndo
 }) => {
   
   const handleToolClick = (tool: DrawingTool) => {
@@ -43,6 +47,7 @@ export const VectorizationToolbar: React.FC<VectorizationToolbarProps> = ({
     { id: 'draw_plots' as DrawingTool, icon: Grid3X3, label: 'Draw Plots' },
     { id: 'import' as DrawingTool, icon: Upload, label: 'Import Annotations', action: onImportClick },
     { id: 'select_multiple' as DrawingTool, icon: BoxSelect, label: 'Select Multiple' },
+    { id: 'undo' as DrawingTool, icon: Undo2, label: 'Undo Last Edit', action: onUndo, disabled: !canUndo },
     { id: 'export' as DrawingTool, icon: Download, label: 'Export as GeoJSON', action: onExportGeoJSON },
   ];
 
@@ -58,11 +63,12 @@ export const VectorizationToolbar: React.FC<VectorizationToolbarProps> = ({
               <TooltipTrigger asChild>
                 <button
                   onClick={() => tool.action ? tool.action() : handleToolClick(tool.id)}
+                  disabled={tool.disabled}
                   className={cn(
                     "flex items-center justify-center w-10 h-10 rounded-full transition-smooth",
                     isActive 
                       ? "bg-primary text-primary-foreground shadow-sm" 
-                      : "text-foreground hover:bg-muted/80"
+                      : tool.disabled ? "text-muted-foreground opacity-50 cursor-not-allowed" : "text-foreground hover:bg-muted/80"
                   )}
                   aria-label={tool.label}
                   aria-pressed={isActive}

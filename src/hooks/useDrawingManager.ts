@@ -27,6 +27,7 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
   const editGeometry = useRef<GeoJSON.Geometry | null>(null);
   const dragState = useRef<DragState>({ isDragging: false, type: null });
   const editHistory = useRef<{ annotationId: string, geometry: GeoJSON.Geometry }[]>([]);
+  const [historyLength, setHistoryLength] = useState(0);
 
   const loadAnnotations = useCallback(async () => {
     if (!golfCourseId) return;
@@ -386,13 +387,13 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
 
   useEffect(() => {
     if (!map) return;
-    const currentEditId = editAnnotationId.current || '';
+    const currentEditId = (selectedAnnotationIds.size === 1 && activeTool === 'select_multiple') ? Array.from(selectedAnnotationIds)[0] : '';
     if (map.getLayer('annotations-fill')) {
       map.setFilter('annotations-fill', ['all', ['==', '$type', 'Polygon'], ['!=', 'id', currentEditId]]);
       map.setFilter('annotations-line', ['all', ['in', '$type', 'LineString', 'Polygon'], ['!=', 'id', currentEditId]]);
       map.setFilter('annotations-points', ['all', ['==', '$type', 'Point'], ['!=', 'id', currentEditId]]);
     }
-  }, [editAnnotationId.current, map]);
+  }, [selectedAnnotationIds, activeTool, map]);
 
   useEffect(() => {
     if (selectedAnnotationIds.size === 1 && activeTool === 'select_multiple') {
@@ -464,6 +465,21 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
     }
 
   }, [activeTool, map]);
+
+  // Keyboard listener for Delete
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        // Prevent deleting if typing in an input
+        if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement)?.tagName)) return;
+        if (selectedAnnotationIds.size > 0) {
+          deleteSelected();
+        }
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [selectedAnnotationIds]);
 
   // Map interaction events
   useEffect(() => {
@@ -593,23 +609,24 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
         map.dragPan.enable();
         
         if (editAnnotationId.current && editGeometry.current && dragState.current.startGeometry) {
-          // Push to history
           editHistory.current.push({
             annotationId: editAnnotationId.current,
             geometry: dragState.current.startGeometry
           });
+          setHistoryLength(editHistory.current.length);
 
-          // Optimistic UI Update
           const newGeom = editGeometry.current;
+          delete (newGeom as any).bbox; // Prevent Supabase PostGIS errors
           const id = editAnnotationId.current;
+          
           setAnnotations(prev => prev.map(a => a.id === id ? { ...a, geometry: newGeom } : a));
 
           try {
              await annotationService.updateAnnotation(id, { geometry: newGeom });
-             await loadAnnotations(); // refresh from db eventually
+             // We omit loadAnnotations here to avoid race conditions overriding optimistic UI.
           } catch (err) {
              console.error('Failed to save edit', err);
-             await loadAnnotations(); // revert on fail
+             await loadAnnotations(); 
           }
         }
         
@@ -726,7 +743,7 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
     // Optimistic revert
     setAnnotations(prev => prev.map(a => a.id === lastEdit.annotationId ? { ...a, geometry: lastEdit.geometry } : a));
     
-    // Update currently editing geometry if it's the one we just undid
+    setHistoryLength(editHistory.current.length);
     if (editAnnotationId.current === lastEdit.annotationId) {
        editGeometry.current = lastEdit.geometry;
        renderEditHandles();
@@ -734,7 +751,6 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
 
     try {
       await annotationService.updateAnnotation(lastEdit.annotationId, { geometry: lastEdit.geometry });
-      await loadAnnotations();
     } catch (err) {
       console.error("Failed to undo", err);
     }
@@ -790,6 +806,7 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
     pendingAnnotation, savePendingAnnotation, cancelDrawing,
     annotations, selectedAnnotationIds, deleteSelected,
     plotGrid, updatePlotGrid, confirmPlotGrid,
-    importFile, exportGeoJSON, undoLastEdit, canUndo: editHistory.current.length > 0
+    importFile, exportGeoJSON, undoLastEdit, canUndo: historyLength > 0,
+    canDelete: selectedAnnotationIds.size > 0
   };
 }

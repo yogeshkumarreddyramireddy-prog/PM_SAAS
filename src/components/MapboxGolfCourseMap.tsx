@@ -1641,24 +1641,6 @@ const MapboxGolfCourseMap = ({
             className="absolute inset-0 w-full h-full"
           />
 
-          {/* Vectorization Tools */}
-          <VectorizationToolbar 
-            activeTool={drawing.activeTool} 
-            setActiveTool={drawing.setActiveTool} 
-            onImportClick={() => {
-              const input = document.createElement('input');
-              input.type = 'file';
-              input.accept = '.geojson,.json,.zip';
-              input.onchange = (e) => {
-                const file = (e.target as HTMLInputElement).files?.[0];
-                if (file) drawing.importFile(file);
-              };
-              input.click();
-            }} 
-            onExportGeoJSON={drawing.exportGeoJSON}
-            onUndo={drawing.undoLastEdit}
-            canUndo={drawing.canUndo}
-          />
           <AnnotationDialog 
             open={!!drawing.pendingAnnotation} 
             onOpenChange={(open) => {
@@ -1677,8 +1659,9 @@ const MapboxGolfCourseMap = ({
           )}
           <MeasurementTooltip measurement={drawing.currentMeasurement} position={drawing.tooltipPosition} />
 
-          {/* === Top-Right: Nav Controls + Compare Toggle === */}
+          {/* === Top-Right: Nav Controls (all unified) === */}
           <div className="absolute top-4 right-4 flex flex-col items-end gap-2 z-20">
+            {/* Nav + Compare block */}
             <div className="bg-background/95 backdrop-blur shadow-md rounded-lg overflow-hidden flex flex-col border border-border">
               <Button variant="ghost" size="icon" onClick={zoomIn} title={t.map.zoomIn} className="h-9 w-9 shrink-0 rounded-none border-b border-border hover:bg-muted focus:ring-0">
                 <ZoomIn className="w-4 h-4" />
@@ -1695,16 +1678,41 @@ const MapboxGolfCourseMap = ({
               <Button variant="ghost" size="icon" onClick={centerOnCurrentLocation} title={t.map.centerLocation} className="h-9 w-9 shrink-0 rounded-none border-b border-border hover:bg-muted focus:ring-0">
                 <LocateFixed className="w-4 h-4" />
               </Button>
-              <Button variant="ghost" size="icon" onClick={toggleFullscreen} title={isFullscreen ? t.map.exitFullscreen : t.map.enterFullscreen} className="h-9 w-9 shrink-0 rounded-none hover:bg-muted focus:ring-0">
+              <Button variant="ghost" size="icon" onClick={toggleFullscreen} title={isFullscreen ? t.map.exitFullscreen : t.map.enterFullscreen} className="h-9 w-9 shrink-0 rounded-none border-b border-border hover:bg-muted focus:ring-0">
                 <Maximize2 className="w-4 h-4" />
               </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setSwipeEnabled(!swipeEnabled)}
+                title={swipeEnabled ? t.map.exitCompare : t.map.compareMaps}
+                className={`h-9 w-9 shrink-0 rounded-none hover:bg-muted focus:ring-0 ${swipeEnabled ? 'text-primary bg-primary/10' : ''}`}
+              >
+                <MoveHorizontal className="w-4 h-4" />
+              </Button>
             </div>
-            <div
-              className={`backdrop-blur shadow-md rounded-full px-3 py-1.5 flex items-center gap-2 border cursor-pointer transition-all select-none ${swipeEnabled ? 'bg-primary text-primary-foreground border-primary' : 'bg-background/95 border-border hover:bg-muted/60'}`}
-              onClick={() => setSwipeEnabled(!swipeEnabled)}
-            >
-              <MoveHorizontal className="w-3.5 h-3.5" />
-              <span className="text-xs font-semibold whitespace-nowrap">{swipeEnabled ? t.map.exitCompare : t.map.compareMaps}</span>
+
+            {/* Vectorization Tools — separate panel, same sizing */}
+            <div className="bg-background/95 backdrop-blur shadow-md rounded-lg overflow-hidden flex flex-col border border-border">
+              <VectorizationToolbar 
+                activeTool={drawing.activeTool} 
+                setActiveTool={drawing.setActiveTool} 
+                onImportClick={() => {
+                  const input = document.createElement('input');
+                  input.type = 'file';
+                  input.accept = '.geojson,.json,.zip';
+                  input.onchange = (e) => {
+                    const file = (e.target as HTMLInputElement).files?.[0];
+                    if (file) drawing.importFile(file);
+                  };
+                  input.click();
+                }} 
+                onExportGeoJSON={drawing.exportGeoJSON}
+                onUndo={drawing.undoLastEdit}
+                canUndo={drawing.canUndo}
+                onDeleteSelected={drawing.deleteSelected}
+                canDelete={drawing.canDelete}
+              />
             </div>
           </div>
 

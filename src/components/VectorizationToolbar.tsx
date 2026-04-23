@@ -7,7 +7,8 @@ import {
   Upload, 
   BoxSelect, 
   Download,
-  Undo2
+  Undo2,
+  Trash2
 } from 'lucide-react';
 import { DrawingTool } from '@/types/annotation';
 import { cn } from '@/lib/utils';
@@ -20,6 +21,8 @@ interface VectorizationToolbarProps {
   onExportGeoJSON: () => void;
   onUndo: () => void;
   canUndo: boolean;
+  onDeleteSelected: () => void;
+  canDelete: boolean;
 }
 
 export const VectorizationToolbar: React.FC<VectorizationToolbarProps> = ({
@@ -28,7 +31,9 @@ export const VectorizationToolbar: React.FC<VectorizationToolbarProps> = ({
   onImportClick,
   onExportGeoJSON,
   onUndo,
-  canUndo
+  canUndo,
+  onDeleteSelected,
+  canDelete
 }) => {
   
   const handleToolClick = (tool: DrawingTool) => {
@@ -47,12 +52,13 @@ export const VectorizationToolbar: React.FC<VectorizationToolbarProps> = ({
     { id: 'draw_plots' as DrawingTool, icon: Grid3X3, label: 'Draw Plots' },
     { id: 'import' as DrawingTool, icon: Upload, label: 'Import Annotations', action: onImportClick },
     { id: 'select_multiple' as DrawingTool, icon: BoxSelect, label: 'Select Multiple' },
+    { id: 'delete' as DrawingTool, icon: Trash2, label: 'Delete Selected', action: onDeleteSelected, disabled: !canDelete },
     { id: 'undo' as DrawingTool, icon: Undo2, label: 'Undo Last Edit', action: onUndo, disabled: !canUndo },
     { id: 'export' as DrawingTool, icon: Download, label: 'Export as GeoJSON', action: onExportGeoJSON },
   ];
 
   return (
-    <div className="absolute left-4 top-1/2 -translate-y-1/2 z-20 flex flex-col gap-2 p-2 bg-background/95 backdrop-blur-md shadow-md border border-border/50 rounded-xl">
+    <div className="flex flex-col">
       <TooltipProvider delayDuration={300}>
         {tools.map((tool) => {
           const isActive = activeTool === tool.id;
@@ -65,11 +71,12 @@ export const VectorizationToolbar: React.FC<VectorizationToolbarProps> = ({
                   onClick={() => tool.action ? tool.action() : handleToolClick(tool.id)}
                   disabled={tool.disabled}
                   className={cn(
-                    "flex items-center justify-center w-10 h-10 rounded-full transition-smooth",
+                    "flex items-center justify-center h-9 w-9 shrink-0 rounded-none transition-colors border-b border-border last:border-b-0 focus:ring-0",
                     isActive 
-                      ? "bg-primary text-primary-foreground shadow-sm" 
-                      : tool.disabled ? "text-muted-foreground opacity-50 cursor-not-allowed" : "text-foreground hover:bg-muted/80"
+                      ? "bg-primary text-primary-foreground" 
+                      : tool.disabled ? "text-muted-foreground opacity-40 cursor-not-allowed hover:bg-transparent" : "text-foreground hover:bg-muted"
                   )}
+                  title={tool.label}
                   aria-label={tool.label}
                   aria-pressed={isActive}
                 >

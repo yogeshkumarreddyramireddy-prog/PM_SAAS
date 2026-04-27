@@ -798,8 +798,17 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
     };
 
     const onContextMenu = (e: mapboxgl.MapMouseEvent) => {
+      const previewFeatures = map.queryRenderedFeatures(e.point, { layers: ['edit-handles-preview-fill', 'edit-handles-preview-line', 'edit-handles-preview-point'] });
       const features = map.queryRenderedFeatures(e.point, { layers: ['annotations-fill', 'annotations-line', 'annotations-points'] });
-      if (features.length > 0 && features[0].properties?.id) {
+      
+      if (previewFeatures.length > 0 && selectedAnnotationIds.size === 1) {
+        e.preventDefault();
+        setContextMenu({
+          x: e.point.x,
+          y: e.point.y,
+          annotationId: Array.from(selectedAnnotationIds)[0]
+        });
+      } else if (features.length > 0 && features[0].properties?.id) {
         e.preventDefault();
         setContextMenu({
           x: e.point.x,
@@ -815,8 +824,18 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
       if (dragState.current.isDragging) return;
       e.preventDefault(); 
       if (activeTool === 'select_multiple') {
+        const previewFeatures = map.queryRenderedFeatures(e.point, { layers: ['edit-handles-preview-fill', 'edit-handles-preview-line', 'edit-handles-preview-point'] });
         const features = map.queryRenderedFeatures(e.point, { layers: ['annotations-fill', 'annotations-line', 'annotations-points'] });
-        if (features.length > 0 && features[0].properties?.id) {
+        
+        if (previewFeatures.length > 0 && selectedAnnotationIds.size === 1) {
+          // If they double click the currently selected item
+          const id = Array.from(selectedAnnotationIds)[0];
+          const ann = annotations.find(a => a.id === id);
+          if (ann) {
+            setEditingAnnotation(ann);
+          }
+          return;
+        } else if (features.length > 0 && features[0].properties?.id) {
           const id = features[0].properties.id;
           const ann = annotations.find(a => a.id === id);
           if (ann) {

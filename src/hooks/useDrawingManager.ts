@@ -434,9 +434,9 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
     const hideIds = activeTool === 'select_multiple' ? Array.from(selectedAnnotationIds) : [];
     if (map.getLayer('annotations-fill')) {
       if (hideIds.length > 0) {
-        map.setFilter('annotations-fill', ['all', ['==', '$type', 'Polygon'], ['!', ['in', 'id', ...hideIds]]]);
-        map.setFilter('annotations-line', ['all', ['in', '$type', 'LineString', 'Polygon'], ['!', ['in', 'id', ...hideIds]]]);
-        map.setFilter('annotations-points', ['all', ['==', '$type', 'Point'], ['!', ['in', 'id', ...hideIds]]]);
+        map.setFilter('annotations-fill', ['all', ['==', '$type', 'Polygon'], ['!in', 'id', ...hideIds]]);
+        map.setFilter('annotations-line', ['all', ['in', '$type', 'LineString', 'Polygon'], ['!in', 'id', ...hideIds]]);
+        map.setFilter('annotations-points', ['all', ['==', '$type', 'Point'], ['!in', 'id', ...hideIds]]);
       } else {
         map.setFilter('annotations-fill', ['==', '$type', 'Polygon']);
         map.setFilter('annotations-line', ['in', '$type', 'LineString', 'Polygon']);
@@ -549,7 +549,13 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
       if (activeTool !== 'select_multiple') return;
       
       if (selectedAnnotationIds.size === 1 && editGeometry.current) {
-        const handleFeatures = map.queryRenderedFeatures(e.point, { layers: ['edit-handles-vertex', 'edit-handles-scale', 'edit-handles-rotate'] });
+        // Use a tolerance box around the click point for easier handle targeting
+        const tolerance = 12;
+        const bbox: [mapboxgl.PointLike, mapboxgl.PointLike] = [
+          [e.point.x - tolerance, e.point.y - tolerance],
+          [e.point.x + tolerance, e.point.y + tolerance]
+        ];
+        const handleFeatures = map.queryRenderedFeatures(bbox, { layers: ['edit-handles-vertex', 'edit-handles-scale', 'edit-handles-rotate'] });
         if (handleFeatures.length > 0) {
           e.preventDefault();
           map.dragPan.disable();
@@ -568,7 +574,24 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
         }
       }
 
+      // Check if clicking on the preview body (for translate) or on the main annotation layers
+      const previewFeatures = map.queryRenderedFeatures(e.point, { layers: ['edit-handles-preview-fill', 'edit-handles-preview-line', 'edit-handles-preview-point'] });
       const annFeatures = map.queryRenderedFeatures(e.point, { layers: ['annotations-fill', 'annotations-line', 'annotations-points'] });
+      
+      // If we clicked on the preview body of the currently-edited annotation, start translate
+      if (previewFeatures.length > 0 && selectedAnnotationIds.size === 1 && editGeometry.current) {
+        e.preventDefault();
+        map.dragPan.disable();
+        dragState.current = {
+          isDragging: true,
+          type: 'translate',
+          startLngLat: [e.lngLat.lng, e.lngLat.lat],
+          startGeometry: JSON.parse(JSON.stringify(editGeometry.current)),
+          startCentroid: turf.centroid(editGeometry.current as any).geometry.coordinates as [number, number]
+        };
+        return;
+      }
+      
       if (annFeatures.length > 0) {
         const clickedId = annFeatures[0].properties?.id;
         if (selectedAnnotationIds.has(clickedId)) {
@@ -695,13 +718,17 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
             } else if (type === 'scale' && startLngLat && startCentroid) {
                 const startDist = turf.distance(startCentroid, startLngLat);
                 const currentDist = turf.distance(startCentroid, currentLngLat);
-                const factor = currentDist / startDist;
-                newGeom = turf.transformScale(startGeometry, factor, { origin: startCentroid }).geometry;
+                if (startDist > 0) {
+                  const factor = currentDist / startDist;
+                  const feat = turf.feature(startGeometry);
+                  newGeom = turf.transformScale(feat, factor, { origin: startCentroid }).geometry;
+                }
             } else if (type === 'rotate' && startLngLat && startCentroid) {
                 const startBearing = turf.bearing(startCentroid, startLngLat);
                 const currentBearing = turf.bearing(startCentroid, currentLngLat);
                 const angleDelta = currentBearing - startBearing;
-                newGeom = turf.transformRotate(startGeometry, angleDelta, { origin: startCentroid }).geometry;
+                const feat = turf.feature(startGeometry);
+                newGeom = turf.transformRotate(feat, angleDelta, { pivot: startCentroid }).geometry;
             }
 
             editGeometry.current = newGeom;

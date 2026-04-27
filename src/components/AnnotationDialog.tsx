@@ -12,6 +12,7 @@ interface AnnotationDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   pendingAnnotation: PendingAnnotation | null;
+  existingAnnotation?: any; // Annotation
   onSave: (data: { plotId: string, externalCode: string, comment: string, properties: Record<string, any> }) => void;
 }
 
@@ -19,6 +20,7 @@ export const AnnotationDialog: React.FC<AnnotationDialogProps> = ({
   open,
   onOpenChange,
   pendingAnnotation,
+  existingAnnotation,
   onSave
 }) => {
   const [plotId, setPlotId] = useState('');
@@ -31,14 +33,23 @@ export const AnnotationDialog: React.FC<AnnotationDialogProps> = ({
   // Reset form when opened
   useEffect(() => {
     if (open) {
-      setPlotId('');
-      setExternalCode('');
-      setComment('');
-      setTreatment('');
-      setVariety('');
-      setReplicate('');
+      if (existingAnnotation) {
+        setPlotId(existingAnnotation.plot_id || '');
+        setExternalCode(existingAnnotation.external_code || '');
+        setComment(existingAnnotation.comment || '');
+        setTreatment(existingAnnotation.properties?.treatment || '');
+        setVariety(existingAnnotation.properties?.variety || '');
+        setReplicate(existingAnnotation.properties?.replicate || '');
+      } else {
+        setPlotId('');
+        setExternalCode('');
+        setComment('');
+        setTreatment('');
+        setVariety('');
+        setReplicate('');
+      }
     }
-  }, [open]);
+  }, [open, existingAnnotation]);
 
   const handleSave = () => {
     if (!plotId.trim()) {
@@ -74,7 +85,7 @@ export const AnnotationDialog: React.FC<AnnotationDialogProps> = ({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[500px]">
         <DialogHeader>
-          <DialogTitle>Save Annotation</DialogTitle>
+          <DialogTitle>{existingAnnotation ? 'Edit Annotation' : 'Save Annotation'}</DialogTitle>
         </DialogHeader>
 
         <Tabs defaultValue="basic" className="w-full">

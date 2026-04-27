@@ -25,6 +25,7 @@ import { VegetationIndex, VEGETATION_INDEX_CONFIG } from '@/lib/vegetation-indic
 import { useDrawingManager } from '@/hooks/useDrawingManager';
 import { VectorizationToolbar } from './VectorizationToolbar';
 import { AnnotationDialog } from './AnnotationDialog';
+import { AnnotationContextMenu } from './AnnotationContextMenu';
 import { DrawPlotsPanel } from './DrawPlotsPanel';
 import { MeasurementTooltip } from './MeasurementTooltip';
 
@@ -1642,12 +1643,41 @@ const MapboxGolfCourseMap = ({
           />
 
           <AnnotationDialog 
-            open={!!drawing.pendingAnnotation} 
+            open={!!drawing.pendingAnnotation || !!drawing.editingAnnotation} 
             onOpenChange={(open) => {
-              if (!open) drawing.cancelDrawing();
+              if (!open) {
+                drawing.cancelDrawing();
+                drawing.setEditingAnnotation(null);
+              }
             }}
             pendingAnnotation={drawing.pendingAnnotation}
-            onSave={drawing.savePendingAnnotation}
+            existingAnnotation={drawing.editingAnnotation}
+            onSave={async (data) => {
+              if (drawing.editingAnnotation) {
+                await drawing.updateAnnotationProperties(drawing.editingAnnotation.id, data);
+                drawing.setEditingAnnotation(null);
+              } else {
+                drawing.savePendingAnnotation(data);
+              }
+            }}
+          />
+
+          <AnnotationContextMenu
+            contextMenu={drawing.contextMenu}
+            onClose={() => drawing.setContextMenu(null)}
+            onEdit={(id) => {
+              const ann = drawing.annotations.find(a => a.id === id);
+              if (ann) drawing.setEditingAnnotation(ann);
+            }}
+            onCopyCoordinates={(id) => {
+              const ann = drawing.annotations.find(a => a.id === id);
+              if (ann) {
+                navigator.clipboard.writeText(JSON.stringify(ann.geometry));
+              }
+            }}
+            onDelete={(id) => {
+              drawing.deleteAnnotation(id);
+            }}
           />
           {drawing.activeTool === 'draw_plots' && (
             <DrawPlotsPanel 

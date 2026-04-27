@@ -1,4 +1,4 @@
-import { FeatureCollection, Geometry } from 'geojson';
+import { Geometry } from 'geojson';
 
 export type AnnotationType = 'point' | 'line' | 'area' | 'plot_grid';
 
@@ -21,17 +21,17 @@ export type DrawingTool = 'draw_point' | 'draw_line' | 'select_area' | 'draw_plo
 export interface PlotGridConfig {
   numRows: number;
   numColumns: number;
-  plotLength: number; // meters
-  plotWidth: number; // meters
-  gapLength: number; // meters
-  gapWidth: number; // meters
-  rotation: number; // degrees
+  plotLength: number;
+  plotWidth: number;
+  gapLength: number;
+  gapWidth: number;
+  rotation: number;
   centerLng: number;
   centerLat: number;
 }
 
 export interface PlotLabelConfig {
-  startCorner: 'A' | 'B' | 'C' | 'D'; // A: Bottom-Left, B: Bottom-Right, C: Top-Right, D: Top-Left
+  startCorner: 'A' | 'B' | 'C' | 'D';
   firstId: number;
   path: 'first_row' | 'column_first' | 'snake';
   variety: string;
@@ -46,10 +46,17 @@ export interface PendingAnnotation {
 
 export interface DragState {
   isDragging: boolean;
-  type: 'translate' | 'vertex' | 'scale' | 'rotate' | null;
+  type: 'translate' | 'vertex' | 'scale' | 'rotate' | 'multi-translate' | null;
   annotationId?: string;
   vertexIndex?: number;
   startLngLat?: [number, number];
   startGeometry?: Geometry;
+  startGeometries?: { id: string; geometry: Geometry }[];
   startCentroid?: [number, number];
+}
+
+export interface ContextMenuState {
+  x: number;
+  y: number;
+  annotationId: string;
 }

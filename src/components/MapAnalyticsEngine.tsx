@@ -12,6 +12,9 @@ interface MapAnalyticsEngineProps {
   isEnabled: boolean;
   mode: 'RGB' | 'Multispectral' | 'None';
   tileUrl: string | null;
+  /** WGS84 bounds [west, south, east, north] of the active RGB tileset — used for histogram */
+  tileBounds?: [number, number, number, number];
+  tileMinZoom?: number;
   selectedIndex: VegetationIndex;
   range: [number, number];
   bandMapping: { r: number, g: number, b: number, nir: number, re: number };
@@ -29,11 +32,124 @@ interface CachedCOGImage {
 }
 const cogImageCache: Record<string, CachedCOGImage> = {};
 
+// ─── Tile math helpers for RGB histogram ──────────────────────────────────────
+
+function lonToTileX(lon: number, z: number): number {
+  return Math.floor((lon + 180) / 360 * Math.pow(2, z));
+}
+
+function latToTileY(lat: number, z: number): number {
+  const r = lat * Math.PI / 180;
+  return Math.floor((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * Math.pow(2, z));
+}
+
+// Pick the highest zoom where the bounding box needs ≤ maxTiles tiles.
+function pickHistogramZoom(bounds: [number, number, number, number], minZoom: number, maxTiles = 25): number {
+  const [west, south, east, north] = bounds;
+  for (let z = Math.max(minZoom, 12); z <= 19; z++) {
+    const cols = lonToTileX(east, z) - lonToTileX(west, z) + 1;
+    const rows = latToTileY(south, z) - latToTileY(north, z) + 1;
+    if (cols * rows > maxTiles) return Math.max(z - 1, Math.max(minZoom, 12));
+  }
+  return 19;
+}
+
+function loadTileImageData(url: string): Promise<ImageData | null> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.naturalWidth || 256;
+        canvas.height = img.naturalHeight || 256;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) { resolve(null); return; }
+        ctx.drawImage(img, 0, 0);
+        resolve(ctx.getImageData(0, 0, canvas.width, canvas.height));
+      } catch {
+        resolve(null);
+      }
+    };
+    img.onerror = () => resolve(null);
+    img.src = url;
+  });
+}
+
+async function computeRGBHistogram(
+  tileUrlTemplate: string,
+  bounds: [number, number, number, number],
+  minZoom: number,
+  calculate: (r: number, g: number, b: number, n: number, e: number) => number,
+  domain: [number, number]
+): Promise<{ histData: Array<{ value: number; count: number }>; dataRange: [number, number] }> {
+  const z = pickHistogramZoom(bounds, minZoom);
+  const [west, south, east, north] = bounds;
+  const x0 = lonToTileX(west, z);
+  const x1 = lonToTileX(east, z);
+  const y0 = latToTileY(north, z); // y increases southward
+  const y1 = latToTileY(south, z);
+
+  const tilePromises: Promise<ImageData | null>[] = [];
+  for (let x = x0; x <= x1; x++) {
+    for (let y = y0; y <= y1; y++) {
+      const url = tileUrlTemplate
+        .replace('{z}', String(z))
+        .replace('{x}', String(x))
+        .replace('{y}', String(y));
+      tilePromises.push(loadTileImageData(url));
+    }
+  }
+
+  const tiles = await Promise.all(tilePromises);
+  const values: number[] = [];
+
+  for (const imgData of tiles) {
+    if (!imgData) continue;
+    const d = imgData.data;
+    for (let i = 0; i < d.length; i += 4) {
+      if (d[i + 3] < 10) continue; // skip transparent/nodata pixels
+      const r = d[i]     / 255;
+      const g = d[i + 1] / 255;
+      const b = d[i + 2] / 255;
+      const val = calculate(r, g, b, 0, 0);
+      if (isFinite(val) && !isNaN(val)) values.push(val);
+    }
+  }
+
+  if (values.length === 0) {
+    return { histData: [], dataRange: domain };
+  }
+
+  values.sort((a, b) => a - b);
+  const minVal = values[Math.floor(values.length * 0.01)];
+  const maxVal = values[Math.floor(values.length * 0.99)];
+  const rangeSize = maxVal > minVal ? maxVal - minVal : 0.01;
+
+  const buckets = 50;
+  const counts = new Array(buckets).fill(0);
+  for (const v of values) {
+    if (v < minVal || v > maxVal) continue;
+    let idx = Math.floor(((v - minVal) / rangeSize) * buckets);
+    if (idx >= buckets) idx = buckets - 1;
+    counts[idx]++;
+  }
+
+  const histData = counts.map((count, i) => ({
+    value: minVal + (i / (buckets - 1)) * rangeSize,
+    count,
+  }));
+
+  return { histData, dataRange: [minVal, maxVal] };
+}
+
 export function MapAnalyticsEngine({
   map,
   isEnabled,
   mode,
   tileUrl,
+  tileBounds,
+  tileMinZoom = 14,
   selectedIndex,
   range,
   bandMapping,
@@ -49,131 +165,95 @@ export function MapAnalyticsEngine({
   // Get active shader config
   const config = useMemo(() => VEGETATION_INDEX_CONFIG[selectedIndex], [selectedIndex]);
 
-  // ─── True Data Histogram & Range ───────────────────────────────────────────
+  // ─── Multispectral histogram — computed from loaded COG pixel data ──────────
   useEffect(() => {
-    if (!isEnabled || !onHistogramData || !map || mode === 'None') return;
+    if (mode !== 'Multispectral' || !isEnabled || !onHistogramData) return;
 
-    // Use mock data until we have real COG data for multispectral layers
-    if (mode === 'Multispectral' && !cogImageData) {
-      // Just clear histogram until loading finishes
+    if (!cogImageData) {
       onHistogramData([]);
       return;
     }
 
-    let minVal = Infinity;
-    let maxVal = -Infinity;
+    const dataArray = cogImageData.imageData.data;
+    const { calculate } = config;
+
+    // COGLoader packs: R=band0(Red), G=band1(Green), B=band2(NIR), A=band3(RedEdge)
+    // bandMapping indices directly address texture channels 0=R,1=G,2=B,3=A
+    const getChannel = (idx: number, pixels: Uint8ClampedArray, offset: number): number => {
+      if (idx === 0) return pixels[offset]     / 255;
+      if (idx === 1) return pixels[offset + 1] / 255;
+      if (idx === 2) return pixels[offset + 2] / 255;
+      return pixels[offset + 3] / 255;
+    };
+
     const values: number[] = [];
+    for (let i = 0; i < dataArray.length; i += 4) {
+      // The VegetationIndexLayer shader uses `total > 0.0001` for nodata detection.
+      // Mirror that here: skip pixels where all spectral channels are zero.
+      const total = dataArray[i] + dataArray[i + 1] + dataArray[i + 2] + dataArray[i + 3];
+      if (total === 0) continue;
 
-    if (mode === 'Multispectral' && cogImageData) {
-      // Calculate TRUE histogram for current formula
-      const dataArray = cogImageData.imageData.data;
-      const { calculate } = config;
-      // R=0, G=1, B=2, A=3 mappings based on COGLoader packing
-      const bMap = { [bandMapping.r]: 0, [bandMapping.g]: 1, [bandMapping.b]: 2, [bandMapping.nir]: 3 }; // wait, alpha holds the 4th channel?
-      // Actually COGLoader packs: R->0, G->1, B/NIR->2, A/RedEdge->3 (if 5-band) or NIR->3 (if 4-band).
-      // Based on defaults, bandMapping uses exact channel numbers, where R=texture.r so 0.
-      const getB = (idx: number, pixels: Uint8ClampedArray, offset: number) => {
-        if (idx === 0) return pixels[offset] / 255.0;
-        if (idx === 1) return pixels[offset + 1] / 255.0;
-        if (idx === 2) return pixels[offset + 2] / 255.0;
-        if (idx === 3) return pixels[offset + 3] / 255.0;
-        return 0; // Fallback
-      };
-
-      for (let i = 0; i < dataArray.length; i += 4) {
-        if (dataArray[i + 3] === 0) continue; // Skip nodata transparent pixels
-
-        const r = getB(bandMapping.r, dataArray, i);
-        const g = getB(bandMapping.g, dataArray, i);
-        const b = getB(bandMapping.b, dataArray, i);
-        const n = getB(bandMapping.nir, dataArray, i);
-        const e = getB(bandMapping.re, dataArray, i);
-
-        const val = calculate(r, g, b, n, e);
-        if (!isNaN(val) && isFinite(val)) {
-          values.push(val);
-        }
-      }
+      const r = getChannel(bandMapping.r,   dataArray, i);
+      const g = getChannel(bandMapping.g,   dataArray, i);
+      const b = getChannel(bandMapping.b,   dataArray, i);
+      const n = getChannel(bandMapping.nir, dataArray, i);
+      const e = getChannel(bandMapping.re,  dataArray, i);
+      const val = calculate(r, g, b, n, e);
+      if (isFinite(val) && !isNaN(val)) values.push(val);
     }
 
-    const isMock = values.length === 0;
+    if (values.length === 0) { onHistogramData([]); return; }
 
-    // Sort array once for quick percentile lookups
-    if (!isMock) {
-      values.sort((a, b) => a - b);
+    values.sort((a, b) => a - b);
+    const minVal = values[Math.floor(values.length * 0.01)];
+    const maxVal = values[Math.floor(values.length * 0.99)];
+    const safeMax = maxVal > minVal ? maxVal : minVal + 0.01;
 
-      // Use 1st and 99th percentiles to avoid extreme noise/outliers blowing up the scale
-      minVal = values[Math.floor(values.length * 0.01)];
-      maxVal = values[Math.floor(values.length * 0.99)];
-    } else {
-      // Fallback for RGB map mode (or error) where we don't have full pixels
-      const indexProfiles: Record<string, { peak: number; width: number }> = {
-        RGB_GLI:   { peak: 0.12, width: 0.08 },
-        RGB_VARI:  { peak: 0.10, width: 0.12 },
-        RGB_TGI:   { peak: 0.05, width: 0.07 },
-        RGB_GRVI:  { peak: 0.08, width: 0.09 },
-        // Multispectral indices — representative healthy turf/vegetation profiles
-        // NDRE (Barnes et al. 2000): healthy vegetation ~0.20–0.45
-        MS_NDVI:   { peak: 0.55, width: 0.15 },
-        MS_NDRE:   { peak: 0.30, width: 0.12 },
-        MS_GNDVI:  { peak: 0.45, width: 0.15 },
-        MS_MSAVI2: { peak: 0.45, width: 0.15 },
-        MS_OSAVI:  { peak: 0.45, width: 0.15 },
-        MS_NDWI:   { peak: -0.20, width: 0.15 },
-        // CLREdge (Gitelson et al. 2003): healthy vegetation ~1.0–3.5
-        MS_CLRE:   { peak: 2.0, width: 1.2 },
-      };
-
-      const profile = indexProfiles[selectedIndex] ?? {
-        peak: (config.domain[0] + config.domain[1]) / 2,
-        width: (config.domain[1] - config.domain[0]) / 4
-      };
-
-      // Auto-adjust minimum and maximum boundaries based on standard index statistical response
-      // Clamped by the absolute theoretical boundaries of the index (config.domain)
-      minVal = Math.max(config.domain[0], profile.peak - profile.width * 3);
-      maxVal = Math.min(config.domain[1], profile.peak + profile.width * 3);
-
-      for (let i = 0; i < 50; i++) {
-        const val = minVal + (i / 49) * (maxVal - minVal);
-        values.push(val); // Added for bucket iterators below
-      }
-    }
-
-    // Safety checks
-    if (minVal >= maxVal) { maxVal = minVal + 0.01; }
-
-    // Notify parent of the TRUE data range!
-    if (onDataRange) onDataRange([minVal, maxVal]);
+    if (onDataRange) onDataRange([minVal, safeMax]);
 
     const buckets = 50;
     const counts = new Array(buckets).fill(0);
-    const rangeSize = maxVal - minVal;
-
-    for (let i = 0; i < values.length; i++) {
-      const v = values[i];
-      if (v < minVal || v > maxVal) continue;
+    const rangeSize = safeMax - minVal;
+    for (const v of values) {
+      if (v < minVal || v > safeMax) continue;
       let idx = Math.floor(((v - minVal) / rangeSize) * buckets);
       if (idx >= buckets) idx = buckets - 1;
       counts[idx]++;
     }
 
-    const data = counts.map((count, i) => {
-      const value = minVal + (i / (buckets - 1)) * rangeSize;
-      let mockCount = count;
-      if (isMock) {
-        // Base bell curve
-        const base = Math.max(0, 100 * Math.exp(-0.5 * Math.pow((value - (minVal + maxVal) / 2) / ((maxVal - minVal) / 4), 2)));
-        // Add random high-frequency organic noise/jitter unique to this specific bin 
-        // to make it look like real environmental data instead of a smooth math curve
-        const jitter = (Math.sin(i * 13.43) * 0.4 + Math.sin(i * 2.3) * 0.5 + Math.random() * 0.3) * (base * 0.3);
-        mockCount = Math.floor(Math.max(0, base + jitter));
-      }
-      return { value, count: isMock ? mockCount : count };
-    });
+    onHistogramData(counts.map((count, i) => ({
+      value: minVal + (i / (buckets - 1)) * rangeSize,
+      count,
+    })));
+  }, [isEnabled, mode, cogImageData, config, bandMapping, onHistogramData, onDataRange]);
 
-    onHistogramData(data);
-  }, [isEnabled, selectedIndex, mode, map, config, onHistogramData, cogImageData, bandMapping, onDataRange]);
+  // ─── RGB histogram — fetch actual tiles, compute real index values ──────────
+  const rgbHistLoadingRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (mode !== 'RGB' || !isEnabled || !onHistogramData || !tileUrl || !tileBounds) return;
+
+    // Key that identifies this exact histogram request
+    const key = `${tileUrl}|${selectedIndex}`;
+    if (rgbHistLoadingRef.current === key) return;
+    rgbHistLoadingRef.current = key;
+
+    onHistogramData([]); // clear while loading
+
+    computeRGBHistogram(tileUrl, tileBounds, tileMinZoom, config.calculate, config.domain)
+      .then(({ histData, dataRange }) => {
+        if (rgbHistLoadingRef.current !== key) return; // stale
+        if (histData.length > 0) {
+          if (onDataRange) onDataRange(dataRange);
+          onHistogramData(histData);
+        }
+        rgbHistLoadingRef.current = null;
+      })
+      .catch(() => {
+        rgbHistLoadingRef.current = null;
+        onHistogramData([]);
+      });
+  }, [isEnabled, mode, tileUrl, tileBounds, tileMinZoom, selectedIndex, config, onHistogramData, onDataRange]);
 
   // ─── Load COG full image when URL changes ──────────────────────────────────
   useEffect(() => {

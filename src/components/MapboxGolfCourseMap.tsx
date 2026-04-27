@@ -102,6 +102,9 @@ const MapboxGolfCourseMap = ({
   const [analysisRange, setAnalysisRange] = useState<[number, number]>([-0.5, 0.5]);
   const [analysisModeMap, setAnalysisModeMap] = useState<'RGB' | 'Multispectral' | 'None'>('None');
   const [analysisTileUrl, setAnalysisTileUrl] = useState<string | null>(null);
+  // Bounds [west, south, east, north] of the active tileset — used by MapAnalyticsEngine for RGB histogram
+  const [analysisTileBounds, setAnalysisTileBounds] = useState<[number, number, number, number] | undefined>(undefined);
+  const [analysisTileMinZoom, setAnalysisTileMinZoom] = useState<number>(14);
   const [analysisHistogramData, setAnalysisHistogramData] = useState<Array<{ value: number; count: number }>>([]);
   const [bandMapping, setBandMapping] = useState({ r: 0, g: 1, b: 2, nir: 2, re: 3 }); // NIR=Band 3, RedEdge=Band 4
 
@@ -713,6 +716,7 @@ const MapboxGolfCourseMap = ({
       // No visible raster layers → disable analysis
       setAnalysisModeMap('None');
       setAnalysisTileUrl(null);
+      setAnalysisTileBounds(undefined);
       setAnalysisModeEnabled(false);
       return;
     }
@@ -725,6 +729,7 @@ const MapboxGolfCourseMap = ({
       // Pathway B: Multispectral COG — get a long-lived presigned R2 URL
       setAnalysisModeMap('None');
       setAnalysisTileUrl(null); // Clear old proxy URL
+      setAnalysisTileBounds(undefined);
       setAnalysisIndex('MS_NDVI');
       setAnalysisRange([-1, 1]);
       setBandMapping({ r: 0, g: 1, b: 2, nir: 2, re: 3 });
@@ -748,6 +753,8 @@ const MapboxGolfCourseMap = ({
       // Pathway A: Standard RGB PNG tiles — route through tile-proxy
       setAnalysisModeMap('RGB');
       setAnalysisTileUrl(`${supabaseUrl}/functions/v1/tile-proxy/${encodeURIComponent(topmostTileset.id)}/{z}/{x}/{y}.png`);
+      setAnalysisTileBounds([topmostTileset.min_lon, topmostTileset.min_lat, topmostTileset.max_lon, topmostTileset.max_lat]);
+      setAnalysisTileMinZoom(topmostTileset.min_zoom);
       setAnalysisIndex('RGB_VARI');
       setAnalysisRange([-0.5, 0.5]);
       setBandMapping({ r: 0, g: 1, b: 2, nir: 0, re: 0 }); // RGB: R(B1), G(B2), B(B3)
@@ -1864,6 +1871,8 @@ const MapboxGolfCourseMap = ({
               isEnabled={analysisModeEnabled}
               mode={analysisModeMap}
               tileUrl={analysisTileUrl}
+              tileBounds={analysisTileBounds}
+              tileMinZoom={analysisTileMinZoom}
               selectedIndex={analysisIndex}
               range={analysisRange}
               onHistogramData={setAnalysisHistogramData}

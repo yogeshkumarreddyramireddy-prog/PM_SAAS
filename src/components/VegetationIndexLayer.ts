@@ -7,7 +7,8 @@ export interface VegetationIndexLayerProps extends BitmapLayerProps {
   bandMapping?: { r: number; g: number; b: number; nir: number; re: number };
 }
 
-const defaultBandMapping = { r: 0, g: 1, b: 2, nir: 3, re: 3 };
+// Matches COGLoader packing: R=Red(0), G=Green(1), B=NIR(2), A=RedEdge(3)
+const defaultBandMapping = { r: 0, g: 1, b: 2, nir: 2, re: 3 };
 
 const defaultProps = {
   shaderMath: '(g - r) / (g + r - b + 0.000001)',
@@ -35,7 +36,7 @@ const defaultProps = {
  */
 export class VegetationIndexLayer extends BitmapLayer<VegetationIndexLayerProps> {
   static layerName = 'VegetationIndexLayer';
-  static defaultProps = defaultProps;
+  static defaultProps: any = defaultProps;
 
   getShaders() {
     const shaders = super.getShaders();

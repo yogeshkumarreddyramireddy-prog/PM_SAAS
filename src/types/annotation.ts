@@ -50,9 +50,12 @@ export interface DragState {
   annotationId?: string;
   vertexIndex?: number;
   startLngLat?: [number, number];
+  lastLngLat?: [number, number];
   startGeometry?: Geometry;
   startGeometries?: { id: string; geometry: Geometry }[];
   startCentroid?: [number, number];
+  scaleEdge?: 'top' | 'bottom' | 'left' | 'right';
+  startBbox?: [number, number, number, number];
 }
 
 export interface ContextMenuState {

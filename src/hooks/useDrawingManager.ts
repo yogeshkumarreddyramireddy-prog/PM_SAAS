@@ -31,6 +31,9 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
   const dragState = useRef<DragState>({ isDragging: false, type: null });
   const editHistory = useRef<{ annotationId: string, geometry: GeoJSON.Geometry }[]>([]);
   const [historyLength, setHistoryLength] = useState(0);
+  const animFrameRef = useRef<number>(0);
+  const annotationsRef = useRef<Annotation[]>([]);
+  const selectedAnnotationIdsRef = useRef<Set<string>>(new Set());
 
   const loadAnnotations = useCallback(async () => {
     if (!golfCourseId) return;
@@ -41,6 +44,10 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
       console.error("Failed to load annotations", err);
     }
   }, [golfCourseId]);
+
+  // Keep refs in sync so renderEditHandles can read current values without dep-array coupling
+  useEffect(() => { annotationsRef.current = annotations; }, [annotations]);
+  useEffect(() => { selectedAnnotationIdsRef.current = selectedAnnotationIds; }, [selectedAnnotationIds]);
 
   // Initial load
   useEffect(() => {
@@ -120,44 +127,71 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
       });
     }
 
-    if (!map.getSource(EDIT_HANDLES_SOURCE)) {
-      map.addSource(EDIT_HANDLES_SOURCE, {
+    // Annotations added BEFORE edit-handles so interactive handles render on top
+    if (!map.getSource(ANNOTATIONS_SOURCE)) {
+      map.addSource(ANNOTATIONS_SOURCE, {
         type: 'geojson',
         data: { type: 'FeatureCollection', features: [] }
       });
 
+      map.addLayer({
+        id: 'annotations-fill',
+        type: 'fill',
+        source: ANNOTATIONS_SOURCE,
+        filter: ['==', '$type', 'Polygon'],
+        paint: {
+          'fill-color': ['case', ['boolean', ['get', 'selected'], false], '#00d2ff', '#ffffff'],
+          'fill-opacity': ['case', ['boolean', ['get', 'selected'], false], 0.4, 0.2]
+        }
+      });
 
       map.addLayer({
-        id: 'edit-handles-preview-fill',
-        type: 'fill',
-        source: EDIT_HANDLES_SOURCE,
-        filter: ['all', ['==', 'type', 'preview'], ['==', '$type', 'Polygon']],
-        paint: {
-          'fill-color': '#00d2ff',
-          'fill-opacity': 0.5
-        }
-      });
-      map.addLayer({
-        id: 'edit-handles-preview-line',
+        id: 'annotations-line',
         type: 'line',
-        source: EDIT_HANDLES_SOURCE,
-        filter: ['all', ['==', 'type', 'preview'], ['in', '$type', 'LineString', 'Polygon']],
+        source: ANNOTATIONS_SOURCE,
+        filter: ['in', '$type', 'LineString', 'Polygon'],
         paint: {
-          'line-color': '#ff0000',
-          'line-width': 3
+          'line-color': ['case', ['boolean', ['get', 'selected'], false], '#ff0000', '#ffffff'],
+          'line-width': ['case', ['boolean', ['get', 'selected'], false], 3, 2]
         }
       });
+
       map.addLayer({
-        id: 'edit-handles-preview-point',
+        id: 'annotations-points',
         type: 'circle',
-        source: EDIT_HANDLES_SOURCE,
-        filter: ['all', ['==', 'type', 'preview'], ['==', '$type', 'Point']],
+        source: ANNOTATIONS_SOURCE,
+        filter: ['==', '$type', 'Point'],
         paint: {
-          'circle-radius': 7,
-          'circle-color': '#00d2ff',
+          'circle-radius': ['case', ['boolean', ['get', 'selected'], false], 7, 5],
+          'circle-color': ['case', ['boolean', ['get', 'selected'], false], '#00d2ff', '#ffffff'],
           'circle-stroke-color': '#000000',
           'circle-stroke-width': 1
         }
+      });
+
+      map.addLayer({
+        id: 'annotations-labels',
+        type: 'symbol',
+        source: ANNOTATIONS_SOURCE,
+        filter: ['has', 'plot_id'],
+        layout: {
+          'text-field': ['get', 'plot_id'],
+          'text-size': 12,
+          'text-anchor': 'center'
+        },
+        paint: {
+          'text-color': '#000000',
+          'text-halo-color': '#ffffff',
+          'text-halo-width': 2
+        }
+      });
+    }
+
+    // Edit-handle layers added AFTER annotations so they render on top
+    if (!map.getSource(EDIT_HANDLES_SOURCE)) {
+      map.addSource(EDIT_HANDLES_SOURCE, {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] }
       });
 
       map.addLayer({
@@ -192,7 +226,10 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
         source: EDIT_HANDLES_SOURCE,
         filter: ['==', 'type', 'scale'],
         layout: {
-          'text-field': '⤡',
+          'text-field': ['case',
+            ['in', ['get', 'edge'], ['literal', ['top', 'bottom']]], '↕',
+            '↔'
+          ],
           'text-size': 12,
           'text-allow-overlap': true
         },
@@ -235,66 +272,6 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
           'text-allow-overlap': true
         },
         paint: { 'text-color': '#ffffff' }
-      });
-    }
-
-    if (!map.getSource(ANNOTATIONS_SOURCE)) {
-      map.addSource(ANNOTATIONS_SOURCE, {
-        type: 'geojson',
-        data: { type: 'FeatureCollection', features: [] }
-      });
-
-      // Saved annotations layers
-      map.addLayer({
-        id: 'annotations-fill',
-        type: 'fill',
-        source: ANNOTATIONS_SOURCE,
-        filter: ['==', '$type', 'Polygon'],
-        paint: {
-          'fill-color': ['case', ['boolean', ['get', 'selected'], false], '#00d2ff', '#ffffff'],
-          'fill-opacity': ['case', ['boolean', ['get', 'selected'], false], 0.4, 0.2]
-        }
-      });
-
-      map.addLayer({
-        id: 'annotations-line',
-        type: 'line',
-        source: ANNOTATIONS_SOURCE,
-        filter: ['in', '$type', 'LineString', 'Polygon'],
-        paint: {
-          'line-color': ['case', ['boolean', ['get', 'selected'], false], '#ff0000', ['case', ['boolean', ['get', 'selected'], false], '#00d2ff', '#ffffff']],
-          'line-width': ['case', ['boolean', ['get', 'selected'], false], 3, 2]
-        }
-      });
-
-      map.addLayer({
-        id: 'annotations-points',
-        type: 'circle',
-        source: ANNOTATIONS_SOURCE,
-        filter: ['==', '$type', 'Point'],
-        paint: {
-          'circle-radius': ['case', ['boolean', ['get', 'selected'], false], 7, 5],
-          'circle-color': ['case', ['boolean', ['get', 'selected'], false], '#00d2ff', '#ffffff'],
-          'circle-stroke-color': '#000000',
-          'circle-stroke-width': 1
-        }
-      });
-
-      map.addLayer({
-        id: 'annotations-labels',
-        type: 'symbol',
-        source: ANNOTATIONS_SOURCE,
-        filter: ['has', 'plot_id'],
-        layout: {
-          'text-field': ['get', 'plot_id'],
-          'text-size': 12,
-          'text-anchor': 'center'
-        },
-        paint: {
-          'text-color': '#000000',
-          'text-halo-color': '#ffffff',
-          'text-halo-width': 2
-        }
       });
     }
 
@@ -357,93 +334,77 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
     }
   }, [activeTool, map]);
 
-  // Edit Handles Rendering
+  // Edit Handles Rendering — also keeps the annotation source live so there's never a ghost at the old position
   const renderEditHandles = useCallback(() => {
-    if (!map || !map.getSource(EDIT_HANDLES_SOURCE)) return;
-    
-    const features: GeoJSON.Feature[] = [];
+    if (!map || !map.getSource(EDIT_HANDLES_SOURCE) || !map.getSource(ANNOTATIONS_SOURCE)) return;
 
+    // Always push current geometries into the annotation source so it stays in sync during drag
+    const annotationFeatures: GeoJSON.Feature[] = annotationsRef.current.map(ann => {
+      const multiGeom = multiEditGeometries.current.find(m => m.id === ann.id)?.geometry;
+      const geometry = multiGeom
+        ?? (ann.id === editAnnotationId.current && editGeometry.current ? editGeometry.current : ann.geometry);
+      return {
+        type: 'Feature',
+        geometry,
+        properties: {
+          ...ann.properties,
+          id: ann.id,
+          annotation_type: ann.annotation_type,
+          plot_id: ann.plot_id,
+          selected: selectedAnnotationIdsRef.current.has(ann.id)
+        }
+      };
+    });
+    (map.getSource(ANNOTATIONS_SOURCE) as mapboxgl.GeoJSONSource).setData({
+      type: 'FeatureCollection',
+      features: annotationFeatures
+    });
+
+    // For multi-selection there are no single-annotation handle controls
     if (multiEditGeometries.current.length > 0) {
-      multiEditGeometries.current.forEach(item => {
-        features.push({
-          type: 'Feature',
-          geometry: item.geometry,
-          properties: { type: 'preview' }
-        });
-      });
-      (map.getSource(EDIT_HANDLES_SOURCE) as mapboxgl.GeoJSONSource).setData({ type: 'FeatureCollection', features });
+      (map.getSource(EDIT_HANDLES_SOURCE) as mapboxgl.GeoJSONSource).setData({ type: 'FeatureCollection', features: [] });
       return;
     }
 
     if (!editGeometry.current || !editAnnotationId.current) {
-       (map.getSource(EDIT_HANDLES_SOURCE) as mapboxgl.GeoJSONSource).setData({ type: 'FeatureCollection', features: [] });
-       return;
+      (map.getSource(EDIT_HANDLES_SOURCE) as mapboxgl.GeoJSONSource).setData({ type: 'FeatureCollection', features: [] });
+      return;
     }
 
+    // Build only the interactive handle markers (no duplicate shape feature)
+    const handleFeatures: GeoJSON.Feature[] = [];
     const geom = editGeometry.current;
 
-    // Add preview geometry
-    features.push({
-      type: 'Feature',
-      geometry: geom,
-      properties: { type: 'preview' }
-    });
-
     if (geom.type === 'Point') {
-        features.push(turf.point(geom.coordinates, { type: 'vertex', index: 0 }));
+      handleFeatures.push(turf.point(geom.coordinates, { type: 'vertex', index: 0 }));
     } else if (geom.type === 'LineString') {
-        geom.coordinates.forEach((coord, i) => {
-            features.push(turf.point(coord, { type: 'vertex', index: i }));
-        });
+      geom.coordinates.forEach((coord, i) => {
+        handleFeatures.push(turf.point(coord, { type: 'vertex', index: i }));
+      });
     } else if (geom.type === 'Polygon' || geom.type === 'MultiPolygon') {
-        let coords = geom.type === 'Polygon' ? geom.coordinates : geom.coordinates[0];
-        // Show all vertices for polygons (including closing vertex if needed, though visually overlapping is fine, let's just show all distinct or all of them)
-        coords[0].forEach((coord, i) => {
-             features.push(turf.point(coord, { type: 'vertex', index: i }));
-        });
-        
-        const bbox = turf.bbox(geom); // [minX, minY, maxX, maxY]
-        const minX = bbox[0];
-        const minY = bbox[1];
-        const maxX = bbox[2];
-        const maxY = bbox[3];
+      const coords = geom.type === 'Polygon' ? geom.coordinates : geom.coordinates[0];
+      coords[0].forEach((coord, i) => {
+        handleFeatures.push(turf.point(coord, { type: 'vertex', index: i }));
+      });
 
-        // 4 corners for scale
-        features.push(turf.point([minX, maxY], { type: 'scale' })); // Top-left
-        features.push(turf.point([maxX, maxY], { type: 'scale' })); // Top-right
-        features.push(turf.point([minX, minY], { type: 'scale' })); // Bottom-left
-        features.push(turf.point([maxX, minY], { type: 'scale' })); // Bottom-right
+      const bbox = turf.bbox(geom);
+      const [minX, minY, maxX, maxY] = bbox;
+      const midX = (minX + maxX) / 2;
+      const midY = (minY + maxY) / 2;
 
-        // Rotate handle at top-center, offset slightly above
-        const topCenterX = (minX + maxX) / 2;
-        const height = maxY - minY;
-        // The offset depends on map projection, but let's just use a percentage of height or a fixed geo-distance
-        const rotateY = maxY + (height * 0.1); 
-        
-        features.push(turf.lineString([[topCenterX, maxY], [topCenterX, rotateY]], { type: 'rotate_line' }));
-        features.push(turf.point([topCenterX, rotateY], { type: 'rotate' }));
+      handleFeatures.push(turf.point([midX, maxY], { type: 'scale', edge: 'top' }));
+      handleFeatures.push(turf.point([midX, minY], { type: 'scale', edge: 'bottom' }));
+      handleFeatures.push(turf.point([minX, midY], { type: 'scale', edge: 'left' }));
+      handleFeatures.push(turf.point([maxX, midY], { type: 'scale', edge: 'right' }));
+
+      const height = maxY - minY;
+      const rotateY = maxY + (height * 0.1);
+      handleFeatures.push(turf.lineString([[midX, maxY], [midX, rotateY]], { type: 'rotate_line' }));
+      handleFeatures.push(turf.point([midX, rotateY], { type: 'rotate' }));
     }
 
-    (map.getSource(EDIT_HANDLES_SOURCE) as mapboxgl.GeoJSONSource).setData({ type: 'FeatureCollection', features });
-
-
-  }, [annotations, selectedAnnotationIds, map]);
-
-  useEffect(() => {
-    if (!map) return;
-    const hideIds = activeTool === 'select_multiple' ? Array.from(selectedAnnotationIds) : [];
-    if (map.getLayer('annotations-fill')) {
-      if (hideIds.length > 0) {
-        map.setFilter('annotations-fill', ['all', ['==', '$type', 'Polygon'], ['!in', 'id', ...hideIds]]);
-        map.setFilter('annotations-line', ['all', ['in', '$type', 'LineString', 'Polygon'], ['!in', 'id', ...hideIds]]);
-        map.setFilter('annotations-points', ['all', ['==', '$type', 'Point'], ['!in', 'id', ...hideIds]]);
-      } else {
-        map.setFilter('annotations-fill', ['==', '$type', 'Polygon']);
-        map.setFilter('annotations-line', ['in', '$type', 'LineString', 'Polygon']);
-        map.setFilter('annotations-points', ['==', '$type', 'Point']);
-      }
-    }
-  }, [selectedAnnotationIds, activeTool, map]);
+    (map.getSource(EDIT_HANDLES_SOURCE) as mapboxgl.GeoJSONSource).setData({ type: 'FeatureCollection', features: handleFeatures });
+  }, [map]);
 
   useEffect(() => {
     if (selectedAnnotationIds.size === 1 && activeTool === 'select_multiple') {
@@ -559,14 +520,19 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
         if (handleFeatures.length > 0) {
           e.preventDefault();
           map.dragPan.disable();
+          map.getCanvas().style.cursor = 'grabbing';
           const type = handleFeatures[0].properties?.type;
           const index = handleFeatures[0].properties?.index;
-          
+          const edge = handleFeatures[0].properties?.edge;
+
           dragState.current = {
             isDragging: true,
             type: type,
             vertexIndex: index,
+            scaleEdge: edge,
+            startBbox: type === 'scale' ? turf.bbox(editGeometry.current as any) as [number, number, number, number] : undefined,
             startLngLat: [e.lngLat.lng, e.lngLat.lat],
+            lastLngLat: undefined,
             startGeometry: JSON.parse(JSON.stringify(editGeometry.current)),
             startCentroid: turf.centroid(editGeometry.current as any).geometry.coordinates as [number, number]
           };
@@ -574,43 +540,31 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
         }
       }
 
-      // Check if clicking on the preview body (for translate) or on the main annotation layers
-      const previewFeatures = map.queryRenderedFeatures(e.point, { layers: ['edit-handles-preview-fill', 'edit-handles-preview-line', 'edit-handles-preview-point'] });
+      // Check if clicking on an annotation body (for translate)
       const annFeatures = map.queryRenderedFeatures(e.point, { layers: ['annotations-fill', 'annotations-line', 'annotations-points'] });
-      
-      // If we clicked on the preview body of the currently-edited annotation, start translate
-      if (previewFeatures.length > 0 && selectedAnnotationIds.size === 1 && editGeometry.current) {
-        e.preventDefault();
-        map.dragPan.disable();
-        dragState.current = {
-          isDragging: true,
-          type: 'translate',
-          startLngLat: [e.lngLat.lng, e.lngLat.lat],
-          startGeometry: JSON.parse(JSON.stringify(editGeometry.current)),
-          startCentroid: turf.centroid(editGeometry.current as any).geometry.coordinates as [number, number]
-        };
-        return;
-      }
-      
+
       if (annFeatures.length > 0) {
         const clickedId = annFeatures[0].properties?.id;
-        if (selectedAnnotationIds.has(clickedId)) {
+        if (clickedId && selectedAnnotationIds.has(clickedId)) {
           e.preventDefault();
           map.dragPan.disable();
-          
-          if (selectedAnnotationIds.size === 1) {
+          map.getCanvas().style.cursor = 'grabbing';
+
+          if (selectedAnnotationIds.size === 1 && editGeometry.current) {
             dragState.current = {
               isDragging: true,
               type: 'translate',
               startLngLat: [e.lngLat.lng, e.lngLat.lat],
+              lastLngLat: undefined,
               startGeometry: JSON.parse(JSON.stringify(editGeometry.current)),
               startCentroid: turf.centroid(editGeometry.current as any).geometry.coordinates as [number, number]
             };
-          } else {
+          } else if (selectedAnnotationIds.size > 1) {
             dragState.current = {
               isDragging: true,
               type: 'multi-translate',
               startLngLat: [e.lngLat.lng, e.lngLat.lat],
+              lastLngLat: undefined,
               startGeometries: JSON.parse(JSON.stringify(multiEditGeometries.current))
             };
           }
@@ -665,8 +619,6 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
       }
     };
 
-    let animationFrameId: number;
-
     const onMouseMove = (e: mapboxgl.MapMouseEvent) => {
       if (activeTool === 'draw_line' || activeTool === 'select_area') {
         updateDrawingSource([e.lngLat.lng, e.lngLat.lat]);
@@ -674,73 +626,115 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
       }
 
       if (dragState.current.isDragging) {
-        if (animationFrameId) cancelAnimationFrame(animationFrameId);
-        
-        const { type, vertexIndex, startLngLat, startGeometry, startCentroid, startGeometries } = dragState.current;
+        cancelAnimationFrame(animFrameRef.current);
         const currentLngLat: [number, number] = [e.lngLat.lng, e.lngLat.lat];
-        
-        animationFrameId = requestAnimationFrame(() => {
+
+        animFrameRef.current = requestAnimationFrame(() => {
+          const ds = dragState.current;
+          const { type, vertexIndex, startLngLat, startGeometry, startCentroid, startGeometries, scaleEdge, startBbox } = ds;
+
+          // Multi-translate: incremental mutation — no clone on each frame
           if (type === 'multi-translate' && startGeometries && startLngLat) {
-            const dx = currentLngLat[0] - startLngLat[0];
-            const dy = currentLngLat[1] - startLngLat[1];
-            
-            multiEditGeometries.current = startGeometries.map(sg => {
-              const newGeom = JSON.parse(JSON.stringify(sg.geometry));
-              turf.coordEach(newGeom, (currentCoord) => {
-                currentCoord[0] += dx;
-                currentCoord[1] += dy;
-              });
-              return { id: sg.id, geometry: newGeom };
+            const ref = ds.lastLngLat ?? startLngLat;
+            const dx = currentLngLat[0] - ref[0];
+            const dy = currentLngLat[1] - ref[1];
+            multiEditGeometries.current.forEach(item => {
+              turf.coordEach(item.geometry as any, coord => { coord[0] += dx; coord[1] += dy; });
             });
+            dragState.current.lastLngLat = currentLngLat;
             renderEditHandles();
             return;
           }
 
-          if (editGeometry.current && startGeometry) {
-            let newGeom = JSON.parse(JSON.stringify(startGeometry));
-            
-            if (type === 'vertex' && vertexIndex !== undefined) {
-                if (newGeom.type === 'Polygon') {
-                   newGeom.coordinates[0][vertexIndex] = currentLngLat;
-                   if (vertexIndex === 0) newGeom.coordinates[0][newGeom.coordinates[0].length - 1] = currentLngLat;
-                } else if (newGeom.type === 'LineString') {
-                   newGeom.coordinates[vertexIndex] = currentLngLat;
-                } else if (newGeom.type === 'Point') {
-                   newGeom.coordinates = currentLngLat;
-                }
-            } else if (type === 'translate' && startLngLat) {
-                const dx = currentLngLat[0] - startLngLat[0];
-                const dy = currentLngLat[1] - startLngLat[1];
-                turf.coordEach(newGeom, (currentCoord) => {
-                   currentCoord[0] += dx;
-                   currentCoord[1] += dy;
-                });
-            } else if (type === 'scale' && startLngLat && startCentroid) {
-                const startDist = turf.distance(startCentroid, startLngLat);
-                const currentDist = turf.distance(startCentroid, currentLngLat);
-                if (startDist > 0) {
-                  const factor = currentDist / startDist;
-                  const feat = turf.feature(startGeometry);
-                  newGeom = turf.transformScale(feat, factor, { origin: startCentroid }).geometry;
-                }
-            } else if (type === 'rotate' && startLngLat && startCentroid) {
-                const startBearing = turf.bearing(startCentroid, startLngLat);
-                const currentBearing = turf.bearing(startCentroid, currentLngLat);
-                const angleDelta = currentBearing - startBearing;
-                const feat = turf.feature(startGeometry);
-                newGeom = turf.transformRotate(feat, angleDelta, { pivot: startCentroid }).geometry;
-            }
+          if (!editGeometry.current) return;
 
+          if (type === 'vertex' && vertexIndex !== undefined) {
+            // Direct mutation — no clone needed for vertex editing
+            const geom = editGeometry.current;
+            if (geom.type === 'Polygon') {
+              geom.coordinates[0][vertexIndex] = currentLngLat;
+              if (vertexIndex === 0) geom.coordinates[0][geom.coordinates[0].length - 1] = currentLngLat;
+            } else if (geom.type === 'LineString') {
+              (geom as GeoJSON.LineString).coordinates[vertexIndex] = currentLngLat;
+            } else if (geom.type === 'Point') {
+              (geom as GeoJSON.Point).coordinates = currentLngLat;
+            }
+          } else if (type === 'translate' && startLngLat) {
+            // Incremental mutation — avoids cloning the geometry on every frame
+            const ref = ds.lastLngLat ?? startLngLat;
+            const dx = currentLngLat[0] - ref[0];
+            const dy = currentLngLat[1] - ref[1];
+            turf.coordEach(editGeometry.current as any, coord => { coord[0] += dx; coord[1] += dy; });
+            dragState.current.lastLngLat = currentLngLat;
+          } else if (type === 'scale' && startGeometry && scaleEdge && startBbox) {
+            // Directional scale anchored to the opposite edge
+            const [minX, minY, maxX, maxY] = startBbox;
+            const newGeom = JSON.parse(JSON.stringify(startGeometry));
+            if (scaleEdge === 'top') {
+              const origH = maxY - minY;
+              if (origH !== 0) {
+                const factor = (currentLngLat[1] - minY) / origH;
+                turf.coordEach(newGeom, coord => { coord[1] = minY + (coord[1] - minY) * factor; });
+              }
+            } else if (scaleEdge === 'bottom') {
+              const origH = maxY - minY;
+              if (origH !== 0) {
+                const factor = (maxY - currentLngLat[1]) / origH;
+                turf.coordEach(newGeom, coord => { coord[1] = maxY - (maxY - coord[1]) * factor; });
+              }
+            } else if (scaleEdge === 'left') {
+              const origW = maxX - minX;
+              if (origW !== 0) {
+                const factor = (maxX - currentLngLat[0]) / origW;
+                turf.coordEach(newGeom, coord => { coord[0] = maxX - (maxX - coord[0]) * factor; });
+              }
+            } else if (scaleEdge === 'right') {
+              const origW = maxX - minX;
+              if (origW !== 0) {
+                const factor = (currentLngLat[0] - minX) / origW;
+                turf.coordEach(newGeom, coord => { coord[0] = minX + (coord[0] - minX) * factor; });
+              }
+            }
             editGeometry.current = newGeom;
-            renderEditHandles();
+          } else if (type === 'rotate' && startGeometry && startLngLat && startCentroid) {
+            const startBearing = turf.bearing(startCentroid, startLngLat);
+            const currentBearing = turf.bearing(startCentroid, currentLngLat);
+            const angleDelta = currentBearing - startBearing;
+            editGeometry.current = turf.transformRotate(turf.feature(startGeometry) as any, angleDelta, { pivot: startCentroid }).geometry;
           }
+
+          renderEditHandles();
         });
+        return;
+      }
+
+      // Hover cursor feedback when edit handles are visible
+      if (activeTool === 'select_multiple' && editGeometry.current) {
+        const tolerance = 10;
+        const pt = e.point;
+        const handleFeatures = map.queryRenderedFeatures(
+          [[pt.x - tolerance, pt.y - tolerance], [pt.x + tolerance, pt.y + tolerance]] as [mapboxgl.PointLike, mapboxgl.PointLike],
+          { layers: ['edit-handles-vertex', 'edit-handles-scale', 'edit-handles-rotate'] }
+        );
+        if (handleFeatures.length > 0) {
+          const htype = handleFeatures[0].properties?.type;
+          const hedge = handleFeatures[0].properties?.edge;
+          if (htype === 'vertex') map.getCanvas().style.cursor = 'crosshair';
+          else if (htype === 'scale') map.getCanvas().style.cursor = (hedge === 'top' || hedge === 'bottom') ? 'ns-resize' : 'ew-resize';
+          else if (htype === 'rotate') map.getCanvas().style.cursor = 'alias';
+        } else {
+          const bodyFeatures = map.queryRenderedFeatures(pt, { layers: ['annotations-fill', 'annotations-line', 'annotations-points'] });
+          const isOnSelected = bodyFeatures.length > 0 && selectedAnnotationIdsRef.current.has(bodyFeatures[0].properties?.id);
+          map.getCanvas().style.cursor = isOnSelected ? 'move' : '';
+        }
       }
     };
 
     const onMouseUp = async (e: mapboxgl.MapMouseEvent) => {
       if (dragState.current.isDragging) {
+        cancelAnimationFrame(animFrameRef.current);
         map.dragPan.enable();
+        map.getCanvas().style.cursor = '';
         
         const start = dragState.current.startLngLat;
         const dist = start ? Math.hypot(e.lngLat.lng - start[0], e.lngLat.lat - start[1]) : 0;
@@ -798,23 +792,10 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
     };
 
     const onContextMenu = (e: mapboxgl.MapMouseEvent) => {
-      const previewFeatures = map.queryRenderedFeatures(e.point, { layers: ['edit-handles-preview-fill', 'edit-handles-preview-line', 'edit-handles-preview-point'] });
       const features = map.queryRenderedFeatures(e.point, { layers: ['annotations-fill', 'annotations-line', 'annotations-points'] });
-      
-      if (previewFeatures.length > 0 && selectedAnnotationIds.size === 1) {
+      if (features.length > 0 && features[0].properties?.id) {
         e.preventDefault();
-        setContextMenu({
-          x: e.point.x,
-          y: e.point.y,
-          annotationId: Array.from(selectedAnnotationIds)[0]
-        });
-      } else if (features.length > 0 && features[0].properties?.id) {
-        e.preventDefault();
-        setContextMenu({
-          x: e.point.x,
-          y: e.point.y,
-          annotationId: features[0].properties.id
-        });
+        setContextMenu({ x: e.point.x, y: e.point.y, annotationId: features[0].properties.id });
       } else {
         setContextMenu(null);
       }
@@ -822,25 +803,12 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
 
     const onDblClick = (e: mapboxgl.MapMouseEvent) => {
       if (dragState.current.isDragging) return;
-      e.preventDefault(); 
+      e.preventDefault();
       if (activeTool === 'select_multiple') {
-        const previewFeatures = map.queryRenderedFeatures(e.point, { layers: ['edit-handles-preview-fill', 'edit-handles-preview-line', 'edit-handles-preview-point'] });
         const features = map.queryRenderedFeatures(e.point, { layers: ['annotations-fill', 'annotations-line', 'annotations-points'] });
-        
-        if (previewFeatures.length > 0 && selectedAnnotationIds.size === 1) {
-          // If they double click the currently selected item
-          const id = Array.from(selectedAnnotationIds)[0];
-          const ann = annotations.find(a => a.id === id);
-          if (ann) {
-            setEditingAnnotation(ann);
-          }
-          return;
-        } else if (features.length > 0 && features[0].properties?.id) {
-          const id = features[0].properties.id;
-          const ann = annotations.find(a => a.id === id);
-          if (ann) {
-            setEditingAnnotation(ann);
-          }
+        if (features.length > 0 && features[0].properties?.id) {
+          const ann = annotations.find(a => a.id === features[0].properties.id);
+          if (ann) setEditingAnnotation(ann);
           return;
         }
       }

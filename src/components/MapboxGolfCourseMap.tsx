@@ -234,15 +234,26 @@ const MapboxGolfCourseMap = ({
       }
     });
 
-    // ── Second pass: always float ALL vector label layers to the very top ──
-    // Labels are symbol layers and must render above every raster/health layer.
-    // We move them AFTER the main loop so no raster layer can end up above them.
-    // Reversed order keeps the highest-priority vector's label topmost.
+    // ── Second pass: always float ALL vector label layers above raster/health layers ──
     [...layerOrder].reverse().forEach(layerId => {
       if (!layerId.startsWith('vector-layer-')) return;
       const labelId = `${layerId}-label`;
       if (map.current!.getLayer(labelId)) {
         try { map.current!.moveLayer(labelId); } catch(e) {}
+      }
+    });
+
+    // ── Third pass: hoist drawing/annotation/handle layers to the very top ──
+    // This ensures they always render above any raster ortho-mosaic or health-map layer.
+    const annotationDrawingLayers = [
+      'drawing-fill', 'drawing-line', 'drawing-points', 'drawing-grid-fill', 'drawing-grid-line',
+      'annotations-fill', 'annotations-line', 'annotations-points', 'annotations-labels',
+      'edit-handles-vertex', 'edit-handles-scale', 'edit-handles-scale-icon',
+      'edit-handles-rotate-line', 'edit-handles-rotate', 'edit-handles-rotate-icon',
+    ];
+    annotationDrawingLayers.forEach(id => {
+      if (map.current!.getLayer(id)) {
+        try { map.current!.moveLayer(id); } catch(e) {}
       }
     });
 

@@ -467,19 +467,18 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
     if (activeTool === 'draw_line' && coords.length > 1) {
       const length = calculateLineLength(coords);
       setCurrentMeasurement(formatDistance(length));
-      if (hoverCoords) {
-        const point = map.project(hoverCoords);
-        setTooltipPosition({ x: point.x, y: point.y });
-      }
+      const lineMid = turf.midpoint(turf.point(coords[0]), turf.point(coords[coords.length - 1]));
+      const point = map.project(lineMid.geometry.coordinates as [number, number]);
+      setTooltipPosition({ x: point.x, y: point.y });
     } else if (activeTool === 'select_area' && coords.length > 2) {
       const polyCoords = [...coords];
       polyCoords.push(polyCoords[0]);
       const area = calculatePolygonArea(polyCoords);
       setCurrentMeasurement(formatArea(area));
-      if (hoverCoords) {
-        const point = map.project(hoverCoords);
-        setTooltipPosition({ x: point.x, y: point.y });
-      }
+      const centroid = turf.centroid(turf.polygon([polyCoords]));
+      const centroidCoords = centroid.geometry.coordinates as [number, number];
+      const point = map.project(centroidCoords);
+      setTooltipPosition({ x: point.x, y: point.y });
     } else {
       setCurrentMeasurement(null);
       setTooltipPosition(null);

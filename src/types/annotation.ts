@@ -16,7 +16,7 @@ export interface Annotation {
   updated_at: string;
 }
 
-export type DrawingTool = 'draw_point' | 'draw_line' | 'select_area' | 'draw_plots' | 'select_multiple' | null;
+export type DrawingTool = 'draw_point' | 'draw_line' | 'select_area' | 'draw_plots' | 'edit' | null;
 
 export interface PlotGridConfig {
   numRows: number;

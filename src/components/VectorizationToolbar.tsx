@@ -1,14 +1,16 @@
 import React, { useRef } from 'react';
-import { 
-  MapPin, 
-  Ruler, 
-  PenSquare, 
-  Grid3X3, 
-  Upload, 
-  BoxSelect, 
+import {
+  MapPin,
+  Ruler,
+  PenSquare,
+  Grid3X3,
+  Upload,
+  Pencil,
   Download,
   Undo2,
-  Trash2
+  Trash2,
+  CloudUpload,
+  Loader2
 } from 'lucide-react';
 import { DrawingTool } from '@/types/annotation';
 import { cn } from '@/lib/utils';
@@ -23,6 +25,8 @@ interface VectorizationToolbarProps {
   canUndo: boolean;
   onDeleteSelected: () => void;
   canDelete: boolean;
+  onSaveAsVectorLayers: () => void;
+  isSavingVectorLayers: boolean;
 }
 
 export const VectorizationToolbar: React.FC<VectorizationToolbarProps> = ({
@@ -33,11 +37,12 @@ export const VectorizationToolbar: React.FC<VectorizationToolbarProps> = ({
   onUndo,
   canUndo,
   onDeleteSelected,
-  canDelete
+  canDelete,
+  onSaveAsVectorLayers,
+  isSavingVectorLayers,
 }) => {
-  
+
   const handleToolClick = (tool: DrawingTool) => {
-    // Toggle off if clicking the same tool
     if (activeTool === tool) {
       setActiveTool(null);
     } else {
@@ -51,7 +56,7 @@ export const VectorizationToolbar: React.FC<VectorizationToolbarProps> = ({
     { id: 'select_area' as DrawingTool, icon: PenSquare, label: 'Select Area' },
     { id: 'draw_plots' as DrawingTool, icon: Grid3X3, label: 'Draw Plots' },
     { id: 'import' as DrawingTool, icon: Upload, label: 'Import Annotations', action: onImportClick },
-    { id: 'select_multiple' as DrawingTool, icon: BoxSelect, label: 'Select Multiple' },
+    { id: 'edit' as DrawingTool, icon: Pencil, label: 'Edit (Cmd/Ctrl+click for multi-select)' },
     { id: 'delete' as DrawingTool, icon: Trash2, label: 'Delete Selected', action: onDeleteSelected, disabled: !canDelete },
     { id: 'undo' as DrawingTool, icon: Undo2, label: 'Undo Last Edit', action: onUndo, disabled: !canUndo },
     { id: 'export' as DrawingTool, icon: Download, label: 'Export as GeoJSON', action: onExportGeoJSON },
@@ -63,7 +68,7 @@ export const VectorizationToolbar: React.FC<VectorizationToolbarProps> = ({
         {tools.map((tool) => {
           const isActive = activeTool === tool.id;
           const Icon = tool.icon;
-          
+
           return (
             <Tooltip key={tool.id}>
               <TooltipTrigger asChild>
@@ -71,9 +76,9 @@ export const VectorizationToolbar: React.FC<VectorizationToolbarProps> = ({
                   onClick={() => tool.action ? tool.action() : handleToolClick(tool.id)}
                   disabled={tool.disabled}
                   className={cn(
-                    "flex items-center justify-center h-9 w-9 shrink-0 rounded-none transition-colors border-b border-border last:border-b-0 focus:ring-0",
-                    isActive 
-                      ? "bg-primary text-primary-foreground" 
+                    "flex items-center justify-center h-9 w-9 shrink-0 rounded-none transition-colors border-b border-border focus:ring-0",
+                    isActive
+                      ? "bg-primary text-primary-foreground"
                       : tool.disabled ? "text-muted-foreground opacity-40 cursor-not-allowed hover:bg-transparent" : "text-foreground hover:bg-muted"
                   )}
                   title={tool.label}
@@ -89,6 +94,31 @@ export const VectorizationToolbar: React.FC<VectorizationToolbarProps> = ({
             </Tooltip>
           );
         })}
+
+        {/* Save button — action only, not a toggle tool */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              onClick={onSaveAsVectorLayers}
+              disabled={isSavingVectorLayers}
+              className={cn(
+                "flex items-center justify-center h-9 w-9 shrink-0 rounded-none transition-colors last:border-b-0 focus:ring-0",
+                isSavingVectorLayers
+                  ? "text-muted-foreground opacity-60 cursor-not-allowed"
+                  : "text-green-600 hover:bg-muted"
+              )}
+              aria-label="Save annotations as vector layers"
+            >
+              {isSavingVectorLayers
+                ? <Loader2 className="w-5 h-5 animate-spin" />
+                : <CloudUpload className="w-5 h-5" />
+              }
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="right" className="font-medium text-sm">
+            Save as vector layers
+          </TooltipContent>
+        </Tooltip>
       </TooltipProvider>
     </div>
   );

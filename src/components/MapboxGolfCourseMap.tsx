@@ -88,7 +88,7 @@ const MapboxGolfCourseMap = ({
   const [mapReady, setMapReady] = useState(false);
 
   // Vectorization & Drawing Tools
-  const drawing = useDrawingManager(map.current, Number(golfCourseId) || null, mapReady);
+  const drawing = useDrawingManager(map.current, Number(golfCourseId) || null, mapReady, golfCourseId);
   
   // Vector layer states
   const [vectorLayers, setVectorLayers] = useState<VectorLayer[]>([]);
@@ -1742,9 +1742,9 @@ const MapboxGolfCourseMap = ({
 
             {/* Vectorization Tools — separate panel, same sizing */}
             <div className="bg-background/95 backdrop-blur shadow-md rounded-lg overflow-hidden flex flex-col border border-border">
-              <VectorizationToolbar 
-                activeTool={drawing.activeTool} 
-                setActiveTool={drawing.setActiveTool} 
+              <VectorizationToolbar
+                activeTool={drawing.activeTool}
+                setActiveTool={drawing.setActiveTool}
                 onImportClick={() => {
                   const input = document.createElement('input');
                   input.type = 'file';
@@ -1754,12 +1754,14 @@ const MapboxGolfCourseMap = ({
                     if (file) drawing.importFile(file);
                   };
                   input.click();
-                }} 
+                }}
                 onExportGeoJSON={drawing.exportGeoJSON}
                 onUndo={drawing.undoLastEdit}
                 canUndo={drawing.canUndo}
                 onDeleteSelected={drawing.deleteSelected}
                 canDelete={drawing.canDelete}
+                onSaveAsVectorLayers={drawing.saveAsVectorLayers}
+                isSavingVectorLayers={drawing.isSavingVectorLayers}
               />
             </div>
           </div>

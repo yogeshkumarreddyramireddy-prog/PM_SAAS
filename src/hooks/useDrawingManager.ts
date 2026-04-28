@@ -4,8 +4,10 @@ import { Annotation, DrawingTool, PlotGridConfig, PlotLabelConfig, PendingAnnota
 import { annotationService } from '@/lib/annotationService';
 import { calculateLineLength, calculatePolygonArea, generatePlotGrid, labelPlotGrid, formatDistance, formatArea } from '@/lib/geoUtils';
 import * as turf from '@turf/turf';
+import { supabase } from '@/integrations/supabase/client';
+import { useToast } from '@/hooks/use-toast';
 
-export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number | null, mapReady: boolean) {
+export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number | null, mapReady: boolean, golfCourseIdStr?: string) {
   const [activeTool, setActiveTool] = useState<DrawingTool>(null);
   const [currentMeasurement, setCurrentMeasurement] = useState<string | null>(null);
   const [tooltipPosition, setTooltipPosition] = useState<{ x: number, y: number } | null>(null);
@@ -15,6 +17,8 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
   const [plotGrid, setPlotGrid] = useState<PlotGridConfig | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number, annotationId: string } | null>(null);
   const [editingAnnotation, setEditingAnnotation] = useState<Annotation | null>(null);
+  const [isSavingVectorLayers, setIsSavingVectorLayers] = useState(false);
+  const { toast } = useToast();
 
   // Internal state for drawing
   const drawingCoords = useRef<[number, number][]>([]);
@@ -102,7 +106,7 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
           'circle-stroke-width': 2
         }
       });
-      
+
       // Plot grid drawing layers (different color)
       map.addLayer({
         id: 'drawing-grid-fill',
@@ -114,7 +118,7 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
           'fill-opacity': 0.3
         }
       });
-      
+
       map.addLayer({
         id: 'drawing-grid-line',
         type: 'line',
@@ -140,7 +144,11 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
         source: ANNOTATIONS_SOURCE,
         filter: ['==', '$type', 'Polygon'],
         paint: {
-          'fill-color': ['case', ['boolean', ['get', 'selected'], false], '#00d2ff', '#ffffff'],
+          'fill-color': ['case',
+            ['boolean', ['get', 'selected'], false], '#00d2ff',
+            ['to-boolean', ['get', 'published_layer_name']], '#22c55e',
+            '#ef4444'
+          ],
           'fill-opacity': ['case', ['boolean', ['get', 'selected'], false], 0.4, 0.2]
         }
       });
@@ -151,7 +159,11 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
         source: ANNOTATIONS_SOURCE,
         filter: ['in', '$type', 'LineString', 'Polygon'],
         paint: {
-          'line-color': ['case', ['boolean', ['get', 'selected'], false], '#ff0000', '#ffffff'],
+          'line-color': ['case',
+            ['boolean', ['get', 'selected'], false], '#ffffff',
+            ['to-boolean', ['get', 'published_layer_name']], '#22c55e',
+            '#ef4444'
+          ],
           'line-width': ['case', ['boolean', ['get', 'selected'], false], 3, 2]
         }
       });
@@ -163,9 +175,16 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
         filter: ['==', '$type', 'Point'],
         paint: {
           'circle-radius': ['case', ['boolean', ['get', 'selected'], false], 7, 5],
-          'circle-color': ['case', ['boolean', ['get', 'selected'], false], '#00d2ff', '#ffffff'],
-          'circle-stroke-color': '#000000',
-          'circle-stroke-width': 1
+          'circle-color': ['case',
+            ['boolean', ['get', 'selected'], false], '#00d2ff',
+            ['to-boolean', ['get', 'published_layer_name']], '#22c55e',
+            '#ef4444'
+          ],
+          'circle-stroke-color': ['case',
+            ['to-boolean', ['get', 'published_layer_name']], '#15803d',
+            '#b91c1c'
+          ],
+          'circle-stroke-width': 2
         }
       });
 
@@ -275,7 +294,7 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
       });
     }
 
-    return () => {};
+    return () => { };
   }, [map, mapReady]);
 
   // Update map sources when annotations change
@@ -304,16 +323,16 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
   // Handle active tool changes & cursor
   useEffect(() => {
     if (!map) return;
-    
+
     // Clear drawing state
     drawingCoords.current = [];
     setCurrentMeasurement(null);
     setTooltipPosition(null);
     updateDrawingSource();
-    
+
     if (activeTool === 'draw_point' || activeTool === 'draw_line' || activeTool === 'select_area') {
       map.getCanvas().style.cursor = 'crosshair';
-    } else if (activeTool === 'select_multiple') {
+    } else if (activeTool === 'edit') {
       map.getCanvas().style.cursor = 'pointer';
     } else if (activeTool === 'draw_plots') {
       map.getCanvas().style.cursor = 'grab';
@@ -407,7 +426,7 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
   }, [map]);
 
   useEffect(() => {
-    if (selectedAnnotationIds.size === 1 && activeTool === 'select_multiple') {
+    if (selectedAnnotationIds.size === 1 && activeTool === 'edit') {
       const id = Array.from(selectedAnnotationIds)[0];
       const ann = annotations.find(a => a.id === id);
       if (ann) {
@@ -416,7 +435,7 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
         multiEditGeometries.current = [];
         renderEditHandles();
       }
-    } else if (selectedAnnotationIds.size > 1 && activeTool === 'select_multiple') {
+    } else if (selectedAnnotationIds.size > 1 && activeTool === 'edit') {
       editAnnotationId.current = null;
       editGeometry.current = null;
       multiEditGeometries.current = Array.from(selectedAnnotationIds).map(id => {
@@ -435,7 +454,7 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
 
   const updateDrawingSource = useCallback((hoverCoords?: [number, number]) => {
     if (!map || !map.getSource(DRAWING_SOURCE)) return;
-    
+
     const coords = [...drawingCoords.current];
     if (hoverCoords && (activeTool === 'draw_line' || activeTool === 'select_area')) {
       coords.push(hoverCoords);
@@ -449,7 +468,7 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
       feature = turf.lineString(coords);
     } else if (activeTool === 'select_area' && coords.length > 2) {
       const polyCoords = [...coords];
-      if (polyCoords[0][0] !== polyCoords[polyCoords.length-1][0] || polyCoords[0][1] !== polyCoords[polyCoords.length-1][1]) {
+      if (polyCoords[0][0] !== polyCoords[polyCoords.length - 1][0] || polyCoords[0][1] !== polyCoords[polyCoords.length - 1][1]) {
         polyCoords.push(polyCoords[0]);
       }
       feature = turf.polygon([polyCoords]);
@@ -514,8 +533,8 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
     if (!map || !activeTool) return;
 
     const onMouseDown = (e: mapboxgl.MapMouseEvent) => {
-      if (activeTool !== 'select_multiple') return;
-      
+      if (activeTool !== 'edit') return;
+
       if (selectedAnnotationIds.size === 1 && editGeometry.current) {
         // Use a tolerance box around the click point for easier handle targeting
         const tolerance = 12;
@@ -589,9 +608,9 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
           if (dist > 0.000001) return; // We actually dragged
         }
       }
-      
+
       const coords: [number, number] = [e.lngLat.lng, e.lngLat.lat];
-      
+
       if (activeTool === 'draw_point') {
         const geometry = turf.point(coords).geometry;
         setPendingAnnotation({ geometry });
@@ -599,7 +618,7 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
       } else if (activeTool === 'draw_line' || activeTool === 'select_area') {
         drawingCoords.current.push(coords);
         updateDrawingSource();
-      } else if (activeTool === 'select_multiple') {
+      } else if (activeTool === 'edit') {
         const features = map.queryRenderedFeatures(e.point, { layers: ['annotations-fill', 'annotations-line', 'annotations-points'] });
         if (features.length > 0) {
           const clickedId = features[0].properties?.id;
@@ -716,7 +735,7 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
       }
 
       // Hover cursor feedback when edit handles are visible
-      if (activeTool === 'select_multiple' && editGeometry.current) {
+      if (activeTool === 'edit' && editGeometry.current) {
         const tolerance = 10;
         const pt = e.point;
         const handleFeatures = map.queryRenderedFeatures(
@@ -742,14 +761,14 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
         cancelAnimationFrame(animFrameRef.current);
         map.dragPan.enable();
         map.getCanvas().style.cursor = '';
-        
+
         const start = dragState.current.startLngLat;
         const dist = start ? Math.hypot(e.lngLat.lng - start[0], e.lngLat.lat - start[1]) : 0;
-        
+
         if (dist > 0.000001) {
           if (dragState.current.type === 'multi-translate' && multiEditGeometries.current.length > 0) {
             const updates = multiEditGeometries.current;
-            
+
             setAnnotations(prev => prev.map(a => {
               const upd = updates.find(u => u.id === a.id);
               if (upd) {
@@ -761,14 +780,14 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
             }));
 
             try {
-               await Promise.all(updates.map(u => {
-                 const geom = JSON.parse(JSON.stringify(u.geometry));
-                 delete (geom as any).bbox;
-                 return annotationService.updateAnnotation(u.id, { geometry: geom });
-               }));
+              await Promise.all(updates.map(u => {
+                const geom = JSON.parse(JSON.stringify(u.geometry));
+                delete (geom as any).bbox;
+                return annotationService.updateAnnotation(u.id, { geometry: geom });
+              }));
             } catch (err) {
-               console.error('Failed to save multi edit', err);
-               await loadAnnotations(); 
+              console.error('Failed to save multi edit', err);
+              await loadAnnotations();
             }
           } else if (editAnnotationId.current && editGeometry.current && dragState.current.startGeometry) {
             editHistory.current.push({
@@ -780,20 +799,20 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
             const newGeom = JSON.parse(JSON.stringify(editGeometry.current));
             delete (newGeom as any).bbox; // Prevent Supabase PostGIS errors
             const id = editAnnotationId.current;
-            
+
             setAnnotations(prev => prev.map(a => a.id === id ? { ...a, geometry: newGeom } : a));
 
             try {
-               await annotationService.updateAnnotation(id, { geometry: newGeom });
+              await annotationService.updateAnnotation(id, { geometry: newGeom });
             } catch (err) {
-               console.error('Failed to save edit', err);
-               await loadAnnotations(); 
+              console.error('Failed to save edit', err);
+              await loadAnnotations();
             }
           }
         }
-        
+
         setTimeout(() => {
-           dragState.current = { isDragging: false, type: null };
+          dragState.current = { isDragging: false, type: null };
         }, 100);
       }
     };
@@ -819,7 +838,7 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
     const onDblClick = (e: mapboxgl.MapMouseEvent) => {
       if (dragState.current.isDragging) return;
       e.preventDefault();
-      if (activeTool === 'select_multiple') {
+      if (activeTool === 'edit') {
         const features = map.queryRenderedFeatures(e.point, { layers: ['annotations-fill', 'annotations-line', 'annotations-points'] });
         if (features.length > 0 && features[0].properties?.id) {
           const ann = annotations.find(a => a.id === features[0].properties.id);
@@ -834,7 +853,7 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
         setActiveTool(null);
       } else if (activeTool === 'select_area' && drawingCoords.current.length > 2) {
         const coords = [...drawingCoords.current];
-        coords.push(coords[0]); 
+        coords.push(coords[0]);
         const geometry = turf.polygon([coords]).geometry;
         const area = calculatePolygonArea(coords);
         setPendingAnnotation({ geometry, area });
@@ -932,11 +951,11 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
 
     // Optimistic revert
     setAnnotations(prev => prev.map(a => a.id === lastEdit.annotationId ? { ...a, geometry: lastEdit.geometry } : a));
-    
+
     setHistoryLength(editHistory.current.length);
     if (editAnnotationId.current === lastEdit.annotationId) {
-       editGeometry.current = lastEdit.geometry;
-       renderEditHandles();
+      editGeometry.current = lastEdit.geometry;
+      renderEditHandles();
     }
 
     try {
@@ -1005,6 +1024,70 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
     }
   };
 
+  const saveAsVectorLayers = useCallback(async () => {
+    if (!golfCourseId || !golfCourseIdStr) {
+      toast({ title: 'Cannot save', description: 'Golf course not identified.', variant: 'destructive' });
+      return;
+    }
+
+    const allAnnotations = annotationsRef.current;
+    if (allAnnotations.length === 0) {
+      toast({ title: 'No annotations', description: 'Draw some annotations before saving.', variant: 'destructive' });
+      return;
+    }
+
+    setIsSavingVectorLayers(true);
+
+    try {
+      const isTrialPlot = (ann: Annotation) => !!ann.properties?.grid_config;
+
+      const buckets = [
+        { layer_type: 'annotations_polygons', display_name: 'Annotations - Polygons', anns: allAnnotations.filter(a => a.annotation_type === 'area' && !isTrialPlot(a)) },
+        { layer_type: 'annotations_lines',    display_name: 'Annotations - Lines',    anns: allAnnotations.filter(a => a.annotation_type === 'line') },
+        { layer_type: 'annotations_points',   display_name: 'Annotations - Points',   anns: allAnnotations.filter(a => a.annotation_type === 'point') },
+        { layer_type: 'annotations_trial_plots', display_name: 'Trial Plots',         anns: allAnnotations.filter(isTrialPlot) },
+      ].filter(b => b.anns.length > 0);
+
+      if (buckets.length === 0) {
+        toast({ title: 'No annotations', description: 'No annotations found to save.', variant: 'destructive' });
+        return;
+      }
+
+      const layers = buckets.map(b => ({
+        layer_type: b.layer_type,
+        display_name: b.display_name,
+        features: b.anns.map(ann => ({
+          type: 'Feature',
+          geometry: ann.geometry,
+          properties: { id: ann.id, plot_id: ann.plot_id, annotation_type: ann.annotation_type, ...ann.properties }
+        }))
+      }));
+
+      const { error } = await supabase.functions.invoke('upsert-annotation-layers', {
+        body: { golf_course_id: golfCourseIdStr, layers }
+      });
+
+      if (error) throw error;
+
+      // Mark each annotation as published: set external_code = layer display name, add published_layer_name to properties
+      const updates = buckets.flatMap(b =>
+        b.anns.map(ann => annotationService.updateAnnotation(ann.id, {
+          external_code: b.display_name,
+          properties: { ...ann.properties, published_layer_name: b.display_name }
+        }))
+      );
+      await Promise.all(updates);
+      await loadAnnotations();
+
+      toast({ title: 'Vector layers saved', description: `${buckets.length} layer(s) published to R2.` });
+    } catch (err) {
+      console.error('Failed to save vector layers', err);
+      toast({ title: 'Save failed', description: err instanceof Error ? err.message : 'Unknown error', variant: 'destructive' });
+    } finally {
+      setIsSavingVectorLayers(false);
+    }
+  }, [golfCourseId, golfCourseIdStr, loadAnnotations, toast]);
+
   const deleteAnnotation = async (id: string) => {
     try {
       await annotationService.deleteAnnotation(id);
@@ -1027,6 +1110,7 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
     importFile, exportGeoJSON, undoLastEdit, canUndo: historyLength > 0,
     canDelete: selectedAnnotationIds.size > 0,
     contextMenu, setContextMenu, editingAnnotation, setEditingAnnotation,
-    updateAnnotationProperties
+    updateAnnotationProperties,
+    saveAsVectorLayers, isSavingVectorLayers
   };
 }

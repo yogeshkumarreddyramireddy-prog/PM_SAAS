@@ -489,9 +489,17 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
   // Keyboard listener for Delete
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement)?.tagName)) return;
+      if (e.key === 'Escape') {
+        if (activeTool === 'draw_line' || activeTool === 'select_area') {
+          drawingCoords.current = [];
+          setCurrentMeasurement(null);
+          setTooltipPosition(null);
+          updateDrawingSource();
+        }
+        return;
+      }
       if (e.key === 'Delete' || e.key === 'Backspace') {
-        // Prevent deleting if typing in an input
-        if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement)?.tagName)) return;
         if (selectedAnnotationIds.size > 0) {
           deleteSelected();
         }
@@ -499,7 +507,7 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [selectedAnnotationIds]);
+  }, [selectedAnnotationIds, activeTool, updateDrawingSource]);
 
   // Map interaction events
   useEffect(() => {
@@ -791,6 +799,14 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
     };
 
     const onContextMenu = (e: mapboxgl.MapMouseEvent) => {
+      if (activeTool === 'draw_line' || activeTool === 'select_area') {
+        e.preventDefault();
+        drawingCoords.current = [];
+        setCurrentMeasurement(null);
+        setTooltipPosition(null);
+        updateDrawingSource();
+        return;
+      }
       const features = map.queryRenderedFeatures(e.point, { layers: ['annotations-fill', 'annotations-line', 'annotations-points'] });
       if (features.length > 0 && features[0].properties?.id) {
         e.preventDefault();

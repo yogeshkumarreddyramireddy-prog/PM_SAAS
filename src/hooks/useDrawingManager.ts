@@ -379,9 +379,22 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
       features: annotationFeatures
     });
 
-    // For multi-selection there are no single-annotation handle controls
+    // For multi-selection show a shared rotate handle above the combined bounding box
     if (multiEditGeometries.current.length > 0) {
-      (map.getSource(EDIT_HANDLES_SOURCE) as mapboxgl.GeoJSONSource).setData({ type: 'FeatureCollection', features: [] });
+      const allFC = turf.featureCollection(
+        multiEditGeometries.current.map(g => turf.feature(g.geometry as any))
+      );
+      const [minX, minY, maxX, maxY] = turf.bbox(allFC);
+      const midX = (minX + maxX) / 2;
+      const height = maxY - minY;
+      const rotateY = maxY + Math.max(height * 0.03, 0.0002);
+      (map.getSource(EDIT_HANDLES_SOURCE) as mapboxgl.GeoJSONSource).setData({
+        type: 'FeatureCollection',
+        features: [
+          turf.lineString([[midX, maxY], [midX, rotateY]], { type: 'rotate_line' }),
+          turf.point([midX, rotateY], { type: 'rotate' })
+        ]
+      });
       return;
     }
 
@@ -535,7 +548,8 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
     const onMouseDown = (e: mapboxgl.MapMouseEvent) => {
       if (activeTool !== 'edit') return;
 
-      if (selectedAnnotationIds.size === 1 && editGeometry.current) {
+      const selIds = selectedAnnotationIdsRef.current;
+      if (selIds.size === 1 && editGeometry.current) {
         // Use a tolerance box around the click point for easier handle targeting
         const tolerance = 12;
         const bbox: [mapboxgl.PointLike, mapboxgl.PointLike] = [
@@ -566,17 +580,44 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
         }
       }
 
+      // Multi-select: check for rotate handle before body translate
+      if (selIds.size > 1) {
+        const rotTolerance = 12;
+        const rotBbox: [mapboxgl.PointLike, mapboxgl.PointLike] = [
+          [e.point.x - rotTolerance, e.point.y - rotTolerance],
+          [e.point.x + rotTolerance, e.point.y + rotTolerance]
+        ];
+        const rotHandles = map.queryRenderedFeatures(rotBbox, { layers: ['edit-handles-rotate'] });
+        if (rotHandles.length > 0) {
+          e.preventDefault();
+          map.dragPan.disable();
+          map.getCanvas().style.cursor = 'grabbing';
+          const allFC = turf.featureCollection(
+            multiEditGeometries.current.map(g => turf.feature(g.geometry as any))
+          );
+          const pivot = turf.centroid(allFC).geometry.coordinates as [number, number];
+          dragState.current = {
+            isDragging: true,
+            type: 'multi-rotate',
+            startLngLat: [e.lngLat.lng, e.lngLat.lat],
+            startCentroid: pivot,
+            startGeometries: JSON.parse(JSON.stringify(multiEditGeometries.current))
+          };
+          return;
+        }
+      }
+
       // Check if clicking on an annotation body (for translate)
       const annFeatures = map.queryRenderedFeatures(e.point, { layers: ['annotations-fill', 'annotations-line', 'annotations-points'] });
 
       if (annFeatures.length > 0) {
         const clickedId = annFeatures[0].properties?.id;
-        if (clickedId && selectedAnnotationIds.has(clickedId)) {
+        if (clickedId && selIds.has(clickedId)) {
           e.preventDefault();
           map.dragPan.disable();
           map.getCanvas().style.cursor = 'grabbing';
 
-          if (selectedAnnotationIds.size === 1 && editGeometry.current) {
+          if (selIds.size === 1 && editGeometry.current) {
             dragState.current = {
               isDragging: true,
               type: 'translate',
@@ -585,7 +626,12 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
               startGeometry: JSON.parse(JSON.stringify(editGeometry.current)),
               startCentroid: turf.centroid(editGeometry.current as any).geometry.coordinates as [number, number]
             };
-          } else if (selectedAnnotationIds.size > 1) {
+          } else if (selIds.size > 1) {
+            // Rebuild from latest annotation state in case the selection effect hasn't fired yet
+            multiEditGeometries.current = Array.from(selIds).map(id => {
+              const ann = annotationsRef.current.find(a => a.id === id);
+              return ann ? { id, geometry: JSON.parse(JSON.stringify(ann.geometry)) } : null;
+            }).filter(Boolean) as { id: string; geometry: GeoJSON.Geometry }[];
             dragState.current = {
               isDragging: true,
               type: 'multi-translate',
@@ -629,6 +675,9 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
               if (isMulti) {
                 if (next.has(clickedId)) next.delete(clickedId);
                 else next.add(clickedId);
+              } else if (next.size > 1 && next.has(clickedId)) {
+                // Clicking on an already-selected annotation in multi-select mode:
+                // preserve the full selection so the group can be dragged.
               } else {
                 next.clear();
                 next.add(clickedId);
@@ -668,6 +717,19 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
               turf.coordEach(item.geometry as any, coord => { coord[0] += dx; coord[1] += dy; });
             });
             dragState.current.lastLngLat = currentLngLat;
+            renderEditHandles();
+            return;
+          }
+
+          // Multi-rotate: rotate all geometries around the shared centroid from their start positions
+          if (type === 'multi-rotate' && startGeometries && startLngLat && startCentroid) {
+            const startBearing = turf.bearing(startCentroid, startLngLat);
+            const currentBearing = turf.bearing(startCentroid, currentLngLat);
+            const angleDelta = currentBearing - startBearing;
+            multiEditGeometries.current = (startGeometries as { id: string; geometry: GeoJSON.Geometry }[]).map(g => ({
+              id: g.id,
+              geometry: (turf.transformRotate(turf.feature(g.geometry as any), angleDelta, { pivot: startCentroid }) as any).geometry
+            }));
             renderEditHandles();
             return;
           }
@@ -735,7 +797,7 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
       }
 
       // Hover cursor feedback when edit handles are visible
-      if (activeTool === 'edit' && editGeometry.current) {
+      if (activeTool === 'edit' && (editGeometry.current || multiEditGeometries.current.length > 0)) {
         const tolerance = 10;
         const pt = e.point;
         const handleFeatures = map.queryRenderedFeatures(
@@ -766,7 +828,7 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
         const dist = start ? Math.hypot(e.lngLat.lng - start[0], e.lngLat.lat - start[1]) : 0;
 
         if (dist > 0.000001) {
-          if (dragState.current.type === 'multi-translate' && multiEditGeometries.current.length > 0) {
+          if ((dragState.current.type === 'multi-translate' || dragState.current.type === 'multi-rotate') && multiEditGeometries.current.length > 0) {
             const updates = multiEditGeometries.current;
 
             setAnnotations(prev => prev.map(a => {

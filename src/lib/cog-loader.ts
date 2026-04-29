@@ -1,5 +1,6 @@
 import * as GeoTIFF from 'geotiff';
 import proj4 from 'proj4';
+import type { RawWindowData } from './zonalStats';
 
 // Register common UTM Zone definitions upfront for fast access
 proj4.defs('EPSG:32631', '+proj=utm +zone=31 +datum=WGS84 +units=m +no_defs');
@@ -324,6 +325,156 @@ export class COGLoader {
 
   /** True if bands contain floating-point reflectance values */
   getIsFloat32(): boolean { return this.isFloat32; }
+
+  /**
+   * Reproject a WGS84 lon/lat to the COG's native CRS.
+   * Returns null when the COG is already in WGS84 (no reprojection needed).
+   * Available after init().
+   */
+  projectToNative(lon: number, lat: number): [number, number] | null {
+    if (this.project) return this.project(lon, lat);
+    return null;
+  }
+
+  /**
+   * Returns the proj4 project function (WGS84 → native CRS) or null.
+   * Used by zonal-stats to reproject polygon vertices once, then do fast
+   * per-pixel tests entirely in native CRS.
+   */
+  getProjectFn(): ((lon: number, lat: number) => [number, number]) | null {
+    return this.project;
+  }
+
+  /**
+   * Read a rectangular window from the full-resolution IFD (IFD 0) using
+   * byte-range HTTP requests — only the pixels inside the bbox are fetched.
+   *
+   * @param bboxWGS84 [west, south, east, north] in WGS84 degrees
+   * @returns RawWindowData with band arrays and geotransform info, or null on error
+   */
+  async readWindowRaw(bboxWGS84: [number, number, number, number]): Promise<RawWindowData | null> {
+    await this.init();
+    if (!this.tiff || !this.image) return null;
+
+    const [west, south, east, north] = bboxWGS84;
+
+    // Convert bbox corners to native CRS
+    let nativeMinX: number, nativeMaxX: number, nativeMinY: number, nativeMaxY: number;
+    if (this.project) {
+      const sw = this.project(west, south);
+      const ne = this.project(east, north);
+      const nw = this.project(west, north);
+      const se = this.project(east, south);
+      nativeMinX = Math.min(sw[0], ne[0], nw[0], se[0]);
+      nativeMaxX = Math.max(sw[0], ne[0], nw[0], se[0]);
+      nativeMinY = Math.min(sw[1], ne[1], nw[1], se[1]);
+      nativeMaxY = Math.max(sw[1], ne[1], nw[1], se[1]);
+    } else {
+      nativeMinX = west;
+      nativeMaxX = east;
+      nativeMinY = south;
+      nativeMaxY = north;
+    }
+
+    // pixelHeight is negative (top-down image), pixelWidth is positive
+    const absPixelH = Math.abs(this.pixelHeight);
+
+    // Convert native CRS coords to pixel col/row
+    // originX/originY is the top-left corner of the image
+    const colMinF = (nativeMinX - this.originX) / this.pixelWidth;
+    const colMaxF = (nativeMaxX - this.originX) / this.pixelWidth;
+    // Y: originY is top, Y decreases going down (pixelHeight < 0)
+    const rowMinF = (this.originY - nativeMaxY) / absPixelH;
+    const rowMaxF = (this.originY - nativeMinY) / absPixelH;
+
+    // Clamp to image bounds
+    const colMin = Math.max(0, Math.floor(colMinF));
+    const rowMin = Math.max(0, Math.floor(rowMinF));
+    const colMax = Math.min(this.imgWidth,  Math.ceil(colMaxF));
+    const rowMax = Math.min(this.imgHeight, Math.ceil(rowMaxF));
+
+    if (colMax <= colMin || rowMax <= rowMin) {
+      console.warn('[COGLoader] readWindowRaw: bbox does not overlap raster');
+      return null;
+    }
+
+    try {
+      const rasters = await this.image.readRasters({
+        window: [colMin, rowMin, colMax, rowMax],
+        interleave: false,
+      });
+
+      const bandsArr = Array.isArray(rasters) ? rasters : [rasters];
+
+      // Detect actual data type from typed array (SampleFormat tag may be absent in some IFDs)
+      const isFloat32 = bandsArr[0] instanceof Float32Array || bandsArr[0] instanceof Float64Array;
+      const bps = this.image.getBitsPerSample();
+      const bps0 = Array.isArray(bps) ? bps[0] : bps;
+      const is16Bit = !isFloat32 && bps0 === 16;
+
+      // Top-left origin of the window in native CRS
+      const originNativeX = this.originX + colMin * this.pixelWidth;
+      const originNativeY = this.originY + rowMin * this.pixelHeight; // pixelHeight < 0
+
+      return {
+        bands: bandsArr as RawWindowData['bands'],
+        width: colMax - colMin,
+        height: rowMax - rowMin,
+        originNativeX,
+        originNativeY,
+        pixelWidthNative: Math.abs(this.pixelWidth),
+        pixelHeightNative: absPixelH,
+        isFloat32,
+        is16Bit,
+      };
+    } catch (err) {
+      console.error('[COGLoader] readWindowRaw error:', err);
+      return null;
+    }
+  }
+
+  /**
+   * Read the raw band values for the single pixel at the given WGS84 lon/lat.
+   * Returns normalized 0–1 float values, or null if the point is outside the raster.
+   * Uses a 1×1 window read from the full-resolution IFD — a tiny byte-range request.
+   */
+  async getPixelAt(lon: number, lat: number): Promise<number[] | null> {
+    await this.init();
+    if (!this.image) return null;
+
+    let nx: number, ny: number;
+    if (this.project) {
+      [nx, ny] = this.project(lon, lat);
+    } else {
+      nx = lon;
+      ny = lat;
+    }
+
+    const absPixelH = Math.abs(this.pixelHeight);
+    const col = Math.floor((nx - this.originX) / this.pixelWidth);
+    const row = Math.floor((this.originY - ny) / absPixelH);
+
+    if (col < 0 || col >= this.imgWidth || row < 0 || row >= this.imgHeight) return null;
+
+    try {
+      const rasters = await this.image.readRasters({
+        window: [col, row, col + 1, row + 1],
+        interleave: false,
+      });
+
+      const bandsArr = Array.isArray(rasters) ? rasters : [rasters];
+      const isFloat32 = bandsArr[0] instanceof Float32Array || bandsArr[0] instanceof Float64Array;
+      const bps = this.image.getBitsPerSample();
+      const bps0 = Array.isArray(bps) ? bps[0] : bps;
+      const is16Bit = !isFloat32 && bps0 === 16;
+      const scale = isFloat32 ? 1 : is16Bit ? 1 / 65535 : 1 / 255;
+
+      return bandsArr.map(band => (band[0] ?? 0) * scale);
+    } catch (err) {
+      console.error('[COGLoader] getPixelAt error:', err);
+      return null;
+    }
+  }
 
   /**
    * Returns the COG's bounding box in WGS84 [west, south, east, north].

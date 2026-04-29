@@ -28,6 +28,8 @@ import { AnnotationDialog } from './AnnotationDialog';
 import { AnnotationContextMenu } from './AnnotationContextMenu';
 import { DrawPlotsPanel } from './DrawPlotsPanel';
 import { MeasurementTooltip } from './MeasurementTooltip';
+import { ZonalStatsPanel } from './ZonalStatsPanel';
+import { PixelInspectorTooltip } from './PixelInspectorTooltip';
 
 import { GolfCourseTileset } from "@/lib/tilesetService";
 
@@ -86,6 +88,9 @@ const MapboxGolfCourseMap = ({
   const animationRef = useRef<number | null>(null);
   const mapInitializedRef = useRef(false);
   const [mapReady, setMapReady] = useState(false);
+  // Tracks which COG key the current presigned URL was fetched for.
+  // Prevents the analysis effect from resetting mode/URL on every layerOrder shuffle.
+  const activeCogKeyRef = useRef<string | null>(null);
 
   // Vectorization & Drawing Tools
   const drawing = useDrawingManager(map.current, Number(golfCourseId) || null, mapReady, golfCourseId);
@@ -107,6 +112,10 @@ const MapboxGolfCourseMap = ({
   const [analysisTileMinZoom, setAnalysisTileMinZoom] = useState<number>(14);
   const [analysisHistogramData, setAnalysisHistogramData] = useState<Array<{ value: number; count: number }>>([]);
   const [bandMapping, setBandMapping] = useState({ r: 0, g: 1, b: 2, nir: 2, re: 3 }); // NIR=Band 3, RedEdge=Band 4
+
+  // Zonal Stats + Pixel Inspector state
+  const [showZonalStats, setShowZonalStats] = useState(false);
+  const [isPixelInspectorActive, setIsPixelInspectorActive] = useState(false);
 
   // When the user picks a new index, reset the range to that index's theoretical domain
   // so stale values from the previous index don't persist in the slider labels.
@@ -724,7 +733,7 @@ const MapboxGolfCourseMap = ({
     }
 
     if (!topmostTileset) {
-      // No visible raster layers → disable analysis
+      activeCogKeyRef.current = null;
       setAnalysisModeMap('None');
       setAnalysisTileUrl(null);
       setAnalysisTileBounds(undefined);
@@ -737,31 +746,41 @@ const MapboxGolfCourseMap = ({
     const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 
     if (isCog && cogKey) {
-      // Pathway B: Multispectral COG — get a long-lived presigned R2 URL
-      setAnalysisModeMap('None');
-      setAnalysisTileUrl(null); // Clear old proxy URL
-      setAnalysisTileBounds(undefined);
-      setAnalysisIndex('MS_NDVI');
-      setAnalysisRange([-1, 1]);
-      setBandMapping({ r: 0, g: 1, b: 2, nir: 2, re: 3 });
-      // Auto-enable the analysis panel so user sees the overlay immediately
+      // Pathway B: Multispectral COG — get a long-lived presigned R2 URL.
+      // Guard: if this exact COG key is already loaded/loading, just ensure
+      // analysis is enabled and leave the existing URL/mode untouched.
+      // This prevents every layerOrder shuffle (as tilesets/vectorLayers/healthMaps
+      // arrive at different times) from resetting mode→'None' and blanking the overlay.
       setAnalysisModeEnabled(true);
-      // Fetch a presigned URL for the COG .tif file (needs long expiry for byte-range requests)
-      import('@/lib/r2Service').then(({ R2Service }) => {
-        R2Service.getGetUrl(cogKey, 4 * 3600)
-          .then(({ url }) => {
+      if (cogKey !== activeCogKeyRef.current) {
+        activeCogKeyRef.current = cogKey;
+        setAnalysisModeMap('None');
+        setAnalysisTileUrl(null);
+        setAnalysisTileBounds(undefined);
+        setAnalysisIndex('MS_NDVI');
+        setAnalysisRange([-1, 1]);
+        setBandMapping({ r: 0, g: 1, b: 2, nir: 2, re: 3 });
+        import('@/lib/r2Service').then(({ R2Service }) => {
+          R2Service.getGetUrl(cogKey, 4 * 3600)
+            .then(({ url }) => {
+              if (activeCogKeyRef.current !== cogKey) return; // superseded
               console.log('[COG] Got presigned URL, enabling Multispectral mode');
-              setAnalysisModeMap('Multispectral'); 
+              setAnalysisModeMap('Multispectral');
               setAnalysisTileUrl(url);
-          })
-          .catch(err => {
-            console.error('[COG] Failed to get presigned URL:', err);
-            setAnalysisTileUrl(null);
-            setAnalysisModeEnabled(false);
-          });
-      });
+            })
+            .catch(err => {
+              console.error('[COG] Failed to get presigned URL:', err);
+              if (activeCogKeyRef.current === cogKey) {
+                setAnalysisTileUrl(null);
+                setAnalysisModeEnabled(false);
+              }
+            });
+        });
+      }
     } else {
       // Pathway A: Standard RGB PNG tiles — route through tile-proxy
+      activeCogKeyRef.current = null;
+      setAnalysisModeEnabled(true);
       setAnalysisModeMap('RGB');
       setAnalysisTileUrl(`${supabaseUrl}/functions/v1/tile-proxy/${encodeURIComponent(topmostTileset.id)}/{z}/{x}/{y}.png`);
       setAnalysisTileBounds([topmostTileset.min_lon, topmostTileset.min_lat, topmostTileset.max_lon, topmostTileset.max_lat]);
@@ -934,18 +953,65 @@ const MapboxGolfCourseMap = ({
           map.current!.setLayoutProperty(id, 'visibility', visibility);
         }
       });
-      
+
       const labelId = `${vid}-label`;
       const labelVisibility = (visibleVectorLayers.has(layer.id) && showVectorLabels) ? 'visible' : 'none';
       if (map.current!.getLayer(labelId)) {
         map.current!.setLayoutProperty(labelId, 'visibility', labelVisibility);
       }
     });
-  }, [vectorLayers, visibleVectorLayers, showVectorLabels]);
+
+    // Sync drawing-manager annotation layers.
+    // When a vector layer is toggled off, filter annotations whose `published_layer_name`
+    // matches that layer's name out of the live drawing layers.
+    // We match by name (not layer_type) because the edge function stores all annotation
+    // vector layers with layer_type = 'geojson'.
+    const hiddenLayerNames: string[] = vectorLayers
+      .filter(l => !visibleVectorLayers.has(l.id))
+      .map(l => l.name);
+
+    const m = map.current!;
+
+    // Build a filter clause: show annotation if it has no published_layer_name (draft)
+    // OR its published_layer_name is NOT in the hidden-layer-names list.
+    const notHiddenClause = hiddenLayerNames.length > 0
+      ? ['any',
+          ['!', ['has', 'published_layer_name']],
+          ['==', ['get', 'published_layer_name'], null],
+          ['==', ['get', 'published_layer_name'], ''],
+          ['!', ['in', ['get', 'published_layer_name'], ['literal', hiddenLayerNames]]]
+        ]
+      : null;
+
+    const withVisibility = (baseFilter: any[]) =>
+      notHiddenClause ? ['all', baseFilter, notHiddenClause] : baseFilter;
+
+    if (m.getLayer('annotations-fill'))
+      m.setFilter('annotations-fill',   withVisibility(['==', ['geometry-type'], 'Polygon']));
+    if (m.getLayer('annotations-line'))
+      m.setFilter('annotations-line',   withVisibility(['match', ['geometry-type'], ['LineString', 'Polygon'], true, false]));
+    if (m.getLayer('annotations-points'))
+      m.setFilter('annotations-points', withVisibility(['==', ['geometry-type'], 'Point']));
+    if (m.getLayer('annotations-labels'))
+      m.setFilter('annotations-labels', withVisibility(['has', 'plot_id']));
+  }, [vectorLayers, visibleVectorLayers, showVectorLabels, mapReady]);
 
   useEffect(() => {
     syncVectorVisibility();
   }, [syncVectorVisibility]);
+
+  // Always keep a ref to the latest syncVectorVisibility so async code
+  // (preloadAll, map.on('load') callbacks) can call it without stale closures.
+  const syncVectorVisibilityRef = useRef(syncVectorVisibility);
+  useEffect(() => { syncVectorVisibilityRef.current = syncVectorVisibility; }, [syncVectorVisibility]);
+
+  // Re-apply annotation filters once both map is ready AND vector layer data
+  // has arrived. Handles the race where fetchVectorLayers resolves after mapReady.
+  useEffect(() => {
+    if (!mapReady || vectorLayers.length === 0) return;
+    syncVectorVisibility();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mapReady, vectorLayers.length]);
 
   // PRELOAD: Load ALL vector layers onto the map once, all hidden.
   // Visibility toggling is then handled separately and synchronously.
@@ -1103,8 +1169,9 @@ const MapboxGolfCourseMap = ({
 
       vectorPreloadRunningRef.current = false;
 
-      // After ALL layers are loaded, apply current visibility state
-      syncVectorVisibility();
+      // Use the ref so we always call the latest closure (vectorLayers/visibleVectorLayers
+      // may have changed while preloadAll was running its async fetches).
+      syncVectorVisibilityRef.current();
     };
 
     preloadAll();
@@ -1762,9 +1829,33 @@ const MapboxGolfCourseMap = ({
                 canDelete={drawing.canDelete}
                 onSaveAsVectorLayers={drawing.saveAsVectorLayers}
                 isSavingVectorLayers={drawing.isSavingVectorLayers}
+                onZonalStats={() => setShowZonalStats(true)}
+                isPixelInspectorActive={isPixelInspectorActive}
+                onTogglePixelInspector={() => setIsPixelInspectorActive(v => !v)}
+                hasActiveCogLayer={!!analysisTileUrl && analysisModeMap === 'Multispectral'}
               />
             </div>
           </div>
+
+          {/* Zonal Stats Panel */}
+          {showZonalStats && (
+            <ZonalStatsPanel
+              golfCourseId={golfCourseId}
+              tilesets={tilesets}
+              annotations={drawing.annotations}
+              bandMapping={bandMapping}
+              onClose={() => setShowZonalStats(false)}
+            />
+          )}
+
+          {/* Pixel Inspector Tooltip */}
+          <PixelInspectorTooltip
+            map={map.current}
+            isActive={isPixelInspectorActive && !!analysisTileUrl && analysisModeMap === 'Multispectral'}
+            cogUrl={analysisTileUrl}
+            selectedIndex={analysisIndex}
+            bandMapping={bandMapping}
+          />
 
           {/* === Top-Left: Layers Card + Analysis Panel (stacked column) === */}
           <div className="absolute top-4 left-4 z-20 flex flex-col gap-3 w-80">
@@ -1804,8 +1895,8 @@ const MapboxGolfCourseMap = ({
                   </div>
                 </div>
 
-                {/* Scrollable layer list — capped so it never pushes Analysis panel off screen */}
-                <ScrollArea className="max-h-52">
+                {/* Scrollable layer list — fixed height so Plant Health panel is never pushed off screen */}
+                <ScrollArea className="h-52 overflow-y-auto">
                   <div className="p-3 space-y-1">
                     {/* Sub-label */}
                     <span className="block text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50 mb-2 px-1">{t.map.drawOrder}</span>

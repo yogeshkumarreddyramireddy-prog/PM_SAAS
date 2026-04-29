@@ -10,7 +10,9 @@ import {
   Undo2,
   Trash2,
   CloudUpload,
-  Loader2
+  Loader2,
+  BarChart2,
+  Crosshair,
 } from 'lucide-react';
 import { DrawingTool } from '@/types/annotation';
 import { cn } from '@/lib/utils';
@@ -27,6 +29,10 @@ interface VectorizationToolbarProps {
   canDelete: boolean;
   onSaveAsVectorLayers: () => void;
   isSavingVectorLayers: boolean;
+  onZonalStats: () => void;
+  isPixelInspectorActive: boolean;
+  onTogglePixelInspector: () => void;
+  hasActiveCogLayer: boolean;
 }
 
 export const VectorizationToolbar: React.FC<VectorizationToolbarProps> = ({
@@ -40,6 +46,10 @@ export const VectorizationToolbar: React.FC<VectorizationToolbarProps> = ({
   canDelete,
   onSaveAsVectorLayers,
   isSavingVectorLayers,
+  onZonalStats,
+  isPixelInspectorActive,
+  onTogglePixelInspector,
+  hasActiveCogLayer,
 }) => {
 
   const handleToolClick = (tool: DrawingTool) => {
@@ -95,14 +105,14 @@ export const VectorizationToolbar: React.FC<VectorizationToolbarProps> = ({
           );
         })}
 
-        {/* Save button — action only, not a toggle tool */}
+        {/* Save as vector layers */}
         <Tooltip>
           <TooltipTrigger asChild>
             <button
               onClick={onSaveAsVectorLayers}
               disabled={isSavingVectorLayers}
               className={cn(
-                "flex items-center justify-center h-9 w-9 shrink-0 rounded-none transition-colors last:border-b-0 focus:ring-0",
+                "flex items-center justify-center h-9 w-9 shrink-0 rounded-none transition-colors border-b border-border focus:ring-0",
                 isSavingVectorLayers
                   ? "text-muted-foreground opacity-60 cursor-not-allowed"
                   : "text-green-600 hover:bg-muted"
@@ -117,6 +127,47 @@ export const VectorizationToolbar: React.FC<VectorizationToolbarProps> = ({
           </TooltipTrigger>
           <TooltipContent side="right" className="font-medium text-sm">
             Save as vector layers
+          </TooltipContent>
+        </Tooltip>
+
+        {/* Zonal Statistics */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              onClick={onZonalStats}
+              className="flex items-center justify-center h-9 w-9 shrink-0 rounded-none transition-colors border-b border-border focus:ring-0 text-violet-600 hover:bg-muted"
+              aria-label="Zonal Statistics"
+            >
+              <BarChart2 className="w-5 h-5" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="right" className="font-medium text-sm">
+            Zonal Statistics
+          </TooltipContent>
+        </Tooltip>
+
+        {/* Pixel Inspector */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              onClick={onTogglePixelInspector}
+              disabled={!hasActiveCogLayer}
+              className={cn(
+                "flex items-center justify-center h-9 w-9 shrink-0 rounded-none transition-colors last:border-b-0 focus:ring-0",
+                !hasActiveCogLayer
+                  ? "text-muted-foreground opacity-40 cursor-not-allowed"
+                  : isPixelInspectorActive
+                  ? "bg-primary text-primary-foreground"
+                  : "text-foreground hover:bg-muted"
+              )}
+              aria-label="Pixel Inspector"
+              aria-pressed={isPixelInspectorActive}
+            >
+              <Crosshair className="w-5 h-5" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="right" className="font-medium text-sm">
+            {hasActiveCogLayer ? 'Pixel Inspector — click map to read index value' : 'Pixel Inspector (requires an active COG layer)'}
           </TooltipContent>
         </Tooltip>
       </TooltipProvider>

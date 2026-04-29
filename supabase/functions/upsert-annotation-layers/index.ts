@@ -181,7 +181,7 @@ serve(async (req) => {
       if (existing?.id) {
         const { data, error } = await supabaseAdmin
           .from('vector_layers')
-          .update({ name: layer.display_name, file_size: geojsonBytes.length })
+          .update({ name: layer.display_name, layer_type: layer.layer_type, file_size: geojsonBytes.length })
           .eq('id', existing.id).select().single()
         if (error) throw new Error(`DB update failed: ${error.message}`)
         dbRecord = data
@@ -196,7 +196,7 @@ serve(async (req) => {
             course_name: courseName,
             name: layer.display_name,
             description: 'Auto-generated from annotations',
-            layer_type: 'geojson',
+            layer_type: layer.layer_type,
             r2_key: r2Key,
             file_size: geojsonBytes.length,
             is_active: true

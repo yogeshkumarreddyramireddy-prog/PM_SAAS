@@ -46,7 +46,7 @@ export interface PendingAnnotation {
 
 export interface DragState {
   isDragging: boolean;
-  type: 'translate' | 'vertex' | 'scale' | 'rotate' | 'multi-translate' | null;
+  type: 'translate' | 'vertex' | 'scale' | 'rotate' | 'multi-translate' | 'multi-rotate' | null;
   annotationId?: string;
   vertexIndex?: number;
   startLngLat?: [number, number];

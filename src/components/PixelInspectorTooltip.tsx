@@ -87,8 +87,8 @@ export function PixelInspectorTooltip({
     map.on('click', handleClick);
     map.on('movestart', handleMoveStart);
 
-    // Show crosshair cursor while inspector is active
-    map.getCanvas().style.cursor = 'crosshair';
+    // Show default arrow cursor while inspector is active (user clicks to pick a pixel)
+    map.getCanvas().style.cursor = 'default';
 
     return () => {
       map.off('click', handleClick);

@@ -340,7 +340,7 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
     } else if (activeTool === 'edit') {
       map.getCanvas().style.cursor = 'pointer';
     } else if (activeTool === 'draw_plots') {
-      map.getCanvas().style.cursor = 'grab';
+      map.getCanvas().style.cursor = 'crosshair';
       if (!plotGrid) {
         const center = map.getCenter();
         const initialConfig: PlotGridConfig = {

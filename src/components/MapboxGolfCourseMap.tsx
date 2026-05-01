@@ -1727,6 +1727,23 @@ const MapboxGolfCourseMap = ({
             className="absolute inset-0 w-full h-full"
           />
 
+          {/* Rubber-band selection rectangle */}
+          {drawing.rubberBandRect && (
+            <div
+              style={{
+                position: 'absolute',
+                left: drawing.rubberBandRect.x,
+                top: drawing.rubberBandRect.y,
+                width: drawing.rubberBandRect.width,
+                height: drawing.rubberBandRect.height,
+                border: '1.5px dashed #00d2ff',
+                backgroundColor: 'rgba(0, 210, 255, 0.08)',
+                pointerEvents: 'none',
+                zIndex: 10,
+              }}
+            />
+          )}
+
           <AnnotationDialog 
             open={!!drawing.pendingAnnotation || !!drawing.editingAnnotation} 
             onOpenChange={(open) => {

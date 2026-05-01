@@ -1,6 +1,9 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import * as XLSX from 'xlsx';
-import { X, BarChart2, Play, Download, Loader2, CheckCircle2, AlertCircle, ChevronDown, ChevronUp } from 'lucide-react';
+import {
+  X, BarChart2, Play, Download, Loader2, CheckCircle2,
+  AlertCircle, ChevronDown, ChevronUp, Info,
+} from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';
@@ -10,10 +13,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { R2Service } from '@/lib/r2Service';
 import { COGLoader } from '@/lib/cog-loader';
 import type { GolfCourseTileset } from '@/lib/tilesetService';
-import {
-  VEGETATION_INDEX_CONFIG,
-  type VegetationIndex,
-} from '@/lib/vegetation-indices';
+import { VEGETATION_INDEX_CONFIG, type VegetationIndex } from '@/lib/vegetation-indices';
 import type { Annotation } from '@/types/annotation';
 import {
   computeZonalStats,
@@ -28,17 +28,10 @@ import type { Polygon, MultiPolygon } from 'geojson';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/** Which indices are compatible with a given band count */
 function compatibleIndices(bandCount: number): VegetationIndex[] {
   if (bandCount <= 0) return [];
-  if (bandCount === 3) {
-    return ['RGB_GLI', 'RGB_VARI', 'RGB_TGI', 'RGB_GRVI'];
-  }
-  // 4-band: R, G, NIR, RE — no RedEdge-dependent indices
-  if (bandCount === 4) {
-    return ['MS_NDVI', 'MS_GNDVI', 'MS_MSAVI2', 'MS_OSAVI', 'MS_NDWI'];
-  }
-  // 5-band: all MS indices available
+  if (bandCount === 3) return ['RGB_GLI', 'RGB_VARI', 'RGB_TGI', 'RGB_GRVI'];
+  if (bandCount === 4) return ['MS_NDVI', 'MS_GNDVI', 'MS_MSAVI2', 'MS_OSAVI', 'MS_NDWI'];
   return ['MS_NDVI', 'MS_NDRE', 'MS_GNDVI', 'MS_MSAVI2', 'MS_OSAVI', 'MS_NDWI', 'MS_CLRE'];
 }
 
@@ -50,11 +43,16 @@ function formatDate(ts: GolfCourseTileset): string {
   return (ts as any).flight_date || (ts as any).analysis_date || ts.name || ts.id.slice(0, 8);
 }
 
+function annotationLabel(ann: Annotation): string {
+  return ann.plot_id || ann.external_code || ann.id.slice(0, 8);
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface LayerConfig {
   tileset: GolfCourseTileset;
-  bandCount: number;   // 0 = not yet loaded
+  isCog: boolean;
+  bandCount: number;   // 0 = not yet probed
   loading: boolean;
   error: string | null;
   selectedIndices: Set<VegetationIndex>;
@@ -65,7 +63,6 @@ interface ResultRow {
   external_code: string;
   comment: string;
   annotation_type: string;
-  // key = `${layerId}__${index}__${metric}`
   [key: string]: string | number;
 }
 
@@ -93,19 +90,23 @@ export const ZonalStatsPanel: React.FC<ZonalStatsPanelProps> = ({
   onClose,
 }) => {
   // ── Eligible annotations (polygons only) ──────────────────────────────────
-  const eligibleAnnotations = annotations.filter(
-    a => a.annotation_type === 'area' || a.annotation_type === 'plot_grid'
+  const eligibleAnnotations = useMemo(
+    () => annotations.filter(a => a.annotation_type === 'area' || a.annotation_type === 'plot_grid'),
+    [annotations]
   );
 
-  // ── Eligible COG tilesets ─────────────────────────────────────────────────
-  const cogTilesets = tilesets.filter(isCogTileset);
+  // ── Selected annotation IDs (default = all) ───────────────────────────────
+  const [selectedAnnotationIds, setSelectedAnnotationIds] = useState<Set<string>>(
+    () => new Set(eligibleAnnotations.map(a => a.id))
+  );
 
-  // ── Layer configs (selected + index choices per layer) ────────────────────
+  // ── Layer configs: all tilesets, COG flag determines if selectable ─────────
   const [layerConfigs, setLayerConfigs] = useState<Map<string, LayerConfig>>(() => {
     const m = new Map<string, LayerConfig>();
-    cogTilesets.forEach(ts => {
+    tilesets.forEach(ts => {
       m.set(ts.id, {
         tileset: ts,
+        isCog: isCogTileset(ts),
         bandCount: 0,
         loading: false,
         error: null,
@@ -115,16 +116,18 @@ export const ZonalStatsPanel: React.FC<ZonalStatsPanelProps> = ({
     return m;
   });
 
-  // Which layer IDs the user has checked
   const [selectedLayerIds, setSelectedLayerIds] = useState<Set<string>>(new Set());
 
-  // ── Metrics checkboxes ────────────────────────────────────────────────────
-  const [selectedMetrics, setSelectedMetrics] = useState<Set<MetricKey>>(
-    new Set(ALL_METRICS)
-  );
+  // ── Metrics ───────────────────────────────────────────────────────────────
+  const [selectedMetrics, setSelectedMetrics] = useState<Set<MetricKey>>(new Set(ALL_METRICS));
 
   // ── Export format ─────────────────────────────────────────────────────────
   const [exportFormat, setExportFormat] = useState<'xlsx' | 'csv'>('xlsx');
+
+  // ── Section collapse ──────────────────────────────────────────────────────
+  const [showAnnotations, setShowAnnotations] = useState(true);
+  const [showLayers, setShowLayers] = useState(true);
+  const [showMetrics, setShowMetrics] = useState(true);
 
   // ── Run state ─────────────────────────────────────────────────────────────
   const [running, setRunning] = useState(false);
@@ -133,17 +136,35 @@ export const ZonalStatsPanel: React.FC<ZonalStatsPanelProps> = ({
   const [runError, setRunError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [savedFileName, setSavedFileName] = useState<string | null>(null);
+  const abortRef = React.useRef(false);
 
-  // abort flag
-  const abortRef = useRef(false);
+  // ── Annotation selection helpers ──────────────────────────────────────────
 
-  // ── Section collapse state ────────────────────────────────────────────────
-  const [showLayers, setShowLayers] = useState(true);
-  const [showMetrics, setShowMetrics] = useState(true);
+  const allAnnotationsSelected = selectedAnnotationIds.size === eligibleAnnotations.length;
+  const someAnnotationsSelected = selectedAnnotationIds.size > 0 && !allAnnotationsSelected;
 
-  // ── Handlers: layer toggle ────────────────────────────────────────────────
+  const handleAnnotationToggle = useCallback((id: string, checked: boolean) => {
+    setSelectedAnnotationIds(prev => {
+      const next = new Set(prev);
+      if (checked) next.add(id); else next.delete(id);
+      return next;
+    });
+  }, []);
+
+  const handleSelectAllAnnotations = useCallback(() => {
+    if (allAnnotationsSelected) {
+      setSelectedAnnotationIds(new Set());
+    } else {
+      setSelectedAnnotationIds(new Set(eligibleAnnotations.map(a => a.id)));
+    }
+  }, [allAnnotationsSelected, eligibleAnnotations]);
+
+  // ── Layer selection helpers ───────────────────────────────────────────────
 
   const handleLayerToggle = useCallback(async (tsId: string, checked: boolean) => {
+    const cfg = layerConfigs.get(tsId);
+    if (!cfg || !cfg.isCog) return;
+
     setSelectedLayerIds(prev => {
       const next = new Set(prev);
       if (checked) next.add(tsId); else next.delete(tsId);
@@ -151,11 +172,9 @@ export const ZonalStatsPanel: React.FC<ZonalStatsPanelProps> = ({
     });
 
     if (!checked) return;
+    if (cfg.bandCount > 0 || cfg.loading) return;
 
-    // Probe band count if not yet loaded
-    const cfg = layerConfigs.get(tsId);
-    if (!cfg || cfg.bandCount > 0 || cfg.loading) return;
-
+    // Probe band count on first selection
     setLayerConfigs(prev => {
       const next = new Map(prev);
       next.set(tsId, { ...cfg, loading: true, error: null });
@@ -168,31 +187,18 @@ export const ZonalStatsPanel: React.FC<ZonalStatsPanelProps> = ({
       const loader = new COGLoader(url);
       await loader.init();
       const bc = loader.getBandCount();
-      const compatible = compatibleIndices(bc);
-      // Default: select the first index automatically
-      const defaultSelected = new Set<VegetationIndex>(
-        compatible.length > 0 ? [compatible[0]] : []
-      );
+      const compat = compatibleIndices(bc);
+      const defaultSelected = new Set<VegetationIndex>(compat.length > 0 ? [compat[0]] : []);
 
       setLayerConfigs(prev => {
         const next = new Map(prev);
-        next.set(tsId, {
-          ...cfg,
-          bandCount: bc,
-          loading: false,
-          error: null,
-          selectedIndices: defaultSelected,
-        });
+        next.set(tsId, { ...cfg, bandCount: bc, loading: false, error: null, selectedIndices: defaultSelected });
         return next;
       });
-    } catch (err) {
+    } catch {
       setLayerConfigs(prev => {
         const next = new Map(prev);
-        next.set(tsId, {
-          ...cfg,
-          loading: false,
-          error: 'Could not load layer metadata',
-        });
+        next.set(tsId, { ...cfg, loading: false, error: 'Could not load layer' });
         return next;
       });
     }
@@ -202,11 +208,11 @@ export const ZonalStatsPanel: React.FC<ZonalStatsPanelProps> = ({
     setLayerConfigs(prev => {
       const cfg = prev.get(tsId);
       if (!cfg) return prev;
-      const next = new Set(cfg.selectedIndices);
-      if (checked) next.add(idx); else next.delete(idx);
-      const next2 = new Map(prev);
-      next2.set(tsId, { ...cfg, selectedIndices: next });
-      return next2;
+      const indices = new Set(cfg.selectedIndices);
+      if (checked) indices.add(idx); else indices.delete(idx);
+      const next = new Map(prev);
+      next.set(tsId, { ...cfg, selectedIndices: indices });
+      return next;
     });
   }, []);
 
@@ -220,8 +226,10 @@ export const ZonalStatsPanel: React.FC<ZonalStatsPanelProps> = ({
 
   // ── Validation ────────────────────────────────────────────────────────────
 
+  const selectedAnnotations = eligibleAnnotations.filter(a => selectedAnnotationIds.has(a.id));
+
   const canRun = (
-    eligibleAnnotations.length > 0 &&
+    selectedAnnotations.length > 0 &&
     selectedLayerIds.size > 0 &&
     selectedMetrics.size > 0 &&
     Array.from(selectedLayerIds).every(id => {
@@ -240,27 +248,25 @@ export const ZonalStatsPanel: React.FC<ZonalStatsPanelProps> = ({
     abortRef.current = false;
 
     const selectedLayerList = Array.from(selectedLayerIds);
-    const totalSteps = eligibleAnnotations.length * selectedLayerList.length;
+    const totalSteps = selectedAnnotations.length * selectedLayerList.length;
     let done = 0;
 
-    // One COGLoader per selected layer (keyed by tileset id)
-    const loaders = new Map<string, { loader: COGLoader; url: string }>();
+    const loaders = new Map<string, COGLoader>();
 
     try {
-      // Initialise loaders for all selected layers
+      // Pre-initialise one loader per selected layer
       for (const tsId of selectedLayerList) {
         const cfg = layerConfigs.get(tsId)!;
         const cogKey = (cfg.tileset as any).cog_source_key as string;
         const { url } = await R2Service.getGetUrl(cogKey, 4 * 3600);
         const loader = new COGLoader(url);
         await loader.init();
-        loaders.set(tsId, { loader, url });
+        loaders.set(tsId, loader);
       }
 
-      // Result accumulator: one entry per annotation
       const rowMap = new Map<string, ResultRow>();
 
-      for (const ann of eligibleAnnotations) {
+      for (const ann of selectedAnnotations) {
         if (abortRef.current) break;
 
         const geom = ann.geometry as Polygon | MultiPolygon;
@@ -268,7 +274,6 @@ export const ZonalStatsPanel: React.FC<ZonalStatsPanelProps> = ({
 
         const plotId = ann.plot_id ?? ann.id.slice(0, 8);
 
-        // Ensure row exists
         if (!rowMap.has(ann.id)) {
           rowMap.set(ann.id, {
             plot_id: plotId,
@@ -283,20 +288,15 @@ export const ZonalStatsPanel: React.FC<ZonalStatsPanelProps> = ({
           if (abortRef.current) break;
 
           const cfg = layerConfigs.get(tsId)!;
-          const { loader } = loaders.get(tsId)!;
-          const layerLabel = `${formatDate(cfg.tileset)}`;
+          const loader = loaders.get(tsId)!;
 
-          setProgress({
-            done,
-            total: totalSteps,
-            currentLabel: `${plotId} · ${layerLabel}`,
-          });
+          setProgress({ done, total: totalSteps, currentLabel: `${plotId} · ${formatDate(cfg.tileset)}` });
 
-          // Compute bbox for this annotation
+          // Build WGS84 bbox for this annotation
           const coords: number[][] = [];
-          const collectCoords = (geom: Polygon | MultiPolygon) => {
-            if (geom.type === 'Polygon') geom.coordinates.forEach(r => coords.push(...r));
-            else geom.coordinates.forEach(p => p.forEach(r => coords.push(...r)));
+          const collectCoords = (g: Polygon | MultiPolygon) => {
+            if (g.type === 'Polygon') g.coordinates.forEach(r => coords.push(...r));
+            else g.coordinates.forEach(p => p.forEach(r => coords.push(...r)));
           };
           collectCoords(geom);
           const lons = coords.map(c => c[0]);
@@ -306,39 +306,24 @@ export const ZonalStatsPanel: React.FC<ZonalStatsPanelProps> = ({
             Math.max(...lons), Math.max(...lats),
           ];
 
-          // Read full-res window
           const windowData = await loader.readWindowRaw(bbox);
-          if (!windowData) {
-            done++;
-            continue;
-          }
+          if (!windowData) { done++; continue; }
 
-          // Reproject polygon to native CRS (once per annotation×layer)
           const projectFn = loader.getProjectFn();
-          const nativeGeom = projectFn
-            ? reprojectPolygon(geom, projectFn)
-            : geom;
+          const nativeGeom = projectFn ? reprojectPolygon(geom, projectFn) : geom;
 
-          // Compute stats for each selected index in one pass
           for (const indexKey of cfg.selectedIndices) {
-            const indexCfg = VEGETATION_INDEX_CONFIG[indexKey];
             const result = computeZonalStats(
               windowData,
               nativeGeom as Polygon | MultiPolygon,
               bandMapping,
-              indexCfg.calculate,
+              VEGETATION_INDEX_CONFIG[indexKey].calculate,
               selectedMetrics
             );
 
             const colPrefix = `${tsId}__${indexKey}`;
-            if (result) {
-              for (const m of selectedMetrics) {
-                row[`${colPrefix}__${m}`] = roundTo(result[m]);
-              }
-            } else {
-              for (const m of selectedMetrics) {
-                row[`${colPrefix}__${m}`] = 'N/A';
-              }
+            for (const m of selectedMetrics) {
+              row[`${colPrefix}__${m}`] = result ? roundTo(result[m]) : 'N/A';
             }
           }
 
@@ -353,24 +338,19 @@ export const ZonalStatsPanel: React.FC<ZonalStatsPanelProps> = ({
     } finally {
       setRunning(false);
     }
-  }, [eligibleAnnotations, selectedLayerIds, layerConfigs, bandMapping, selectedMetrics]);
+  }, [selectedAnnotations, selectedLayerIds, layerConfigs, bandMapping, selectedMetrics]);
 
-  // ── Export & Save ─────────────────────────────────────────────────────────
+  // ── Export helpers ────────────────────────────────────────────────────────
 
   const buildWorkbook = useCallback(() => {
     if (!results) return null;
 
     const selectedLayerList = Array.from(selectedLayerIds);
 
-    // ── Build header rows (2-level: layer group + index+metric) ──────────────
-    // Row 1: plot metadata cols (merged) + layer display name (merged over index×metric cols)
-    // Row 2: plot_id / external_code / comment / annotation_type  + {INDEX}_{METRIC}
-
-    const metaCols = ['plot_id', 'external_code', 'comment', 'annotation_type'];
-    const metaLabels = ['Plot ID', 'External Code', 'Comment', 'Type'];
-
-    // Ordered columns per layer: index1_metric1, index1_metric2, ..., index2_metric1, ...
-    type ColDef = { tsId: string; layerLabel: string; indexKey: VegetationIndex; indexLabel: string; metric: MetricKey };
+    type ColDef = {
+      tsId: string; layerLabel: string;
+      indexKey: VegetationIndex; metric: MetricKey;
+    };
     const dataCols: ColDef[] = [];
 
     for (const tsId of selectedLayerList) {
@@ -378,56 +358,40 @@ export const ZonalStatsPanel: React.FC<ZonalStatsPanelProps> = ({
       if (!cfg) continue;
       const layerLabel = formatDate(cfg.tileset);
       for (const indexKey of cfg.selectedIndices) {
-        const indexLabel = VEGETATION_INDEX_CONFIG[indexKey].name;
         for (const m of ALL_METRICS) {
           if (!selectedMetrics.has(m)) continue;
-          dataCols.push({ tsId, layerLabel, indexKey, indexLabel, metric: m });
+          dataCols.push({ tsId, layerLabel, indexKey, metric: m });
         }
       }
     }
 
-    // Header row 1: empty for meta cols, layer label spanning each layer's columns
-    const header1: string[] = [...metaLabels];
-    // Header row 2: sub-labels
-    const header2: string[] = [...metaLabels];
-    for (const col of dataCols) {
-      // Row 1: layer label (will be merged in XLSX)
-      header1.push(`${col.layerLabel} — ${VEGETATION_INDEX_CONFIG[col.indexKey].name}`);
-      // Row 2: metric label
-      header2.push(METRIC_LABELS[col.metric]);
-    }
+    const metaLabels = ['Plot ID', 'External Code', 'Comment', 'Type'];
 
-    // Data rows
-    const dataRows = results.map(row => {
-      const cells: (string | number)[] = [
-        row.plot_id as string,
-        row.external_code as string,
-        row.comment as string,
-        row.annotation_type as string,
-      ];
-      for (const col of dataCols) {
-        const key = `${col.tsId}__${col.indexKey}__${col.metric}`;
-        const val = row[key];
-        cells.push(val !== undefined ? val : 'N/A');
-      }
-      return cells;
-    });
+    // Row 1: descriptive header (layer + index name per column)
+    const header1: string[] = [...metaLabels, ...dataCols.map(
+      c => `${formatDate(layerConfigs.get(c.tsId)!.tileset)} — ${VEGETATION_INDEX_CONFIG[c.indexKey].id.replace(/^(RGB_|MS_)/, '')}`
+    )];
+    // Row 2: metric label per column
+    const header2: string[] = [...metaLabels, ...dataCols.map(c => METRIC_LABELS[c.metric])];
 
-    const aoa = [header1, header2, ...dataRows];
+    const dataRows = results.map(row => [
+      row.plot_id as string,
+      row.external_code as string,
+      row.comment as string,
+      row.annotation_type as string,
+      ...dataCols.map(c => {
+        const val = row[`${c.tsId}__${c.indexKey}__${c.metric}`];
+        return val !== undefined ? val : 'N/A';
+      }),
+    ]);
 
     const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.aoa_to_sheet(aoa);
-
-    // Freeze first row and first 4 columns for readability
+    const ws = XLSX.utils.aoa_to_sheet([header1, header2, ...dataRows]);
     ws['!freeze'] = { xSplit: 4, ySplit: 2 };
-
-    // Column widths
-    const colWidths = [
+    ws['!cols'] = [
       { wch: 14 }, { wch: 16 }, { wch: 22 }, { wch: 14 },
       ...dataCols.map(() => ({ wch: 12 })),
     ];
-    ws['!cols'] = colWidths;
-
     XLSX.utils.book_append_sheet(wb, ws, 'Zonal Statistics');
     return wb;
   }, [results, selectedLayerIds, layerConfigs, selectedMetrics]);
@@ -435,17 +399,14 @@ export const ZonalStatsPanel: React.FC<ZonalStatsPanelProps> = ({
   const handleDownload = useCallback(() => {
     const wb = buildWorkbook();
     if (!wb) return;
-    const now = new Date().toISOString().slice(0, 16).replace('T', '-').replace(':', '');
+    const stamp = new Date().toISOString().slice(0, 16).replace('T', '-').replace(':', '');
     if (exportFormat === 'xlsx') {
-      XLSX.writeFile(wb, `zonal-stats-${now}.xlsx`);
+      XLSX.writeFile(wb, `zonal-stats-${stamp}.xlsx`);
     } else {
-      // CSV: flatten to single sheet
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      const csv = XLSX.utils.sheet_to_csv(ws);
-      const blob = new Blob([csv], { type: 'text/csv' });
+      const csv = XLSX.utils.sheet_to_csv(wb.Sheets[wb.SheetNames[0]]);
       const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = `zonal-stats-${now}.csv`;
+      a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+      a.download = `zonal-stats-${stamp}.csv`;
       a.click();
     }
   }, [buildWorkbook, exportFormat]);
@@ -466,27 +427,24 @@ export const ZonalStatsPanel: React.FC<ZonalStatsPanelProps> = ({
       let mimeType: string;
 
       if (exportFormat === 'xlsx') {
-        const buf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
-        fileBuffer = buf;
+        fileBuffer = XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
         mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
       } else {
-        const ws = wb.Sheets[wb.SheetNames[0]];
-        const csv = XLSX.utils.sheet_to_csv(ws);
+        const csv = XLSX.utils.sheet_to_csv(wb.Sheets[wb.SheetNames[0]]);
         fileBuffer = new TextEncoder().encode(csv).buffer;
         mimeType = 'text/csv';
       }
 
-      // Derive course name from any tileset's r2_folder_path
-      const anyTs = cogTilesets[0];
+      // Derive course name from first tileset's r2_folder_path
+      const anyTs = tilesets[0];
       const courseName = anyTs ? (anyTs.r2_folder_path || '').split('/')[0] || 'course' : 'course';
       const r2Key = `${courseName}/reports/${filename}`;
 
       // Upload to R2
-      const blob = new Blob([fileBuffer], { type: mimeType });
-      const file = new File([blob], filename, { type: mimeType });
+      const file = new File([new Blob([fileBuffer], { type: mimeType })], filename, { type: mimeType });
       await R2Service.uploadFile(r2Key, file);
 
-      // Register in content_files
+      // Collect metadata
       const allIndices = Array.from(selectedLayerIds).flatMap(id => {
         const cfg = layerConfigs.get(id);
         return cfg ? Array.from(cfg.selectedIndices) : [];
@@ -496,25 +454,30 @@ export const ZonalStatsPanel: React.FC<ZonalStatsPanelProps> = ({
         return cfg ? formatDate(cfg.tileset) : id;
       });
 
-      await (supabase as any).from('content_files').insert({
+      // Register in content_files — status must be 'published' to appear in the client portal
+      const { error: dbError } = await (supabase as any).from('content_files').insert({
         golf_course_id: Number(golfCourseId),
         filename,
         original_filename: filename,
+        // file_path is the canonical location column used by the portal
         file_path: r2Key,
         r2_object_key: r2Key,
         file_category: 'reports',
         file_extension: ext,
         file_size: fileBuffer.byteLength,
         mime_type: mimeType,
-        status: 'active',
+        // 'published' is required — portal filters out anything else
+        status: 'published',
         metadata: {
           report_type: 'zonal_statistics',
           indices: allIndices,
           layers: layerNames,
-          annotation_count: eligibleAnnotations.length,
+          annotation_count: selectedAnnotations.length,
           generated_at: now.toISOString(),
         },
       });
+
+      if (dbError) throw new Error(dbError.message);
 
       setSavedFileName(filename);
     } catch (err) {
@@ -522,9 +485,19 @@ export const ZonalStatsPanel: React.FC<ZonalStatsPanelProps> = ({
     } finally {
       setSaving(false);
     }
-  }, [buildWorkbook, exportFormat, golfCourseId, cogTilesets, selectedLayerIds, layerConfigs, eligibleAnnotations.length]);
+  }, [buildWorkbook, exportFormat, golfCourseId, tilesets, selectedLayerIds, layerConfigs, selectedAnnotations.length]);
 
-  // ── Preview table (first 5 rows) ──────────────────────────────────────────
+  // ── Preview columns (stable across renders) ───────────────────────────────
+
+  const previewCols = useMemo(() => {
+    return Array.from(selectedLayerIds).flatMap(tsId => {
+      const cfg = layerConfigs.get(tsId);
+      if (!cfg) return [];
+      return Array.from(cfg.selectedIndices).flatMap(idx =>
+        Array.from(selectedMetrics).map(m => ({ tsId, idx, m, key: `${tsId}__${idx}__${m}` }))
+      );
+    });
+  }, [selectedLayerIds, layerConfigs, selectedMetrics]);
 
   const previewRows = results?.slice(0, 5) ?? [];
 
@@ -539,9 +512,9 @@ export const ZonalStatsPanel: React.FC<ZonalStatsPanelProps> = ({
           <div className="flex items-center gap-2.5">
             <BarChart2 className="w-5 h-5 text-primary" />
             <h2 className="font-semibold text-base">Zonal Statistics</h2>
-            {eligibleAnnotations.length > 0 && (
+            {selectedAnnotations.length > 0 && (
               <Badge variant="secondary" className="text-xs">
-                {eligibleAnnotations.length} zone{eligibleAnnotations.length !== 1 ? 's' : ''}
+                {selectedAnnotations.length} zone{selectedAnnotations.length !== 1 ? 's' : ''}
               </Badge>
             )}
           </div>
@@ -553,118 +526,196 @@ export const ZonalStatsPanel: React.FC<ZonalStatsPanelProps> = ({
         <ScrollArea className="flex-1 overflow-y-auto">
           <div className="px-5 py-4 space-y-5">
 
-            {/* No annotations warning */}
-            {eligibleAnnotations.length === 0 && (
-              <div className="flex items-center gap-2 text-sm text-amber-600 bg-amber-50 dark:bg-amber-950/30 rounded-lg px-3 py-2.5">
-                <AlertCircle className="w-4 h-4 shrink-0" />
-                No area or plot-grid annotations found. Draw some zones on the map first.
-              </div>
-            )}
+            {/* ── Section 1: Annotation / Zone selection ── */}
+            <section>
+              <button
+                className="flex items-center justify-between w-full text-left mb-3"
+                onClick={() => setShowAnnotations(v => !v)}
+              >
+                <span className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+                  Zones (Annotations)
+                </span>
+                {showAnnotations
+                  ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground" />
+                  : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />}
+              </button>
 
-            {/* No COG layers warning */}
-            {cogTilesets.length === 0 && (
-              <div className="flex items-center gap-2 text-sm text-amber-600 bg-amber-50 dark:bg-amber-950/30 rounded-lg px-3 py-2.5">
-                <AlertCircle className="w-4 h-4 shrink-0" />
-                No multispectral / COG raster layers found for this course.
-              </div>
-            )}
+              {showAnnotations && (
+                <>
+                  {eligibleAnnotations.length === 0 ? (
+                    <div className="flex items-center gap-2 text-sm text-amber-600 bg-amber-50 dark:bg-amber-950/30 rounded-lg px-3 py-2.5">
+                      <AlertCircle className="w-4 h-4 shrink-0" />
+                      No area or plot-grid annotations found. Draw some zones on the map first.
+                    </div>
+                  ) : (
+                    <div className="rounded-lg border border-border overflow-hidden">
+                      {/* Select-all row */}
+                      <label className="flex items-center gap-3 px-3 py-2 bg-muted/40 border-b border-border cursor-pointer">
+                        <Checkbox
+                          checked={allAnnotationsSelected}
+                          onCheckedChange={handleSelectAllAnnotations}
+                          className={someAnnotationsSelected ? 'opacity-50' : ''}
+                        />
+                        <span className="text-sm font-medium">
+                          {allAnnotationsSelected ? 'Deselect all' : `Select all (${eligibleAnnotations.length})`}
+                        </span>
+                        <span className="ml-auto text-xs text-muted-foreground">
+                          {selectedAnnotationIds.size} selected
+                        </span>
+                      </label>
 
-            {/* ── Section 1: Raster layers + indices ── */}
-            {cogTilesets.length > 0 && (
-              <section>
-                <button
-                  className="flex items-center justify-between w-full text-left"
-                  onClick={() => setShowLayers(v => !v)}
-                >
-                  <span className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
-                    Raster Layers &amp; Indices
-                  </span>
-                  {showLayers ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground" /> : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />}
-                </button>
-
-                {showLayers && (
-                  <div className="mt-3 space-y-3">
-                    {cogTilesets.map(ts => {
-                      const cfg = layerConfigs.get(ts.id)!;
-                      const isSelected = selectedLayerIds.has(ts.id);
-                      const compat = compatibleIndices(cfg.bandCount);
-
-                      return (
-                        <div
-                          key={ts.id}
-                          className={cn(
-                            'rounded-lg border transition-colors',
-                            isSelected ? 'border-primary/40 bg-primary/5' : 'border-border bg-muted/20'
-                          )}
-                        >
-                          {/* Layer row */}
-                          <label className="flex items-center gap-3 px-3 py-2.5 cursor-pointer">
+                      {/* Individual annotations — max height, scrollable */}
+                      <div className="max-h-44 overflow-y-auto divide-y divide-border">
+                        {eligibleAnnotations.map(ann => (
+                          <label
+                            key={ann.id}
+                            className="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-muted/30 transition-colors"
+                          >
                             <Checkbox
-                              checked={isSelected}
-                              onCheckedChange={checked => handleLayerToggle(ts.id, !!checked)}
+                              checked={selectedAnnotationIds.has(ann.id)}
+                              onCheckedChange={checked => handleAnnotationToggle(ann.id, !!checked)}
                             />
+                            <span className="text-sm font-mono truncate flex-1">
+                              {annotationLabel(ann)}
+                            </span>
+                            {ann.external_code && ann.external_code !== annotationLabel(ann) && (
+                              <span className="text-xs text-muted-foreground truncate max-w-[100px]">
+                                {ann.external_code}
+                              </span>
+                            )}
+                            <Badge variant="outline" className="text-[10px] px-1.5 py-0 shrink-0">
+                              {ann.annotation_type === 'plot_grid' ? 'plot' : 'area'}
+                            </Badge>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </section>
+
+            {/* ── Section 2: Raster layers + indices ── */}
+            <section>
+              <button
+                className="flex items-center justify-between w-full text-left mb-3"
+                onClick={() => setShowLayers(v => !v)}
+              >
+                <span className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+                  Raster Layers &amp; Indices
+                </span>
+                {showLayers
+                  ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground" />
+                  : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />}
+              </button>
+
+              {showLayers && (
+                <>
+                  {tilesets.length === 0 ? (
+                    <div className="flex items-center gap-2 text-sm text-amber-600 bg-amber-50 dark:bg-amber-950/30 rounded-lg px-3 py-2.5">
+                      <AlertCircle className="w-4 h-4 shrink-0" />
+                      No raster layers found for this course.
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {/* COG tilesets — fully selectable */}
+                      {tilesets.filter(isCogTileset).map(ts => {
+                        const cfg = layerConfigs.get(ts.id)!;
+                        const isSelected = selectedLayerIds.has(ts.id);
+                        const compat = compatibleIndices(cfg.bandCount);
+
+                        return (
+                          <div
+                            key={ts.id}
+                            className={cn(
+                              'rounded-lg border transition-colors',
+                              isSelected ? 'border-primary/40 bg-primary/5' : 'border-border bg-muted/20'
+                            )}
+                          >
+                            <label className="flex items-center gap-3 px-3 py-2.5 cursor-pointer">
+                              <Checkbox
+                                checked={isSelected}
+                                onCheckedChange={checked => handleLayerToggle(ts.id, !!checked)}
+                              />
+                              <div className="flex-1 min-w-0">
+                                <div className="text-sm font-medium truncate">{ts.name}</div>
+                                <div className="text-xs text-muted-foreground">{formatDate(ts)}</div>
+                              </div>
+                              {cfg.loading && <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground shrink-0" />}
+                              {cfg.error && <span className="text-xs text-destructive shrink-0">{cfg.error}</span>}
+                              {cfg.bandCount > 0 && (
+                                <Badge variant="outline" className="text-[10px] px-1.5 py-0 shrink-0">
+                                  {cfg.bandCount}B
+                                </Badge>
+                              )}
+                            </label>
+
+                            {isSelected && cfg.bandCount > 0 && (
+                              <div className="px-3 pb-3 flex flex-wrap gap-1.5">
+                                {compat.map(idx => {
+                                  const active = cfg.selectedIndices.has(idx);
+                                  return (
+                                    <button
+                                      key={idx}
+                                      onClick={() => handleIndexToggle(ts.id, idx, !active)}
+                                      className={cn(
+                                        'text-[11px] font-medium px-2 py-0.5 rounded-full border transition-colors',
+                                        active
+                                          ? 'bg-primary text-primary-foreground border-primary'
+                                          : 'bg-background text-muted-foreground border-border hover:border-primary/50 hover:text-foreground'
+                                      )}
+                                    >
+                                      {VEGETATION_INDEX_CONFIG[idx].id.replace(/^(RGB_|MS_)/, '')}
+                                    </button>
+                                  );
+                                })}
+                                {cfg.selectedIndices.size === 0 && (
+                                  <span className="text-xs text-destructive">Select at least one index</span>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+
+                      {/* Non-COG tilesets — shown but disabled with explanation */}
+                      {tilesets.filter(ts => !isCogTileset(ts)).map(ts => (
+                        <div key={ts.id} className="rounded-lg border border-border/50 bg-muted/10 opacity-60">
+                          <div className="flex items-center gap-3 px-3 py-2.5">
+                            <Checkbox checked={false} disabled />
                             <div className="flex-1 min-w-0">
                               <div className="text-sm font-medium truncate">{ts.name}</div>
                               <div className="text-xs text-muted-foreground">{formatDate(ts)}</div>
                             </div>
-                            {cfg.loading && <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />}
-                            {cfg.error && (
-                              <span className="text-xs text-destructive">{cfg.error}</span>
-                            )}
-                            {cfg.bandCount > 0 && (
-                              <Badge variant="outline" className="text-[10px] px-1.5 py-0 shrink-0">
-                                {cfg.bandCount}B
-                              </Badge>
-                            )}
-                          </label>
-
-                          {/* Index pills — only shown when selected and band count known */}
-                          {isSelected && cfg.bandCount > 0 && (
-                            <div className="px-3 pb-3 flex flex-wrap gap-1.5">
-                              {compat.map(idx => {
-                                const active = cfg.selectedIndices.has(idx);
-                                return (
-                                  <button
-                                    key={idx}
-                                    onClick={() => handleIndexToggle(ts.id, idx, !active)}
-                                    className={cn(
-                                      'text-[11px] font-medium px-2 py-0.5 rounded-full border transition-colors',
-                                      active
-                                        ? 'bg-primary text-primary-foreground border-primary'
-                                        : 'bg-background text-muted-foreground border-border hover:border-primary/50 hover:text-foreground'
-                                    )}
-                                  >
-                                    {VEGETATION_INDEX_CONFIG[idx].id.replace(/^(RGB_|MS_)/, '')}
-                                  </button>
-                                );
-                              })}
-                              {cfg.selectedIndices.size === 0 && (
-                                <span className="text-xs text-destructive">Select at least one index</span>
-                              )}
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <Info className="w-3 h-3 text-muted-foreground" />
+                              <span className="text-[10px] text-muted-foreground">Tiles only — COG required</span>
                             </div>
-                          )}
+                          </div>
                         </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </section>
-            )}
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+            </section>
 
-            {/* ── Section 2: Metrics ── */}
+            {/* ── Section 3: Metrics ── */}
             <section>
               <button
-                className="flex items-center justify-between w-full text-left"
+                className="flex items-center justify-between w-full text-left mb-3"
                 onClick={() => setShowMetrics(v => !v)}
               >
                 <span className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
                   Metrics
                 </span>
-                {showMetrics ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground" /> : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />}
+                {showMetrics
+                  ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground" />
+                  : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />}
               </button>
 
               {showMetrics && (
-                <div className="mt-3 grid grid-cols-4 gap-x-4 gap-y-2">
+                <div className="grid grid-cols-4 gap-x-4 gap-y-2">
                   {ALL_METRICS.map(m => (
                     <label key={m} className="flex items-center gap-2 cursor-pointer">
                       <Checkbox
@@ -678,12 +729,12 @@ export const ZonalStatsPanel: React.FC<ZonalStatsPanelProps> = ({
               )}
             </section>
 
-            {/* ── Section 3: Export format ── */}
+            {/* ── Section 4: Export format ── */}
             <section>
               <span className="text-xs font-bold uppercase tracking-widest text-muted-foreground block mb-3">
                 Export Format
               </span>
-              <div className="flex gap-3">
+              <div className="flex gap-4">
                 {(['xlsx', 'csv'] as const).map(fmt => (
                   <label key={fmt} className="flex items-center gap-2 cursor-pointer">
                     <input
@@ -694,13 +745,15 @@ export const ZonalStatsPanel: React.FC<ZonalStatsPanelProps> = ({
                       onChange={() => setExportFormat(fmt)}
                       className="accent-primary"
                     />
-                    <span className="text-sm font-medium">{fmt === 'xlsx' ? 'Excel (.xlsx)' : 'CSV (.csv)'}</span>
+                    <span className="text-sm font-medium">
+                      {fmt === 'xlsx' ? 'Excel (.xlsx)' : 'CSV (.csv)'}
+                    </span>
                   </label>
                 ))}
               </div>
             </section>
 
-            {/* ── Run error ── */}
+            {/* ── Error ── */}
             {runError && (
               <div className="flex items-start gap-2 text-sm text-destructive bg-destructive/10 rounded-lg px-3 py-2.5">
                 <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
@@ -716,9 +769,7 @@ export const ZonalStatsPanel: React.FC<ZonalStatsPanelProps> = ({
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
                     {progress.currentLabel}
                   </span>
-                  <span className="font-medium tabular-nums">
-                    {progress.done} / {progress.total}
-                  </span>
+                  <span className="font-medium tabular-nums">{progress.done} / {progress.total}</span>
                 </div>
                 <div className="w-full h-1.5 rounded-full bg-muted overflow-hidden">
                   <div
@@ -741,17 +792,11 @@ export const ZonalStatsPanel: React.FC<ZonalStatsPanelProps> = ({
                       <tr className="bg-muted/50">
                         <th className="px-2 py-1.5 text-left font-semibold whitespace-nowrap">Plot ID</th>
                         <th className="px-2 py-1.5 text-left font-semibold whitespace-nowrap">Type</th>
-                        {Array.from(selectedLayerIds).flatMap(tsId => {
-                          const cfg = layerConfigs.get(tsId);
-                          if (!cfg) return [];
-                          return Array.from(cfg.selectedIndices).flatMap(idx =>
-                            Array.from(selectedMetrics).map(m => (
-                              <th key={`${tsId}_${idx}_${m}`} className="px-2 py-1.5 text-right font-semibold whitespace-nowrap">
-                                {VEGETATION_INDEX_CONFIG[idx].id.replace(/^(RGB_|MS_)/, '')}_{METRIC_LABELS[m].replace(' ', '')}
-                              </th>
-                            ))
-                          );
-                        })}
+                        {previewCols.map(c => (
+                          <th key={c.key} className="px-2 py-1.5 text-right font-semibold whitespace-nowrap">
+                            {VEGETATION_INDEX_CONFIG[c.idx].id.replace(/^(RGB_|MS_)/, '')}_{METRIC_LABELS[c.m].replace(' ', '')}
+                          </th>
+                        ))}
                       </tr>
                     </thead>
                     <tbody>
@@ -759,21 +804,11 @@ export const ZonalStatsPanel: React.FC<ZonalStatsPanelProps> = ({
                         <tr key={i} className={i % 2 === 0 ? 'bg-background' : 'bg-muted/20'}>
                           <td className="px-2 py-1 whitespace-nowrap font-mono">{row.plot_id as string}</td>
                           <td className="px-2 py-1 whitespace-nowrap text-muted-foreground">{row.annotation_type as string}</td>
-                          {Array.from(selectedLayerIds).flatMap(tsId => {
-                            const cfg = layerConfigs.get(tsId);
-                            if (!cfg) return [];
-                            return Array.from(cfg.selectedIndices).flatMap(idx =>
-                              Array.from(selectedMetrics).map(m => {
-                                const key = `${tsId}__${idx}__${m}`;
-                                const val = row[key];
-                                return (
-                                  <td key={key} className="px-2 py-1 text-right tabular-nums font-mono">
-                                    {val !== undefined ? String(val) : '—'}
-                                  </td>
-                                );
-                              })
-                            );
-                          })}
+                          {previewCols.map(c => (
+                            <td key={c.key} className="px-2 py-1 text-right tabular-nums font-mono">
+                              {row[c.key] !== undefined ? String(row[c.key]) : '—'}
+                            </td>
+                          ))}
                         </tr>
                       ))}
                     </tbody>
@@ -787,30 +822,26 @@ export const ZonalStatsPanel: React.FC<ZonalStatsPanelProps> = ({
               </section>
             )}
 
-            {/* Save success */}
+            {/* ── Save success ── */}
             {savedFileName && (
               <div className="flex items-center gap-2 text-sm text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-950/30 rounded-lg px-3 py-2.5">
                 <CheckCircle2 className="w-4 h-4 shrink-0" />
-                Saved to Reports: <span className="font-mono font-medium">{savedFileName}</span>
+                Saved to Reports: <span className="font-mono font-medium ml-1">{savedFileName}</span>
               </div>
             )}
+
           </div>
         </ScrollArea>
 
-        {/* Footer actions */}
+        {/* Footer */}
         <div className="px-5 py-3.5 border-t border-border flex items-center justify-between gap-3 shrink-0 bg-muted/20">
           <div className="text-xs text-muted-foreground">
-            {eligibleAnnotations.length} zone{eligibleAnnotations.length !== 1 ? 's' : ''} · {selectedLayerIds.size} layer{selectedLayerIds.size !== 1 ? 's' : ''} selected
+            {selectedAnnotations.length} zone{selectedAnnotations.length !== 1 ? 's' : ''} · {selectedLayerIds.size} layer{selectedLayerIds.size !== 1 ? 's' : ''} selected
           </div>
           <div className="flex items-center gap-2">
             {results && (
               <>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleDownload}
-                  className="gap-1.5"
-                >
+                <Button variant="outline" size="sm" onClick={handleDownload} className="gap-1.5">
                   <Download className="w-3.5 h-3.5" />
                   Download
                 </Button>
@@ -821,7 +852,9 @@ export const ZonalStatsPanel: React.FC<ZonalStatsPanelProps> = ({
                   disabled={saving}
                   className="gap-1.5"
                 >
-                  {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+                  {saving
+                    ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    : <CheckCircle2 className="w-3.5 h-3.5" />}
                   Save to Reports
                 </Button>
               </>
@@ -834,11 +867,11 @@ export const ZonalStatsPanel: React.FC<ZonalStatsPanelProps> = ({
             >
               {running
                 ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Running…</>
-                : <><Play className="w-3.5 h-3.5" /> Run</>
-              }
+                : <><Play className="w-3.5 h-3.5" /> Run</>}
             </Button>
           </div>
         </div>
+
       </div>
     </div>
   );

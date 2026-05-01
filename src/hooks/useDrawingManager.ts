@@ -23,6 +23,11 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
   // Internal state for drawing
   const drawingCoords = useRef<[number, number][]>([]);
 
+  // Rubber-band selection state
+  const rubberBandPixels = useRef<{ startX: number; startY: number; currentX: number; currentY: number } | null>(null);
+  const rubberBandJustFinished = useRef(false);
+  const [rubberBandRect, setRubberBandRect] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
+
   // Constants
   const DRAWING_SOURCE = 'drawing-source';
   const ANNOTATIONS_SOURCE = 'annotations-source';
@@ -518,10 +523,17 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
 
   }, [activeTool, map]);
 
-  // Keyboard listener for Delete
+  // Keyboard listener for Delete / Select-All
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement)?.tagName)) return;
+      if ((e.metaKey || e.ctrlKey) && e.key === 'a') {
+        if (activeTool === 'edit') {
+          e.preventDefault();
+          setSelectedAnnotationIds(new Set(annotationsRef.current.map(a => a.id)));
+        }
+        return;
+      }
       if (e.key === 'Escape') {
         if (activeTool === 'draw_line' || activeTool === 'select_area') {
           drawingCoords.current = [];
@@ -643,9 +655,18 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
           return;
         }
       }
+
+      // Empty canvas click — start rubber-band selection
+      if (annFeatures.length === 0) {
+        e.preventDefault();
+        map.dragPan.disable();
+        rubberBandPixels.current = { startX: e.point.x, startY: e.point.y, currentX: e.point.x, currentY: e.point.y };
+      }
     };
 
     const onClick = (e: mapboxgl.MapMouseEvent) => {
+      if (rubberBandJustFinished.current) return;
+
       if (dragState.current.isDragging) {
         // Only ignore click if we actually moved
         const start = dragState.current.startLngLat;
@@ -697,6 +718,20 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
     const onMouseMove = (e: mapboxgl.MapMouseEvent) => {
       if (activeTool === 'draw_line' || activeTool === 'select_area') {
         updateDrawingSource([e.lngLat.lng, e.lngLat.lat]);
+        return;
+      }
+
+      // Rubber-band selection drag
+      if (rubberBandPixels.current) {
+        rubberBandPixels.current.currentX = e.point.x;
+        rubberBandPixels.current.currentY = e.point.y;
+        const { startX, startY, currentX, currentY } = rubberBandPixels.current;
+        setRubberBandRect({
+          x: Math.min(startX, currentX),
+          y: Math.min(startY, currentY),
+          width: Math.abs(currentX - startX),
+          height: Math.abs(currentY - startY)
+        });
         return;
       }
 
@@ -819,6 +854,37 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
     };
 
     const onMouseUp = async (e: mapboxgl.MapMouseEvent) => {
+      // Complete rubber-band selection
+      if (rubberBandPixels.current) {
+        map.dragPan.enable();
+        const { startX, startY, currentX, currentY } = rubberBandPixels.current;
+        const width = Math.abs(currentX - startX);
+        const height = Math.abs(currentY - startY);
+
+        if (width > 5 || height > 5) {
+          const x = Math.min(startX, currentX);
+          const y = Math.min(startY, currentY);
+          const bbox: [mapboxgl.PointLike, mapboxgl.PointLike] = [[x, y], [x + width, y + height]];
+          const features = map.queryRenderedFeatures(bbox, { layers: ['annotations-fill', 'annotations-line', 'annotations-points'] });
+          const ids = new Set(features.map(f => f.properties?.id).filter(Boolean) as string[]);
+          const isAdditive = e.originalEvent.shiftKey || e.originalEvent.metaKey || e.originalEvent.ctrlKey;
+          setSelectedAnnotationIds(prev => {
+            if (isAdditive) {
+              const next = new Set(prev);
+              ids.forEach(id => next.add(id));
+              return next;
+            }
+            return ids;
+          });
+          rubberBandJustFinished.current = true;
+          setTimeout(() => { rubberBandJustFinished.current = false; }, 100);
+        }
+
+        rubberBandPixels.current = null;
+        setRubberBandRect(null);
+        return;
+      }
+
       if (dragState.current.isDragging) {
         cancelAnimationFrame(animFrameRef.current);
         map.dragPan.enable();
@@ -1173,6 +1239,7 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
     canDelete: selectedAnnotationIds.size > 0,
     contextMenu, setContextMenu, editingAnnotation, setEditingAnnotation,
     updateAnnotationProperties,
-    saveAsVectorLayers, isSavingVectorLayers
+    saveAsVectorLayers, isSavingVectorLayers,
+    rubberBandRect
   };
 }

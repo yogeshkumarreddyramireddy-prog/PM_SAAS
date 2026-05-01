@@ -1875,7 +1875,10 @@ const MapboxGolfCourseMap = ({
                 isSavingVectorLayers={drawing.isSavingVectorLayers}
                 onZonalStats={() => setShowZonalStats(true)}
                 isPixelInspectorActive={isPixelInspectorActive}
-                onTogglePixelInspector={() => setIsPixelInspectorActive(v => !v)}
+                onTogglePixelInspector={() => {
+                  if (!isPixelInspectorActive) drawing.setActiveTool(null);
+                  setIsPixelInspectorActive(v => !v);
+                }}
                 hasActiveCogLayer={!!analysisTileUrl && analysisModeMap === 'Multispectral'}
               />
             </div>

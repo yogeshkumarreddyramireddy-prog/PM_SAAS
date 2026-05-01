@@ -336,11 +336,11 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
     updateDrawingSource();
 
     if (activeTool === 'draw_point' || activeTool === 'draw_line' || activeTool === 'select_area') {
-      map.getCanvas().style.cursor = 'crosshair';
+      map.getCanvasContainer().style.cursor = 'crosshair';
     } else if (activeTool === 'edit') {
-      map.getCanvas().style.cursor = 'default';
+      map.getCanvasContainer().style.cursor = 'default';
     } else if (activeTool === 'draw_plots') {
-      map.getCanvas().style.cursor = 'crosshair';
+      map.getCanvasContainer().style.cursor = 'crosshair';
       if (!plotGrid) {
         const center = map.getCenter();
         const initialConfig: PlotGridConfig = {
@@ -353,7 +353,7 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
         renderPlotGrid(plotGrid);
       }
     } else {
-      map.getCanvas().style.cursor = '';
+      map.getCanvasContainer().style.cursor = '';
       setPlotGrid(null);
     }
   }, [activeTool, map]);
@@ -572,7 +572,7 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
         if (handleFeatures.length > 0) {
           e.preventDefault();
           map.dragPan.disable();
-          map.getCanvas().style.cursor = 'grabbing';
+          map.getCanvasContainer().style.cursor = 'grabbing';
           const type = handleFeatures[0].properties?.type;
           const index = handleFeatures[0].properties?.index;
           const edge = handleFeatures[0].properties?.edge;
@@ -603,7 +603,7 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
         if (rotHandles.length > 0) {
           e.preventDefault();
           map.dragPan.disable();
-          map.getCanvas().style.cursor = 'grabbing';
+          map.getCanvasContainer().style.cursor = 'grabbing';
           const allFC = turf.featureCollection(
             multiEditGeometries.current.map(g => turf.feature(g.geometry as any))
           );
@@ -627,7 +627,7 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
         if (clickedId && selIds.has(clickedId)) {
           e.preventDefault();
           map.dragPan.disable();
-          map.getCanvas().style.cursor = 'grabbing';
+          map.getCanvasContainer().style.cursor = 'grabbing';
 
           if (selIds.size === 1 && editGeometry.current) {
             dragState.current = {
@@ -842,13 +842,13 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
         if (handleFeatures.length > 0) {
           const htype = handleFeatures[0].properties?.type;
           const hedge = handleFeatures[0].properties?.edge;
-          if (htype === 'vertex') map.getCanvas().style.cursor = 'crosshair';
-          else if (htype === 'scale') map.getCanvas().style.cursor = (hedge === 'top' || hedge === 'bottom') ? 'ns-resize' : 'ew-resize';
-          else if (htype === 'rotate') map.getCanvas().style.cursor = 'alias';
+          if (htype === 'vertex') map.getCanvasContainer().style.cursor = 'crosshair';
+          else if (htype === 'scale') map.getCanvasContainer().style.cursor = (hedge === 'top' || hedge === 'bottom') ? 'ns-resize' : 'ew-resize';
+          else if (htype === 'rotate') map.getCanvasContainer().style.cursor = 'alias';
         } else {
           const bodyFeatures = map.queryRenderedFeatures(pt, { layers: ['annotations-fill', 'annotations-line', 'annotations-points'] });
           const isOnSelected = bodyFeatures.length > 0 && selectedAnnotationIdsRef.current.has(bodyFeatures[0].properties?.id);
-          map.getCanvas().style.cursor = isOnSelected ? 'move' : 'default';
+          map.getCanvasContainer().style.cursor = isOnSelected ? 'move' : 'default';
         }
       }
     };
@@ -888,7 +888,7 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
       if (dragState.current.isDragging) {
         cancelAnimationFrame(animFrameRef.current);
         map.dragPan.enable();
-        map.getCanvas().style.cursor = 'default';
+        map.getCanvasContainer().style.cursor = 'default';
 
         const start = dragState.current.startLngLat;
         const dist = start ? Math.hypot(e.lngLat.lng - start[0], e.lngLat.lat - start[1]) : 0;

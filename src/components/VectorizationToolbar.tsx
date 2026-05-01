@@ -53,6 +53,7 @@ export const VectorizationToolbar: React.FC<VectorizationToolbarProps> = ({
 }) => {
 
   const handleToolClick = (tool: DrawingTool) => {
+    if (isPixelInspectorActive) onTogglePixelInspector();
     if (activeTool === tool) {
       setActiveTool(null);
     } else {

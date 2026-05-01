@@ -88,12 +88,12 @@ export function PixelInspectorTooltip({
     map.on('movestart', handleMoveStart);
 
     // Show default arrow cursor while inspector is active (user clicks to pick a pixel)
-    map.getCanvas().style.cursor = 'default';
+    map.getCanvasContainer().style.cursor = 'default';
 
     return () => {
       map.off('click', handleClick);
       map.off('movestart', handleMoveStart);
-      map.getCanvas().style.cursor = '';
+      map.getCanvasContainer().style.cursor = '';
     };
   }, [map, isActive, handleClick, handleMoveStart]);
 

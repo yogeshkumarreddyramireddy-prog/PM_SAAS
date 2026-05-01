@@ -338,7 +338,7 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
     if (activeTool === 'draw_point' || activeTool === 'draw_line' || activeTool === 'select_area') {
       map.getCanvas().style.cursor = 'crosshair';
     } else if (activeTool === 'edit') {
-      map.getCanvas().style.cursor = 'pointer';
+      map.getCanvas().style.cursor = 'default';
     } else if (activeTool === 'draw_plots') {
       map.getCanvas().style.cursor = 'crosshair';
       if (!plotGrid) {
@@ -848,7 +848,7 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
         } else {
           const bodyFeatures = map.queryRenderedFeatures(pt, { layers: ['annotations-fill', 'annotations-line', 'annotations-points'] });
           const isOnSelected = bodyFeatures.length > 0 && selectedAnnotationIdsRef.current.has(bodyFeatures[0].properties?.id);
-          map.getCanvas().style.cursor = isOnSelected ? 'move' : '';
+          map.getCanvas().style.cursor = isOnSelected ? 'move' : 'default';
         }
       }
     };
@@ -888,7 +888,7 @@ export function useDrawingManager(map: mapboxgl.Map | null, golfCourseId: number
       if (dragState.current.isDragging) {
         cancelAnimationFrame(animFrameRef.current);
         map.dragPan.enable();
-        map.getCanvas().style.cursor = '';
+        map.getCanvas().style.cursor = 'default';
 
         const start = dragState.current.startLngLat;
         const dist = start ? Math.hypot(e.lngLat.lng - start[0], e.lngLat.lat - start[1]) : 0;

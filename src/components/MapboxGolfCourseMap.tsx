@@ -182,64 +182,70 @@ const MapboxGolfCourseMap = ({
     
     console.log('🔄 Syncing layer z-indices based on layerOrder:', layerOrder);
     
-    // Mapbox moveLayer without beforeId puts it at the TOP.
-    // Iterating in reverse ensures the first item in layerOrder is placed last (on top).
-    const reversedOrder = [...layerOrder].reverse();
-    
-    reversedOrder.forEach(layerId => {
-      const applyLayerState = (id: string, isVisible: boolean) => {
-        if (!map.current!.getLayer(id)) return;
-        try {
+    const applyLayerState = (id: string, isVisible: boolean, beforeId?: string) => {
+      if (!map.current!.getLayer(id)) return;
+      try {
+        if (beforeId && map.current!.getLayer(beforeId)) {
+          map.current!.moveLayer(id, beforeId);
+        } else {
           map.current!.moveLayer(id);
-          const currentVisibility = map.current!.getLayoutProperty(id, 'visibility') || 'visible';
-          const targetVisibility = isVisible ? 'visible' : 'none';
-          if (currentVisibility !== targetVisibility) {
-             map.current!.setLayoutProperty(id, 'visibility', targetVisibility);
-          }
-        } catch (e) {
-          console.warn(`Failed to move/show layer ${id}:`, e);
         }
-      };
+        const currentVisibility = map.current!.getLayoutProperty(id, 'visibility') || 'visible';
+        const targetVisibility = isVisible ? 'visible' : 'none';
+        if (currentVisibility !== targetVisibility) {
+          map.current!.setLayoutProperty(id, 'visibility', targetVisibility);
+        }
+      } catch (e) {
+        console.warn(`Failed to move/show layer ${id}:`, e);
+      }
+    };
+
+    // ── Pass 0: Pin raster tileset layers (RGB orthomosaic) just below the raster ceiling ──
+    // Forward iteration so layerOrder[0] (bottom) ends up lowest in the raster group.
+    // These stay below the COG/Deck.GL layers which are anchored above the ceiling via beforeId.
+    layerOrder.forEach(layerId => {
+      if (!layerId.startsWith('tileset-layer-')) return;
+      const rawId = layerId.replace('tileset-layer-', '');
+      if (isCogTilesetId(rawId)) return; // COG tilesets live in Deck.GL — no Mapbox layer
+      if (!map.current!.getLayer(layerId)) {
+        console.log(`⚠️ Layer ${layerId} in order list but NOT FOUND on map style.`);
+        return;
+      }
+      let shouldBeVisible = showRasterLayers && selectedLayers.includes(rawId);
+      if (swipeEnabled) shouldBeVisible = swipeLeftLayerId ? layerId === swipeLeftLayerId : false;
+      applyLayerState(layerId, shouldBeVisible, 'raster-tileset-ceiling');
+    });
+
+    // ── Pass 1: Reorder health maps and vector layers (reverse so layerOrder[0] = bottom) ──
+    // Mapbox moveLayer without beforeId puts the layer at the TOP of the current stack.
+    const reversedOrder = [...layerOrder].reverse();
+    reversedOrder.forEach(layerId => {
+      if (layerId.startsWith('tileset-layer-')) return; // handled in pass 0
 
       if (map.current!.getLayer(layerId)) {
-        // Force visibility state based on current selection
-        const isRaster = layerId.startsWith('tileset-layer-');
         const isHealth = layerId.startsWith('health-map-layer-');
         const isVector = layerId.startsWith('vector-layer-');
-        
-        const rawId = layerId.replace('tileset-layer-', '').replace('health-map-layer-', '').replace('vector-layer-', '');
-        
+        const rawId = layerId.replace('health-map-layer-', '').replace('vector-layer-', '');
+
         let shouldBeVisible = false;
-        if (isRaster) shouldBeVisible = showRasterLayers && selectedLayers.includes(rawId);
         if (isHealth) shouldBeVisible = showHealthMaps && selectedHealthMapIds.includes(rawId);
         if (isVector) shouldBeVisible = visibleVectorLayers.has(rawId);
-
-        // If Swipe Mode is enabled, the main map ONLY shows the leftLayerId!
-        if (swipeEnabled) {
-           shouldBeVisible = swipeLeftLayerId ? layerId === swipeLeftLayerId : false;
-        }
+        if (swipeEnabled) shouldBeVisible = swipeLeftLayerId ? layerId === swipeLeftLayerId : false;
 
         if (isVector) {
-          // Vector layer visibility is managed by syncVectorVisibility, not here
-          // Just move the non-label sub-layers; labels are hoisted in the second pass below.
+          // Visibility is managed by syncVectorVisibility; just maintain z-order here.
+          // Labels are hoisted in the second pass below.
           const layerIds = [layerId, `${layerId}-outline`, `${layerId}-line`, `${layerId}-point`];
           layerIds.forEach(id => {
             if (map.current!.getLayer(id)) {
               try { map.current!.moveLayer(id); } catch(e) {}
             }
           });
-        } else {
-          // Standard Raster or Health Map layers
+        } else if (isHealth) {
           applyLayerState(layerId, shouldBeVisible);
         }
-      } else if (layerId.startsWith('tileset-layer-')) {
-          // COG tilesets render in Deck.GL and have no Mapbox layer — silently skip
-          const tilesetId = layerId.replace('tileset-layer-', '');
-          if (!isCogTilesetId(tilesetId)) {
-            console.log(`⚠️ Layer ${layerId} in order list but NOT FOUND on map style.`);
-          }
       } else if (layerId.startsWith('health-map-layer-')) {
-          console.log(`⚠️ Layer ${layerId} in order list but NOT FOUND on map style.`);
+        console.log(`⚠️ Layer ${layerId} in order list but NOT FOUND on map style.`);
       }
     });
 
@@ -542,6 +548,27 @@ const MapboxGolfCourseMap = ({
             type: 'background',
             layout: { visibility: 'none' }
           }, firstLayerId);
+        }
+
+        // Sentinel 1: raster tileset layers (RGB orthomosaic) are anchored just below this.
+        // Keeps them above the basemap but below the COG/vegetation-index rendering.
+        if (!map.current!.getLayer('raster-tileset-ceiling')) {
+          map.current!.addLayer({
+            id: 'raster-tileset-ceiling',
+            type: 'background',
+            paint: { 'background-opacity': 0 }
+          });
+        }
+
+        // Sentinel 2: Deck.GL COG layers (NDVI, vegetation indices) are anchored just below
+        // this via beforeId:'cog-deck-insert-point'. Sits above raster-tileset-ceiling so
+        // vegetation index overlays render on top of the RGB orthomosaic.
+        if (!map.current!.getLayer('cog-deck-insert-point')) {
+          map.current!.addLayer({
+            id: 'cog-deck-insert-point',
+            type: 'background',
+            paint: { 'background-opacity': 0 }
+          });
         }
         
         console.log('onMapReady callback:', !!onMapReady, 'map.current:', !!map.current);

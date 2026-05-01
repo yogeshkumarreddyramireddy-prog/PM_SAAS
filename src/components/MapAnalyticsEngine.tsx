@@ -326,6 +326,7 @@ export function MapAnalyticsEngine({
       layers = [
         new TileLayer({
           id: `deck-analysis-rgb-${shaderKey}`,
+          beforeId: 'cog-deck-insert-point',
           data: tileUrl,
           minZoom: 0,
           maxZoom: 22,
@@ -356,6 +357,7 @@ export function MapAnalyticsEngine({
       layers = [
         new VegetationIndexLayer({
           id: `deck-analysis-cog-${shaderKey}`,
+          beforeId: 'cog-deck-insert-point',
           image: imageData,
           bounds: [bounds[0], bounds[1], bounds[2], bounds[3]] as [number, number, number, number],
           shaderMath: config.shaderMath,

@@ -155,6 +155,12 @@ export class COGLoader {
     await this.init();
     if (!this.tiff || !this.image) return null;
 
+    const bounds = this.getBoundsWGS84();
+    if (!bounds) {
+      console.error('[COGLoader] Cannot compute WGS84 bounds');
+      return null;
+    }
+
     try {
       // ── Find the best overview ──────────────────────────────────────────
       // COGs store the full-res image as IFD 0, then progressively smaller
@@ -224,56 +230,170 @@ export class COGLoader {
       console.log(`[COGLoader] RGBA packed: ${rgba.length} bytes (${bestW}×${bestH}×4)`);
 
       const imageData = new ImageData(rgba, bestW, bestH);
-
-      // Compute bounds from the OVERVIEW's own geotransform, NOT IFD 0's.
-      // Each COG overview has its own ModelTiepoint/ModelPixelScale tags. When
-      // the overview's pixel dimensions don't evenly divide IFD 0's, the
-      // overview covers a slightly different native extent than IFD 0. Placing
-      // overview pixels inside IFD-0 bounds shifts the displayed image by up
-      // to half an overview pixel — at high GSD with deep decimation this can
-      // be ~30 cm, which makes the inspector look "wrong" at sand/vegetation
-      // borders even though the per-pixel lookup is actually correct.
-      const ovOrigin = bestImage.getOrigin();
-      const ovRes    = bestImage.getResolution();
-      const ovX0 = ovOrigin[0];
-      const ovY0 = ovOrigin[1];
-      const ovX1 = ovX0 + ovRes[0] * bestW;
-      const ovY1 = ovY0 + ovRes[1] * bestH;
-      const ovMinX = Math.min(ovX0, ovX1);
-      const ovMaxX = Math.max(ovX0, ovX1);
-      const ovMinY = Math.min(ovY0, ovY1);
-      const ovMaxY = Math.max(ovY0, ovY1);
-
-      let bounds: [number, number, number, number];
-      if (this.project && this.epsgCode) {
-        const sourceDef = `EPSG:${this.epsgCode}`;
-        const sw = proj4(sourceDef, 'WGS84', [ovMinX, ovMinY]);
-        const ne = proj4(sourceDef, 'WGS84', [ovMaxX, ovMaxY]);
-        if (isNaN(sw[0]) || isNaN(sw[1]) || isNaN(ne[0]) || isNaN(ne[1])) {
-          console.error('[COGLoader] Overview bounds reprojection produced NaN');
-          return null;
-        }
-        bounds = [sw[0], sw[1], ne[0], ne[1]];
-      } else {
-        bounds = [ovMinX, ovMinY, ovMaxX, ovMaxY];
-      }
-
-      // Compare against IFD-0 bounds so the offset is visible in the log.
-      const ifd0Bounds = this.getBoundsWGS84();
-      if (ifd0Bounds) {
-        const dW = (bounds[0] - ifd0Bounds[0]) * 111320 * Math.cos(bounds[1] * Math.PI / 180);
-        const dS = (bounds[1] - ifd0Bounds[1]) * 111320;
-        const dE = (bounds[2] - ifd0Bounds[2]) * 111320 * Math.cos(bounds[1] * Math.PI / 180);
-        const dN = (bounds[3] - ifd0Bounds[3]) * 111320;
-        console.log(`[COGLoader] Overview vs IFD0 bounds Δ (m): W=${dW.toFixed(3)} S=${dS.toFixed(3)} E=${dE.toFixed(3)} N=${dN.toFixed(3)}`);
-      }
-      console.log(`[COGLoader] ✅ Full image ready: ${bestW}×${bestH}, bounds (from IFD ${bestIdx})=[${bounds.map(b => b.toFixed(6)).join(', ')}]`);
+      console.log(`[COGLoader] ✅ Full image ready: ${bestW}×${bestH}, bounds=[${bounds.map(b => b.toFixed(6)).join(', ')}]`);
 
       return { imageData, bounds };
     } catch (err) {
       console.error('[COGLoader] ❌ getFullImage error:', err);
       return null;
     }
+  }
+
+  // ─── getWindowImage ────────────────────────────────────────────────────────
+  /**
+   * Viewport-driven read: fetches only the pixels covering the given WGS84
+   * bbox, picking the highest-resolution COG overview whose windowed read
+   * stays within targetMaxDim on its longest edge.
+   *
+   * Returns RGBA-packed pixel data + WGS84 bounds matching the *actual*
+   * native pixels read (snapped to the chosen IFD's pixel boundaries).
+   *
+   * Behaviour:
+   *  • At low zoom (whole farm visible) → picks a small overview, ~1 fetch
+   *  • At high zoom (close inspection)   → picks IFD 0 windowed to the area
+   *  • Always close to "1 source pixel ≈ 1 screen pixel" → no GPU upscaling
+   */
+  async getWindowImage(
+    bboxWGS84: [number, number, number, number],
+    targetMaxDim: number
+  ): Promise<{ imageData: ImageData; bounds: [number, number, number, number] } | null> {
+    await this.init();
+    if (!this.tiff || !this.image) return null;
+
+    const [west, south, east, north] = bboxWGS84;
+
+    // Project viewport corners to native CRS (sample 4 corners since the
+    // bbox edges aren't straight lines in projected space).
+    let nMinX: number, nMaxX: number, nMinY: number, nMaxY: number;
+    if (this.project) {
+      const sw = this.project(west, south);
+      const ne = this.project(east, north);
+      const nw = this.project(west, north);
+      const se = this.project(east, south);
+      nMinX = Math.min(sw[0], ne[0], nw[0], se[0]);
+      nMaxX = Math.max(sw[0], ne[0], nw[0], se[0]);
+      nMinY = Math.min(sw[1], ne[1], nw[1], se[1]);
+      nMaxY = Math.max(sw[1], ne[1], nw[1], se[1]);
+    } else {
+      nMinX = west; nMaxX = east; nMinY = south; nMaxY = north;
+    }
+
+    // COG full extent in native (pixelHeight is negative for top-down rasters)
+    const cogX0 = this.originX;
+    const cogX1 = this.originX + this.pixelWidth  * this.imgWidth;
+    const cogY0 = this.originY;
+    const cogY1 = this.originY + this.pixelHeight * this.imgHeight;
+    const cogMinX = Math.min(cogX0, cogX1);
+    const cogMaxX = Math.max(cogX0, cogX1);
+    const cogMinY = Math.min(cogY0, cogY1);
+    const cogMaxY = Math.max(cogY0, cogY1);
+
+    // Clip viewport to COG extent
+    const clipMinX = Math.max(nMinX, cogMinX);
+    const clipMaxX = Math.min(nMaxX, cogMaxX);
+    const clipMinY = Math.max(nMinY, cogMinY);
+    const clipMaxY = Math.min(nMaxY, cogMaxY);
+    if (clipMaxX <= clipMinX || clipMaxY <= clipMinY) return null;
+
+    // Walk IFDs from highest res to lowest, pick the first whose windowed
+    // dimensions fit within targetMaxDim.
+    const imageCount = await this.tiff.getImageCount();
+    let chosenImg = this.image;
+    let chosenIdx = 0;
+    let chosenW = this.imgWidth;
+    let chosenH = this.imgHeight;
+    let chosenFits = false;
+
+    for (let i = 0; i < imageCount; i++) {
+      const img = await this.tiff.getImage(i);
+      const w = img.getWidth();
+      const h = img.getHeight();
+      const pxW = (cogMaxX - cogMinX) / w;
+      const pxH = (cogMaxY - cogMinY) / h;
+      const winW = (clipMaxX - clipMinX) / pxW;
+      const winH = (clipMaxY - clipMinY) / pxH;
+      if (Math.max(winW, winH) <= targetMaxDim) {
+        chosenImg = img;
+        chosenIdx = i;
+        chosenW = w;
+        chosenH = h;
+        chosenFits = true;
+        break;
+      }
+    }
+
+    // If even the smallest overview is larger than budget (unusual — would
+    // mean the user is viewing a huge area), fall back to the smallest IFD.
+    if (!chosenFits && imageCount > 1) {
+      const smallest = await this.tiff.getImage(imageCount - 1);
+      chosenImg = smallest;
+      chosenIdx = imageCount - 1;
+      chosenW = smallest.getWidth();
+      chosenH = smallest.getHeight();
+    }
+
+    // Pixel grid math in the chosen IFD. Every IFD shares (cogX0, cogY0) as
+    // its top-left corner; only the pixel size scales.
+    const ifdPxWidthSigned  = (cogX1 - cogX0) / chosenW;
+    const ifdPxHeightSigned = (cogY1 - cogY0) / chosenH;
+    const absIfdPxH = Math.abs(ifdPxHeightSigned);
+
+    const colMinF = (clipMinX - cogX0) / ifdPxWidthSigned;
+    const colMaxF = (clipMaxX - cogX0) / ifdPxWidthSigned;
+    const rowMinF = (cogY0 - clipMaxY) / absIfdPxH;
+    const rowMaxF = (cogY0 - clipMinY) / absIfdPxH;
+
+    const colMin = Math.max(0, Math.floor(colMinF));
+    const colMax = Math.min(chosenW, Math.ceil(colMaxF));
+    const rowMin = Math.max(0, Math.floor(rowMinF));
+    const rowMax = Math.min(chosenH, Math.ceil(rowMaxF));
+    if (colMax <= colMin || rowMax <= rowMin) return null;
+
+    const winW = colMax - colMin;
+    const winH = rowMax - rowMin;
+
+    let rasters: any;
+    try {
+      rasters = await chosenImg.readRasters({
+        window: [colMin, rowMin, colMax, rowMax],
+        interleave: false,
+      });
+    } catch (err) {
+      console.error('[COGLoader] getWindowImage readRasters error:', err);
+      return null;
+    }
+
+    const bandsArr = Array.isArray(rasters) ? rasters : [rasters];
+    const isFloat32 = bandsArr[0] instanceof Float32Array || bandsArr[0] instanceof Float64Array;
+    const bps = chosenImg.getBitsPerSample();
+    const bps0 = Array.isArray(bps) ? bps[0] : bps;
+    const is16Bit = !isFloat32 && bps0 === 16;
+
+    const rgba = this.rastersToRGBAStatic(rasters, winW, winH, isFloat32, is16Bit);
+    const imageData = new ImageData(rgba, winW, winH);
+
+    // Bounds of the snapped native window (slightly larger than the request)
+    const winNX0 = cogX0 + colMin * ifdPxWidthSigned;
+    const winNX1 = cogX0 + colMax * ifdPxWidthSigned;
+    const winNY0 = cogY0 + rowMin * ifdPxHeightSigned;
+    const winNY1 = cogY0 + rowMax * ifdPxHeightSigned;
+    const winMinX = Math.min(winNX0, winNX1);
+    const winMaxX = Math.max(winNX0, winNX1);
+    const winMinY = Math.min(winNY0, winNY1);
+    const winMaxY = Math.max(winNY0, winNY1);
+
+    let bounds: [number, number, number, number];
+    if (this.project && this.epsgCode) {
+      const sourceDef = `EPSG:${this.epsgCode}`;
+      const sw = proj4(sourceDef, 'WGS84', [winMinX, winMinY]);
+      const ne = proj4(sourceDef, 'WGS84', [winMaxX, winMaxY]);
+      if (isNaN(sw[0]) || isNaN(ne[0])) return null;
+      bounds = [sw[0], sw[1], ne[0], ne[1]];
+    } else {
+      bounds = [winMinX, winMinY, winMaxX, winMaxY];
+    }
+
+    return { imageData, bounds };
   }
 
   // ─── RGBA packing (static — works with any image, not just this.image) ────
@@ -327,11 +447,6 @@ export class COGLoader {
       scale = 1;
     }
 
-    // Log first pixel for debugging
-    if (size > 0) {
-      console.log(`[COGLoader] Pixel[0] raw: band0=${r[0]}, band1=${g?.[0]}, band2=${bPacked?.[0]}, band3=${aPacked?.[0]}, scale=${scale}, isFloat32=${isFloat32}`);
-    }
-
     for (let i = 0; i < size; i++) {
       const rv = (r[i]         ?? 0) * scale;
       const gv = (g[i]         ?? 0) * scale;
@@ -347,11 +462,6 @@ export class COGLoader {
       // The VegetationIndexLayer custom shader handles nodata pixels by checking
       // if all spectral channels sum to zero, so we do NOT need to force alpha=255 here.
       // Doing so would permanently destroy the RedEdge data stored in the Alpha channel!
-    }
-
-    // Log first pixel RGBA for debugging
-    if (size > 0) {
-      console.log(`[COGLoader] Pixel[0] RGBA: R=${rgba[0]}, G=${rgba[1]}, B=${rgba[2]}, A=${rgba[3]}`);
     }
 
     return rgba;

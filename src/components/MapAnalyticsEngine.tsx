@@ -158,9 +158,19 @@ export function MapAnalyticsEngine({
 }: MapAnalyticsEngineProps) {
   const [overlay, setOverlay] = useState<MapboxOverlay | null>(null);
 
-  // Track if we've loaded COG image data for the current URL
+  // Track if we've loaded COG image data for the current URL.
+  // cogImageData is a low-res whole-image snapshot used for the histogram and
+  // as a fallback render while the windowed view is loading.
+  // windowImage is a viewport-driven, high-resolution view that supersedes
+  // cogImageData for layer rendering whenever the user is settled on a view.
   const [cogImageData, setCogImageData] = useState<CachedCOGImage | null>(null);
+  const [windowImage, setWindowImage] = useState<CachedCOGImage | null>(null);
+  const [isWindowLoading, setIsWindowLoading] = useState(false);
   const loadingRef = useRef<string | null>(null);
+  const windowReqIdRef = useRef(0);
+  const windowDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Ref mirrors windowImage so the fetch callback can read current value without stale closure
+  const windowImageRef = useRef<CachedCOGImage | null>(null);
 
   // Get active shader config
   const config = useMemo(() => VEGETATION_INDEX_CONFIG[selectedIndex], [selectedIndex]);
@@ -278,7 +288,11 @@ export function MapAnalyticsEngine({
           cogLoaders[tileUrl] = new COGLoader(tileUrl);
         }
         console.log('[MapAnalyticsEngine] Loading full COG image...');
-        const result = await cogLoaders[tileUrl].getFullImage(2048);
+        // Lower-resolution full image — used only for histogram stats and as
+        // a fallback render while the viewport-windowed image is loading.
+        // The actual on-screen layer uses getWindowImage() at much higher
+        // resolution, scoped to the visible area.
+        const result = await cogLoaders[tileUrl].getFullImage(1024);
         console.log('[MapAnalyticsEngine] getFullImage returned:', result ? `${result.imageData.width}×${result.imageData.height}` : 'null');
         if (result) {
           console.log('[MapAnalyticsEngine] ✅ Setting COG image data, bounds:', result.bounds);
@@ -296,6 +310,67 @@ export function MapAnalyticsEngine({
 
     loadFullImage();
   }, [mode, tileUrl, isEnabled]);
+
+  // ─── Viewport-driven high-res window loader ───────────────────────────────
+  // After the loader is initialised (cogImageData != null implies init() ran
+  // and cogLoaders[tileUrl] exists), subscribe to map idle events and refetch
+  // a sharp window covering the visible viewport whenever the user stops
+  // panning/zooming. Debounced so a continuous drag only triggers one fetch.
+  useEffect(() => {
+    if (!map || !isEnabled || mode !== 'Multispectral' || !tileUrl || !cogImageData) {
+      setWindowImage(null);
+      return;
+    }
+    const loader = cogLoaders[tileUrl];
+    if (!loader) return;
+
+    const fetchWindow = () => {
+      if (windowDebounceRef.current) clearTimeout(windowDebounceRef.current);
+      windowDebounceRef.current = setTimeout(async () => {
+        const mb = map.getBounds();
+        if (!mb) return;
+        const bbox: [number, number, number, number] = [
+          mb.getWest(), mb.getSouth(), mb.getEast(), mb.getNorth(),
+        ];
+
+        // Skip the network round-trip if the existing window already covers the viewport.
+        // This fires on every moveend/zoomend but most zooms-in don't need a new fetch.
+        const cur = windowImageRef.current;
+        if (cur) {
+          const [ww, ws, we, wn] = cur.bounds;
+          if (bbox[0] >= ww && bbox[1] >= ws && bbox[2] <= we && bbox[3] <= wn) return;
+        }
+
+        const canvas = map.getCanvas();
+        const targetDim = Math.min(4096, Math.max(canvas.width, canvas.height) * 1.25);
+
+        const reqId = ++windowReqIdRef.current;
+        setIsWindowLoading(true);
+        try {
+          const result = await loader.getWindowImage(bbox, targetDim);
+          if (reqId !== windowReqIdRef.current) return;
+          if (result) {
+            windowImageRef.current = result;
+            setWindowImage(result);
+          }
+        } catch (e) {
+          console.error('[MapAnalyticsEngine] getWindowImage failed:', e);
+        } finally {
+          if (reqId === windowReqIdRef.current) setIsWindowLoading(false);
+        }
+      }, 80);
+    };
+
+    fetchWindow();
+    map.on('moveend', fetchWindow);
+    map.on('zoomend', fetchWindow);
+    return () => {
+      map.off('moveend', fetchWindow);
+      map.off('zoomend', fetchWindow);
+      if (windowDebounceRef.current) clearTimeout(windowDebounceRef.current);
+      windowReqIdRef.current++; // invalidate any in-flight request
+    };
+  }, [map, isEnabled, mode, tileUrl, cogImageData]);
 
   // ─── Overlay initialization ─────────────────────────────────────────────────
   useEffect(() => {
@@ -348,33 +423,56 @@ export function MapAnalyticsEngine({
         })
       ];
     } else if (mode === 'Multispectral' && cogImageData) {
-      // Multispectral COG — render the whole image as a single BitmapLayer
-      // The VegetationIndexLayer extends BitmapLayer and applies the index shader.
-      // bounds: [west, south, east, north] in WGS84
-      const { imageData, bounds } = cogImageData;
-      console.log(`[MapAnalyticsEngine] Rendering COG BitmapLayer. bounds=${JSON.stringify(bounds)} size=${imageData.width}×${imageData.height}`);
+      // Two-layer strategy for smooth panning:
+      //   1. Base layer  — low-res full image (cogImageData). Always covers the full COG
+      //      extent so the user never sees bare map when panning into an unfetched area.
+      //   2. Window layer — high-res viewport-scoped image (windowImage). Renders on top
+      //      of the base and sharpens whatever is currently on-screen.
+      // When the window layer is loading, the base layer stays visible — no gray flashes.
+      const sharedLayerProps = {
+        shaderMath: config.shaderMath,
+        range: range,
+        bandMapping: bandMapping,
+        opacity: 1,
+        pickable: false,
+        // NEAREST texture filtering: keeps source pixels crisp instead of GPU-blurring
+        // across boundaries, which would cause the pixel inspector to appear "offset".
+        textureParameters: {
+          minFilter: 'nearest' as const,
+          magFilter: 'nearest' as const,
+          mipmapFilter: 'nearest' as const,
+        },
+      };
 
       layers = [
+        // Base: low-res full extent — instant coverage everywhere
         new VegetationIndexLayer({
-          id: `deck-analysis-cog-${shaderKey}`,
+          ...sharedLayerProps,
+          id: `deck-cog-base-${shaderKey}`,
           beforeId: 'cog-deck-insert-point',
-          image: imageData,
-          bounds: [bounds[0], bounds[1], bounds[2], bounds[3]] as [number, number, number, number],
-          shaderMath: config.shaderMath,
-          range: range,
-          bandMapping: bandMapping,
-          opacity: 1,
-          pickable: false,
-        })
+          image: cogImageData.imageData,
+          bounds: [cogImageData.bounds[0], cogImageData.bounds[1], cogImageData.bounds[2], cogImageData.bounds[3]] as [number, number, number, number],
+        }),
       ];
+
+      // Window: high-res scoped to visible viewport — renders on top of base
+      if (windowImage) {
+        layers.push(new VegetationIndexLayer({
+          ...sharedLayerProps,
+          id: `deck-cog-window-${shaderKey}`,
+          beforeId: 'cog-deck-insert-point',
+          image: windowImage.imageData,
+          bounds: [windowImage.bounds[0], windowImage.bounds[1], windowImage.bounds[2], windowImage.bounds[3]] as [number, number, number, number],
+        }));
+      }
     } else if (mode === 'Multispectral' && !cogImageData) {
-      // Still loading — keep existing layers to avoid flicker
+      // Still loading initial overview — keep existing layers to avoid flicker
       return;
     }
 
     overlay.setProps({ layers });
 
-  }, [map, isEnabled, mode, tileUrl, selectedIndex, range, bandMapping, overlay, config, cogImageData]);
+  }, [map, isEnabled, mode, tileUrl, selectedIndex, range, bandMapping, overlay, config, cogImageData, windowImage]);
 
   // ─── Auto-Fly Logic ────────────────────────────────────────────────────────
   // When COG image is loaded, fly the map to its bounds.
@@ -390,7 +488,7 @@ export function MapAnalyticsEngine({
       try {
         map.fitBounds(
           [[bounds[0], bounds[1]], [bounds[2], bounds[3]]],
-          { padding: 80, duration: 2000, maxZoom: 21 }
+          { padding: 0, duration: 2000, maxZoom: 21 }
         );
         setHasFlownTo(tileUrl);
       } catch (e) {
@@ -401,11 +499,17 @@ export function MapAnalyticsEngine({
     }
   }, [mode, tileUrl, map, hasFlownTo, cogImageData]);
 
+  // Keep ref in sync with state so fetch callbacks see the latest value
+  useEffect(() => { windowImageRef.current = windowImage; }, [windowImage]);
+
   // Reset fly-to state when layer is deselected
   useEffect(() => {
     if (mode === 'None') {
       setHasFlownTo(null);
       setCogImageData(null);
+      windowImageRef.current = null;
+      setWindowImage(null);
+      setIsWindowLoading(false);
     }
   }, [mode]);
 
@@ -418,5 +522,14 @@ export function MapAnalyticsEngine({
     };
   }, [overlay, map]);
 
-  return null;
+  const showBadge = isWindowLoading && mode === 'Multispectral' && isEnabled;
+
+  return showBadge ? (
+    <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[9998] pointer-events-none">
+      <div className="flex items-center gap-2 bg-background/90 backdrop-blur border border-border rounded-full px-4 py-2 shadow-lg text-xs font-medium text-foreground">
+        <span className="size-2 rounded-full bg-primary animate-pulse shrink-0" />
+        Calculating…
+      </div>
+    </div>
+  ) : null;
 }

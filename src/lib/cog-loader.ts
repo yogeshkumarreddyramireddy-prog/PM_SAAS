@@ -155,12 +155,6 @@ export class COGLoader {
     await this.init();
     if (!this.tiff || !this.image) return null;
 
-    const bounds = this.getBoundsWGS84();
-    if (!bounds) {
-      console.error('[COGLoader] Cannot compute WGS84 bounds');
-      return null;
-    }
-
     try {
       // ── Find the best overview ──────────────────────────────────────────
       // COGs store the full-res image as IFD 0, then progressively smaller
@@ -230,7 +224,50 @@ export class COGLoader {
       console.log(`[COGLoader] RGBA packed: ${rgba.length} bytes (${bestW}×${bestH}×4)`);
 
       const imageData = new ImageData(rgba, bestW, bestH);
-      console.log(`[COGLoader] ✅ Full image ready: ${bestW}×${bestH}, bounds=[${bounds.map(b => b.toFixed(6)).join(', ')}]`);
+
+      // Compute bounds from the OVERVIEW's own geotransform, NOT IFD 0's.
+      // Each COG overview has its own ModelTiepoint/ModelPixelScale tags. When
+      // the overview's pixel dimensions don't evenly divide IFD 0's, the
+      // overview covers a slightly different native extent than IFD 0. Placing
+      // overview pixels inside IFD-0 bounds shifts the displayed image by up
+      // to half an overview pixel — at high GSD with deep decimation this can
+      // be ~30 cm, which makes the inspector look "wrong" at sand/vegetation
+      // borders even though the per-pixel lookup is actually correct.
+      const ovOrigin = bestImage.getOrigin();
+      const ovRes    = bestImage.getResolution();
+      const ovX0 = ovOrigin[0];
+      const ovY0 = ovOrigin[1];
+      const ovX1 = ovX0 + ovRes[0] * bestW;
+      const ovY1 = ovY0 + ovRes[1] * bestH;
+      const ovMinX = Math.min(ovX0, ovX1);
+      const ovMaxX = Math.max(ovX0, ovX1);
+      const ovMinY = Math.min(ovY0, ovY1);
+      const ovMaxY = Math.max(ovY0, ovY1);
+
+      let bounds: [number, number, number, number];
+      if (this.project && this.epsgCode) {
+        const sourceDef = `EPSG:${this.epsgCode}`;
+        const sw = proj4(sourceDef, 'WGS84', [ovMinX, ovMinY]);
+        const ne = proj4(sourceDef, 'WGS84', [ovMaxX, ovMaxY]);
+        if (isNaN(sw[0]) || isNaN(sw[1]) || isNaN(ne[0]) || isNaN(ne[1])) {
+          console.error('[COGLoader] Overview bounds reprojection produced NaN');
+          return null;
+        }
+        bounds = [sw[0], sw[1], ne[0], ne[1]];
+      } else {
+        bounds = [ovMinX, ovMinY, ovMaxX, ovMaxY];
+      }
+
+      // Compare against IFD-0 bounds so the offset is visible in the log.
+      const ifd0Bounds = this.getBoundsWGS84();
+      if (ifd0Bounds) {
+        const dW = (bounds[0] - ifd0Bounds[0]) * 111320 * Math.cos(bounds[1] * Math.PI / 180);
+        const dS = (bounds[1] - ifd0Bounds[1]) * 111320;
+        const dE = (bounds[2] - ifd0Bounds[2]) * 111320 * Math.cos(bounds[1] * Math.PI / 180);
+        const dN = (bounds[3] - ifd0Bounds[3]) * 111320;
+        console.log(`[COGLoader] Overview vs IFD0 bounds Δ (m): W=${dW.toFixed(3)} S=${dS.toFixed(3)} E=${dE.toFixed(3)} N=${dN.toFixed(3)}`);
+      }
+      console.log(`[COGLoader] ✅ Full image ready: ${bestW}×${bestH}, bounds (from IFD ${bestIdx})=[${bounds.map(b => b.toFixed(6)).join(', ')}]`);
 
       return { imageData, bounds };
     } catch (err) {

@@ -2,6 +2,23 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Override Mapbox GL cursor for annotation drawing tools */
+[data-active-tool="draw_point"] .mapboxgl-canvas-container,
+[data-active-tool="draw_point"] .mapboxgl-canvas-container * ,
+[data-active-tool="draw_line"] .mapboxgl-canvas-container,
+[data-active-tool="draw_line"] .mapboxgl-canvas-container *,
+[data-active-tool="select_area"] .mapboxgl-canvas-container,
+[data-active-tool="select_area"] .mapboxgl-canvas-container *,
+[data-active-tool="draw_plots"] .mapboxgl-canvas-container,
+[data-active-tool="draw_plots"] .mapboxgl-canvas-container * {
+  cursor: crosshair !important;
+}
+
+[data-active-tool="inspect"] .mapboxgl-canvas-container,
+[data-active-tool="inspect"] .mapboxgl-canvas-container * {
+  cursor: default !important;
+}
+
 /* PMV Platform Design System - Teal gradient professional theme
 All colors MUST be HSL.
 */

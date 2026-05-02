@@ -451,8 +451,31 @@ export class COGLoader {
     }
 
     const absPixelH = Math.abs(this.pixelHeight);
-    const col = Math.floor((nx - this.originX) / this.pixelWidth);
-    const row = Math.floor((this.originY - ny) / absPixelH);
+
+    // GeoTIFF pixel convention: pixel-is-area (default) → origin is the top-left
+    // CORNER of pixel (0,0); pixel-is-point → origin is the CENTER of pixel (0,0).
+    // Without adjusting for the latter, every lookup is offset by half a pixel,
+    // which causes edge clicks to resolve to the neighboring pixel (the
+    // "sand at the edge reads as vegetation" symptom).
+    const pixelIsArea = typeof (this.image as any).pixelIsArea === 'function'
+      ? (this.image as any).pixelIsArea()
+      : true;
+
+    let colF = (nx - this.originX) / this.pixelWidth;
+    let rowF = (this.originY - ny) / absPixelH;
+    if (!pixelIsArea) {
+      colF += 0.5;
+      rowF += 0.5;
+    }
+
+    const col = Math.floor(colF);
+    const row = Math.floor(rowF);
+
+    console.log(
+      `[COGLoader.getPixelAt] lng=${lon.toFixed(6)} lat=${lat.toFixed(6)} → ` +
+      `native=(${nx.toFixed(2)}, ${ny.toFixed(2)}) → pixel=(${col}, ${row}) ` +
+      `[pixelIsArea=${pixelIsArea}, fractional=(${colF.toFixed(3)}, ${rowF.toFixed(3)})]`
+    );
 
     if (col < 0 || col >= this.imgWidth || row < 0 || row >= this.imgHeight) return null;
 

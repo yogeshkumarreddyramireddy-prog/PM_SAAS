@@ -988,30 +988,30 @@ const MapboxGolfCourseMap = ({
       }
     });
 
-    // Sync drawing-manager annotation layers.
-    // When a vector layer is toggled off, filter annotations whose `published_layer_name`
-    // matches that layer's name out of the live drawing layers.
-    // We match by name (not layer_type) because the edge function stores all annotation
-    // vector layers with layer_type = 'geojson'.
-    const hiddenLayerNames: string[] = vectorLayers
-      .filter(l => !visibleVectorLayers.has(l.id))
+    // Sync drawing-manager annotation layers (allowlist approach).
+    // A published annotation is shown ONLY if its `published_layer_name` matches a
+    // currently-visible vector layer. Annotations without `published_layer_name`
+    // are true drafts (in-progress drawings) and always render.
+    //
+    // Allowlist (not denylist) is critical: on initial load `vectorLayers` may be
+    // [] before Supabase responds. With a denylist, an empty hidden-list meant
+    // *no filter*, leaking every published annotation onto the map until the user
+    // clicked something. With an allowlist, an empty visible-list correctly hides
+    // all published annotations.
+    const visibleLayerNames: string[] = vectorLayers
+      .filter(l => visibleVectorLayers.has(l.id))
       .map(l => l.name);
 
     const m = map.current!;
 
-    // Build a filter clause: show annotation if it has no published_layer_name (draft)
-    // OR its published_layer_name is NOT in the hidden-layer-names list.
-    const notHiddenClause = hiddenLayerNames.length > 0
-      ? ['any',
-          ['!', ['has', 'published_layer_name']],
-          ['==', ['get', 'published_layer_name'], null],
-          ['==', ['get', 'published_layer_name'], ''],
-          ['!', ['in', ['get', 'published_layer_name'], ['literal', hiddenLayerNames]]]
-        ]
-      : null;
+    const allowClause: any[] = ['any',
+      ['!', ['has', 'published_layer_name']],
+      ['==', ['get', 'published_layer_name'], ''],
+      ['in', ['get', 'published_layer_name'], ['literal', visibleLayerNames]]
+    ];
 
     const withVisibility = (baseFilter: any[]) =>
-      notHiddenClause ? ['all', baseFilter, notHiddenClause] : baseFilter;
+      ['all', baseFilter, allowClause];
 
     if (m.getLayer('annotations-fill'))
       m.setFilter('annotations-fill',   withVisibility(['==', ['geometry-type'], 'Polygon']));
@@ -1032,13 +1032,30 @@ const MapboxGolfCourseMap = ({
   const syncVectorVisibilityRef = useRef(syncVectorVisibility);
   useEffect(() => { syncVectorVisibilityRef.current = syncVectorVisibility; }, [syncVectorVisibility]);
 
-  // Re-apply annotation filters once both map is ready AND vector layer data
-  // has arrived. Handles the race where fetchVectorLayers resolves after mapReady.
+  // Re-apply annotation filters once the map is ready. We must run this even
+  // when `vectorLayers` is still empty: the drawing-manager adds annotation
+  // layers with permissive default filters, so until syncVectorVisibility runs
+  // every annotation in the source is rendered. With the allowlist filter, an
+  // empty vectorLayers list correctly hides all *published* annotations and
+  // shows only true drafts.
+  //
+  // Schedule a few retries to win the race against:
+  //   - useDrawingManager adding annotation layers after mapReady flips true
+  //   - fetchVectorLayers resolving from Supabase
+  //   - syncLayerOrder needing the style to be fully loaded
   useEffect(() => {
-    if (!mapReady || vectorLayers.length === 0) return;
-    syncVectorVisibility();
+    if (!mapReady) return;
+    const run = () => {
+      syncVectorVisibilityRef.current?.();
+      syncLayerOrder();
+    };
+    run();
+    const t1 = setTimeout(run, 100);
+    const t2 = setTimeout(run, 400);
+    const t3 = setTimeout(run, 1000);
+    return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mapReady, vectorLayers.length]);
+  }, [mapReady, vectorLayers.length, tilesets.length, selectedLayers.join(',')]);
 
   // PRELOAD: Load ALL vector layers onto the map once, all hidden.
   // Visibility toggling is then handled separately and synchronously.
@@ -1746,7 +1763,11 @@ const MapboxGolfCourseMap = ({
 
 
   return (
-    <div className={`relative w-full ${isFullscreen ? 'fixed inset-0 z-[9999] h-screen bg-background text-foreground overflow-hidden touch-none' : 'h-[calc(100vh-140px)] min-h-[500px] border border-border rounded-lg bg-background overflow-hidden shadow-sm'}`} ref={wrapperRef}>
+    <div
+      className={`relative w-full ${isFullscreen ? 'fixed inset-0 z-[9999] h-screen bg-background text-foreground overflow-hidden touch-none' : 'h-[calc(100vh-140px)] min-h-[500px] border border-border rounded-lg bg-background overflow-hidden shadow-sm'}`}
+      ref={wrapperRef}
+      data-active-tool={isPixelInspectorActive ? 'inspect' : (drawing.activeTool ?? 'none')}
+    >
         <div className="relative w-full h-full">
           {/* Main Map Container */}
           <div

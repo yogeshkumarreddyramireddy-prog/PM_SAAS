@@ -764,7 +764,10 @@ const MapboxGolfCourseMap = ({
       setAnalysisModeMap('None');
       setAnalysisTileUrl(null);
       setAnalysisTileBounds(undefined);
-      setAnalysisModeEnabled(false);
+      // Do NOT touch analysisModeEnabled here. The user's toggle preference must
+      // survive the brief moment when selectedLayers is empty between switching
+      // layers (turn Layer A off → turn Layer B on). The overlay is already
+      // suppressed by mode='None' in MapAnalyticsEngine.
       return;
     }
 

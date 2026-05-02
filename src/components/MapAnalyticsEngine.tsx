@@ -397,10 +397,20 @@ export function MapAnalyticsEngine({
     let layers: any[] = [];
 
     if (mode === 'RGB') {
+      // Include a stable slug of the tile URL in the layer ID so that switching
+      // between RGB tilesets (different tileUrl) always destroys and recreates
+      // the TileLayer rather than updating data in-place. An in-place data update
+      // on a TileLayer can leave the old tile cache visible and never render the
+      // new tileset's tiles — exactly the "plant health disappears on layer switch"
+      // symptom that the toggle-off/on workaround bypassed by forcing a full
+      // layer removal and re-creation.
+      const tileUrlSlug = tileUrl
+        ? tileUrl.replace(/[^a-zA-Z0-9]/g, '').slice(-20)
+        : 'none';
       // RGB tiles served by tile-proxy — use standard TileLayer
       layers = [
         new TileLayer({
-          id: `deck-analysis-rgb-${shaderKey}`,
+          id: `deck-analysis-rgb-${shaderKey}-${tileUrlSlug}`,
           beforeId: 'cog-deck-insert-point',
           data: tileUrl,
           minZoom: 0,

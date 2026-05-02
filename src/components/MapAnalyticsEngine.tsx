@@ -172,6 +172,10 @@ export function MapAnalyticsEngine({
   // Ref mirrors windowImage so the fetch callback can read current value without stale closure
   const windowImageRef = useRef<CachedCOGImage | null>(null);
 
+  // Bump this when an `idle` fires while we were waiting on a non-loaded style
+  // so the layer-construction effect re-runs and actually adds the layers.
+  const [styleTick, setStyleTick] = useState(0);
+
   // Get active shader config
   const config = useMemo(() => VEGETATION_INDEX_CONFIG[selectedIndex], [selectedIndex]);
 
@@ -386,7 +390,29 @@ export function MapAnalyticsEngine({
   useEffect(() => {
     if (!overlay) return;
 
-    if (!map || !map.isStyleLoaded() || !isEnabled || !tileUrl || mode === 'None') {
+    // If the map style isn't fully loaded yet, defer rather than clearing layers.
+    // `isStyleLoaded()` flips to false transiently whenever Mapbox is applying
+    // pending source/layer additions (raster tilesets, health maps, vector
+    // sources). The COG presigned URL often resolves *during* one of those
+    // windows — if we cleared and bailed here, the overlay would stay empty
+    // until the user manually changed something (e.g. toggled the index),
+    // which is exactly the "first NDVI not visible until I switch to NDRE
+    // and back" symptom. Subscribe to one `idle` and let the effect's normal
+    // dep-driven re-run fire on the next state change. We don't blank existing
+    // layers in this branch — keep the previous frame to avoid flicker.
+    if (!map) return;
+    if (!map.isStyleLoaded()) {
+      const onIdle = () => {
+        map.off('idle', onIdle);
+        // Touch a state setter to force a re-render so the layer-construction
+        // effect re-evaluates with the same deps but a now-loaded style.
+        setStyleTick(t => t + 1);
+      };
+      map.on('idle', onIdle);
+      return () => { map.off('idle', onIdle); };
+    }
+
+    if (!isEnabled || !tileUrl || mode === 'None') {
       overlay.setProps({ layers: [] });
       return;
     }
@@ -482,7 +508,7 @@ export function MapAnalyticsEngine({
 
     overlay.setProps({ layers });
 
-  }, [map, isEnabled, mode, tileUrl, selectedIndex, range, bandMapping, overlay, config, cogImageData, windowImage]);
+  }, [map, isEnabled, mode, tileUrl, selectedIndex, range, bandMapping, overlay, config, cogImageData, windowImage, styleTick]);
 
   // ─── Auto-Fly Logic ────────────────────────────────────────────────────────
   // When COG image is loaded, fly the map to its bounds.

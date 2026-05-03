@@ -13,6 +13,7 @@ import DateLayerDropdown from '@/components/DateLayerDropdown';
 import RasterLayerDropdown from '@/components/RasterLayerDropdown';
 import MapSwipeControl from '@/components/MapSwipeControl';
 import DualMapSwipe from '@/components/DualMapSwipe';
+import { applySwipeVisibility } from '@/lib/mapSwipeVisibility';
 import HealthMapStack from '@/components/HealthMapStack';
 import HealthMapDropdown from '@/components/HealthMapDropdown';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -197,8 +198,10 @@ const MapboxGolfCourseMap = ({
       const rawId = layerId.replace('tileset-layer-', '');
       if (isCogTilesetId(rawId)) return; // COG tilesets live in Deck.GL — no Mapbox layer
       if (!map.current!.getLayer(layerId)) return;
-      let shouldBeVisible = showRasterLayers && selectedLayers.includes(rawId);
-      if (swipeEnabled) shouldBeVisible = swipeLeftLayerId ? layerId === swipeLeftLayerId : false;
+      // While swipe is active, the left-map visibility is owned by
+      // applySwipeVisibility — skip this pass so we don't fight it.
+      if (swipeEnabled) return;
+      const shouldBeVisible = showRasterLayers && selectedLayers.includes(rawId);
       applyLayerState(layerId, shouldBeVisible, 'raster-tileset-ceiling');
     });
 
@@ -216,7 +219,6 @@ const MapboxGolfCourseMap = ({
         let shouldBeVisible = false;
         if (isHealth) shouldBeVisible = showHealthMaps && selectedHealthMapIds.includes(rawId);
         if (isVector) shouldBeVisible = visibleVectorLayers.has(rawId);
-        if (swipeEnabled) shouldBeVisible = swipeLeftLayerId ? layerId === swipeLeftLayerId : false;
 
         if (isVector) {
           // Visibility is managed by syncVectorVisibility; just maintain z-order here.
@@ -228,7 +230,12 @@ const MapboxGolfCourseMap = ({
             }
           });
         } else if (isHealth) {
-          applyLayerState(layerId, shouldBeVisible);
+          // Skip visibility while swipe owns it; still maintain z-order.
+          if (swipeEnabled) {
+            try { map.current!.moveLayer(layerId); } catch(e) {}
+          } else {
+            applyLayerState(layerId, shouldBeVisible);
+          }
         }
       }
     });
@@ -256,7 +263,7 @@ const MapboxGolfCourseMap = ({
       }
     });
 
-  }, [layerOrder, selectedLayers, selectedHealthMapIds, visibleVectorLayers, showRasterLayers, showHealthMaps, swipeEnabled, swipeLeftLayerId]);
+  }, [layerOrder, selectedLayers, selectedHealthMapIds, visibleVectorLayers, showRasterLayers, showHealthMaps, swipeEnabled]);
 
   // Sync Mapbox z-index whenever order or selection changes.
   // If the style isn't loaded yet, syncLayerOrder bails — we register a one-shot
@@ -566,20 +573,32 @@ const MapboxGolfCourseMap = ({
         const id = layerId.replace('health-map-layer-', '');
         setSelectedHealthMapIds(prev => prev.includes(id) ? prev : [...prev, id]);
         setShowHealthMaps(true);
-      } else if (layerId.startsWith('vector-layer-')) {
-        const id = layerId.replace('vector-layer-', '');
-        setVisibleVectorLayers(prev => {
-          if (prev.has(id)) return prev;
-          const next = new Set(prev);
-          next.add(id);
-          return next;
-        });
       }
+      // Vector layers are intentionally excluded from swipe — see swipeOptions.
     };
     
     forceEnableLayer(swipeLeftLayerId);
     forceEnableLayer(swipeRightLayerId);
   }, [swipeEnabled, swipeLeftLayerId, swipeRightLayerId]);
+
+  // While swipe is active, the LEFT pane (main map) shows ONLY swipeLeftLayerId.
+  // Mirrors what DualMapSwipe does for the right pane via the same helper.
+  // Restoration on swipe-exit happens automatically: syncLayerOrder and
+  // syncVectorVisibility both depend on `swipeEnabled` and re-run when it flips.
+  useEffect(() => {
+    if (!swipeEnabled || !map.current) return;
+
+    const m = map.current;
+    const apply = () => applySwipeVisibility(m, swipeLeftLayerId);
+
+    apply();
+    // Re-apply on idle so layers added late (e.g. just after force-enable) get gated.
+    const onIdle = () => apply();
+    m.on('idle', onIdle);
+    return () => {
+      m.off('idle', onIdle);
+    };
+  }, [swipeEnabled, swipeLeftLayerId, selectedLayers, selectedHealthMapIds]);
 
   // Load, show, and hide raster layers dynamically
   useEffect(() => {
@@ -939,7 +958,10 @@ const MapboxGolfCourseMap = ({
     vectorLayers.forEach(layer => {
       const vid = `vector-layer-${layer.id}`;
       const ids = [vid, `${vid}-outline`, `${vid}-line`, `${vid}-point`];
-      const visibility = visibleVectorLayers.has(layer.id) ? 'visible' : 'none';
+      // Swipe is raster-only — every vector layer is force-hidden while it's active.
+      const visibility = swipeEnabled
+        ? 'none'
+        : (visibleVectorLayers.has(layer.id) ? 'visible' : 'none');
 
       ids.forEach(id => {
         if (map.current!.getLayer(id)) {
@@ -948,7 +970,9 @@ const MapboxGolfCourseMap = ({
       });
 
       const labelId = `${vid}-label`;
-      const labelVisibility = (visibleVectorLayers.has(layer.id) && showVectorLabels) ? 'visible' : 'none';
+      const labelVisibility = (!swipeEnabled && visibleVectorLayers.has(layer.id) && showVectorLabels)
+        ? 'visible'
+        : 'none';
       if (map.current!.getLayer(labelId)) {
         map.current!.setLayoutProperty(labelId, 'visibility', labelVisibility);
       }
@@ -964,9 +988,13 @@ const MapboxGolfCourseMap = ({
     // *no filter*, leaking every published annotation onto the map until the user
     // clicked something. With an allowlist, an empty visible-list correctly hides
     // all published annotations.
-    const visibleLayerNames: string[] = vectorLayers
-      .filter(l => visibleVectorLayers.has(l.id))
-      .map(l => l.name);
+    // While swipe is active, suppress every published annotation too — swipe is
+    // raster-only, and annotations belong to the vector overlay family.
+    const visibleLayerNames: string[] = swipeEnabled
+      ? []
+      : vectorLayers
+          .filter(l => visibleVectorLayers.has(l.id))
+          .map(l => l.name);
 
     const m = map.current!;
 
@@ -987,7 +1015,7 @@ const MapboxGolfCourseMap = ({
       m.setFilter('annotations-points', withVisibility(['==', ['geometry-type'], 'Point']));
     if (m.getLayer('annotations-labels'))
       m.setFilter('annotations-labels', withVisibility(['has', 'plot_id']));
-  }, [vectorLayers, visibleVectorLayers, showVectorLabels, mapReady]);
+  }, [vectorLayers, visibleVectorLayers, showVectorLabels, mapReady, swipeEnabled]);
 
   useEffect(() => {
     syncVectorVisibility();
@@ -1199,8 +1227,6 @@ const MapboxGolfCourseMap = ({
     
     if (showHealthMaps && selectedHealthMapIds.length > 0) {
       targetLayerId = `health-map-layer-${selectedHealthMapIds[selectedHealthMapIds.length - 1]}`;
-    } else if (visibleVectorLayers.size > 0) {
-      targetLayerId = `vector-layer-${Array.from(visibleVectorLayers)[0]}`;
     } else if (rasterLayersLoaded && selectedLayers.length > 0) {
       targetLayerId = `tileset-layer-${selectedLayers[0]}`;
     }
@@ -1208,7 +1234,7 @@ const MapboxGolfCourseMap = ({
     if (targetLayerId) {
       setSwipeLeftLayerId(targetLayerId);
     }
-  }, [swipeEnabled, showHealthMaps, selectedHealthMapIds, rasterLayersLoaded, selectedLayers, visibleVectorLayers]);
+  }, [swipeEnabled, showHealthMaps, selectedHealthMapIds, rasterLayersLoaded, selectedLayers]);
 
 
 
@@ -1565,12 +1591,7 @@ const MapboxGolfCourseMap = ({
       });
     }
 
-    if (visibleVectorLayers.size > 0) {
-      Array.from(visibleVectorLayers).forEach(id => {
-         const metadata = getLayerMetadata(`vector-layer-${id}`);
-         if (metadata) options.push({ id: `vector-layer-${id}`, name: metadata.name, type: metadata.type });
-      });
-    }
+    // Vector layers are intentionally omitted — swipe is raster-only.
 
     return options;
   };

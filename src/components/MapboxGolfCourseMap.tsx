@@ -4,8 +4,8 @@ import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
+import { cn } from '@/lib/utils';
 import { MapPin, Layers, ZoomIn, ZoomOut, Maximize2, LocateFixed, AlertCircle, Activity, ArrowRight, ArrowDown, ArrowLeft, ArrowUp, X, MoveHorizontal, Tag } from 'lucide-react';
 import { TilesetService } from '@/lib/tilesetService';
 import { supabase } from '@/integrations/supabase/client';
@@ -104,6 +104,7 @@ const MapboxGolfCourseMap = ({
   const [vectorLayers, setVectorLayers] = useState<VectorLayer[]>([]);
   const [visibleVectorLayers, setVisibleVectorLayers] = useState<Set<string>>(new Set());
   const [showVectorLayerPanel, setShowVectorLayerPanel] = useState(false);
+  const [showAnalysisPanel, setShowAnalysisPanel] = useState(false);
   const [vectorLayersAboveHealth, setVectorLayersAboveHealth] = useState(true);
 
   // Analysis Panel States
@@ -701,16 +702,15 @@ const MapboxGolfCourseMap = ({
     let topmostTileset: GolfCourseTileset | null = null;
 
     if (swipeEnabled) {
-      // Only COG/multispectral picks drive Deck.GL on the left pane during swipe.
-      // For RGB / health / base-map picks, analysis stays suppressed (mode='None')
-      // so the user sees just the raw layer they chose.
+      // The Plant-Health overlay tracks the LEFT swipe selection. Both RGB
+      // (vegetation indices via tile-proxy) and COG (multispectral via Deck.GL)
+      // are valid analysis targets — the existing isCog branch below routes
+      // each one correctly. Health-map / base-map picks have no analysis target.
       if (swipeLeftLayerId && swipeLeftLayerId.startsWith('tileset-layer-')) {
         const rawId = swipeLeftLayerId.replace('tileset-layer-', '');
-        if (isCogTilesetId(rawId)) {
-          const ts = tilesets.find(t => t.id === rawId);
-          if (ts && selectedLayers.includes(rawId)) {
-            topmostTileset = ts;
-          }
+        const ts = tilesets.find(t => t.id === rawId);
+        if (ts && selectedLayers.includes(rawId)) {
+          topmostTileset = ts;
         }
       }
     } else {
@@ -1642,8 +1642,8 @@ const MapboxGolfCourseMap = ({
 
   const leftSwipeOptions = getLeftSwipeOptions();
   const rightSwipeOptions = getRightSwipeOptions();
-  // True iff the right dropdown has any layer beyond the Base Map fallback.
-  const hasRightSwipeContent = rightSwipeOptions.some(o => o.id !== 'null');
+  const activeLayerCount =
+    selectedLayers.length + (showHealthMaps ? selectedHealthMapIds.length : 0);
 
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
@@ -1848,39 +1848,57 @@ const MapboxGolfCourseMap = ({
 
           {/* === Top-Right: Nav Controls (all unified) === */}
           <div className="absolute top-4 right-4 flex flex-col items-end gap-2 z-20">
-            {/* Nav + Compare block */}
-            <div className="bg-background/95 backdrop-blur shadow-md rounded-lg overflow-hidden flex flex-col border border-border">
-              <Button variant="ghost" size="icon" onClick={zoomIn} title={t.map.zoomIn} className="h-9 w-9 shrink-0 rounded-none border-b border-border hover:bg-muted focus:ring-0">
-                <ZoomIn className="w-4 h-4" />
-              </Button>
-              <Button variant="ghost" size="icon" onClick={zoomOut} title={t.map.zoomOut} className="h-9 w-9 shrink-0 rounded-none border-b border-border hover:bg-muted focus:ring-0">
-                <ZoomOut className="w-4 h-4" />
-              </Button>
-              <Button variant="ghost" size="icon" onClick={() => setShowVectorLabels(!showVectorLabels)} title={showVectorLabels ? t.map.hideLabels : t.map.showLabels} className="h-9 w-9 shrink-0 rounded-none border-b border-border hover:bg-muted focus:ring-0">
-                <Tag className={`w-4 h-4 ${showVectorLabels ? 'text-primary' : 'text-muted-foreground'}`} />
-              </Button>
-              <Button variant="ghost" size="icon" onClick={resetView} title={t.map.resetView} className="h-9 w-9 shrink-0 rounded-none border-b border-border hover:bg-muted focus:ring-0">
-                <MapPin className="w-4 h-4" />
-              </Button>
-              <Button variant="ghost" size="icon" onClick={centerOnCurrentLocation} title={t.map.centerLocation} className="h-9 w-9 shrink-0 rounded-none border-b border-border hover:bg-muted focus:ring-0">
-                <LocateFixed className="w-4 h-4" />
-              </Button>
-              <Button variant="ghost" size="icon" onClick={toggleFullscreen} title={isFullscreen ? t.map.exitFullscreen : t.map.enterFullscreen} className="h-9 w-9 shrink-0 rounded-none border-b border-border hover:bg-muted focus:ring-0">
-                <Maximize2 className="w-4 h-4" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={() => setSwipeEnabled(!swipeEnabled)}
-                title={swipeEnabled ? t.map.exitCompare : t.map.compareMaps}
-                className={`h-9 w-9 shrink-0 rounded-none hover:bg-muted focus:ring-0 ${swipeEnabled ? 'text-primary bg-primary/10' : ''}`}
-              >
-                <MoveHorizontal className="w-4 h-4" />
-              </Button>
+            {/* Nav + Compare block — no overflow-hidden so tooltips can escape */}
+            <div className="bg-background/95 backdrop-blur shadow-md rounded-lg flex flex-col border border-border">
+              {[
+                { icon: ZoomIn, label: 'Zoom In', onClick: zoomIn },
+                { icon: ZoomOut, label: 'Zoom Out', onClick: zoomOut },
+                {
+                  icon: Tag,
+                  label: showVectorLabels ? 'Hide Feature Labels' : 'Show Feature Labels',
+                  onClick: () => setShowVectorLabels(!showVectorLabels),
+                  isActive: showVectorLabels,
+                },
+                { icon: MapPin, label: 'Reset to Course View', onClick: resetView },
+                { icon: LocateFixed, label: 'Center on My Location', onClick: centerOnCurrentLocation },
+                { icon: Maximize2, label: isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen', onClick: toggleFullscreen },
+                {
+                  icon: MoveHorizontal,
+                  label: swipeEnabled ? 'Exit Side-by-Side Comparison' : 'Compare Two Dates Side by Side',
+                  onClick: () => setSwipeEnabled(!swipeEnabled),
+                  isActive: swipeEnabled,
+                  isLast: true,
+                },
+              ].map(({ icon: Icon, label, onClick, isActive, isLast }, idx, arr) => (
+                <div key={idx} className="relative group">
+                  <button
+                    onClick={onClick}
+                    aria-label={label}
+                    aria-pressed={isActive}
+                    className={cn(
+                      'flex items-center justify-center h-9 w-9 shrink-0 transition-colors focus:outline-none focus:ring-0',
+                      idx === 0 && 'rounded-t-lg',
+                      idx === arr.length - 1 && 'rounded-b-lg',
+                      !isLast && 'border-b border-border',
+                      isActive
+                        ? 'bg-primary text-primary-foreground'
+                        : 'text-foreground hover:bg-muted'
+                    )}
+                  >
+                    <Icon className="w-5 h-5" />
+                  </button>
+                  {/* Tooltip — appears to the left since toolbar is on the right edge */}
+                  <div className="pointer-events-none absolute right-full top-1/2 -translate-y-1/2 mr-2 z-[9999] hidden group-hover:flex">
+                    <div className="bg-popover text-popover-foreground text-xs font-medium px-2.5 py-1.5 rounded-md shadow-md border border-border whitespace-nowrap">
+                      {label}
+                    </div>
+                  </div>
+                </div>
+              ))}
             </div>
 
             {/* Vectorization Tools — separate panel, same sizing */}
-            <div className="bg-background/95 backdrop-blur shadow-md rounded-lg overflow-hidden flex flex-col border border-border">
+            <div className="bg-background/95 backdrop-blur shadow-md rounded-lg flex flex-col border border-border">
               <VectorizationToolbar
                 activeTool={drawing.activeTool}
                 setActiveTool={drawing.setActiveTool}
@@ -2035,20 +2053,32 @@ const MapboxGolfCourseMap = ({
               </div>
             )}
 
-            {/* ── Analysis / Plant Health Panel (always below layers card) ── */}
-            <AnalysisPanel
-               mapMode={analysisModeMap}
-               isEnabled={analysisModeEnabled}
-               onToggleEnable={setAnalysisModeEnabled}
-               selectedIndex={analysisIndex}
-               onSelectIndex={handleSelectIndex}
-               range={analysisRange}
-               onRangeChange={setAnalysisRange}
-               histogramData={analysisHistogramData}
-               bandMapping={bandMapping}
-               onBandMappingChange={setBandMapping}
-               isAdmin={isAdmin}
-            />
+            {/* ── Plant Health toggle button ── */}
+            <button
+              className="bg-background/95 backdrop-blur shadow-md border border-border rounded-lg px-3 py-2 flex items-center gap-2 text-sm font-semibold hover:bg-muted/60 transition-colors w-fit"
+              onClick={() => setShowAnalysisPanel(v => !v)}
+            >
+              <Activity className="w-4 h-4 text-primary" />
+              <span>Plant Health</span>
+              {showAnalysisPanel && <X className="w-3 h-3 opacity-60 ml-0.5" />}
+            </button>
+
+            {/* ── Analysis / Plant Health Panel (collapsible) ── */}
+            {showAnalysisPanel && (
+              <AnalysisPanel
+                 mapMode={analysisModeMap}
+                 isEnabled={analysisModeEnabled}
+                 onToggleEnable={setAnalysisModeEnabled}
+                 selectedIndex={analysisIndex}
+                 onSelectIndex={handleSelectIndex}
+                 range={analysisRange}
+                 onRangeChange={setAnalysisRange}
+                 histogramData={analysisHistogramData}
+                 bandMapping={bandMapping}
+                 onBandMappingChange={setBandMapping}
+                 isAdmin={isAdmin}
+              />
+            )}
           </div>
 
           {mapReady && (
@@ -2096,9 +2126,9 @@ const MapboxGolfCourseMap = ({
                   </select>
                 </div>
               </div>
-              {!hasRightSwipeContent && (
+              {activeLayerCount < 2 && (
                 <div className="text-xs bg-white/95 backdrop-blur-md rounded-full border border-gray-200/50 py-1 px-3 shadow text-gray-700 pointer-events-auto">
-                  Right pane supports RGB orthomosaics only — turn on an RGB layer to compare.
+                  Please select at least two layers to compare in the layer panel on your left.
                 </div>
               )}
             </div>

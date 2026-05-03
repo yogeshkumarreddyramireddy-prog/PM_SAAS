@@ -4,6 +4,15 @@ const SWIPE_ELIGIBLE_PREFIXES = ['tileset-layer-', 'health-map-layer-'] as const
 
 const VECTOR_SUFFIXES = ['', '-outline', '-line', '-point', '-label'] as const;
 
+// Every non-raster overlay family that must be suppressed during swipe — vector
+// layers, published annotations, and live drawing/edit handles.
+const HIDDEN_OVERLAY_PREFIXES = [
+  'vector-layer-',
+  'annotations-',
+  'drawing-',
+  'edit-handles-',
+] as const;
+
 const isSwipeEligible = (id: string) =>
   SWIPE_ELIGIBLE_PREFIXES.some(p => id.startsWith(p));
 
@@ -46,7 +55,7 @@ export const applySwipeVisibility = (
       continue;
     }
 
-    if (id.startsWith('vector-layer-')) {
+    if (HIDDEN_OVERLAY_PREFIXES.some(p => id.startsWith(p))) {
       setVisibility(map, id, 'none');
     }
   }

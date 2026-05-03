@@ -560,26 +560,9 @@ const MapboxGolfCourseMap = ({
     };
   }, [tilesets, baseStyle, showControls, containerReady]);
 
-  // Auto-enable layers selected in the swipe tool so they exist on the main map
-  useEffect(() => {
-    if (!swipeEnabled) return;
-    
-    const forceEnableLayer = (layerId: string | null) => {
-      if (!layerId) return;
-      if (layerId.startsWith('tileset-layer-')) {
-        const id = layerId.replace('tileset-layer-', '');
-        setSelectedLayers(prev => prev.includes(id) ? prev : [...prev, id]);
-      } else if (layerId.startsWith('health-map-layer-')) {
-        const id = layerId.replace('health-map-layer-', '');
-        setSelectedHealthMapIds(prev => prev.includes(id) ? prev : [...prev, id]);
-        setShowHealthMaps(true);
-      }
-      // Vector layers are intentionally excluded from swipe — see swipeOptions.
-    };
-    
-    forceEnableLayer(swipeLeftLayerId);
-    forceEnableLayer(swipeRightLayerId);
-  }, [swipeEnabled, swipeLeftLayerId, swipeRightLayerId]);
+  // Note: swipe never auto-enables layers in the panel anymore. Dropdown options
+  // are scoped to layers the user has already turned on, so picking a value is
+  // a pure display choice and never mutates layer-panel state.
 
   // While swipe is active, the LEFT pane (main map) shows ONLY swipeLeftLayerId.
   // Mirrors what DualMapSwipe does for the right pane via the same helper.
@@ -711,22 +694,41 @@ const MapboxGolfCourseMap = ({
   // When multiple layers are visible, the topmost one determines whether the
   // AnalysisPanel shows RGB or Multispectral vegetation indices.
   useEffect(() => {
-    // Walk layerOrder from top (index 0) → bottom to find first visible raster tileset
+    // While swipe is active, the analysis engine tracks the LEFT-pane swipe
+    // selection directly — not the layer-panel draw order. If the user picked
+    // a tileset (RGB or COG) on the left, analysis follows it; if they picked
+    // a health map / base map / nothing, analysis is suppressed.
     let topmostTileset: GolfCourseTileset | null = null;
 
-    for (const layerId of layerOrder) {
-      // Only tileset-layers drive analysis mode (health maps are pre-rendered,
-      // vector layers have no pixel data for vegetation index computation)
-      if (!layerId.startsWith('tileset-layer-')) continue;
+    if (swipeEnabled) {
+      // Only COG/multispectral picks drive Deck.GL on the left pane during swipe.
+      // For RGB / health / base-map picks, analysis stays suppressed (mode='None')
+      // so the user sees just the raw layer they chose.
+      if (swipeLeftLayerId && swipeLeftLayerId.startsWith('tileset-layer-')) {
+        const rawId = swipeLeftLayerId.replace('tileset-layer-', '');
+        if (isCogTilesetId(rawId)) {
+          const ts = tilesets.find(t => t.id === rawId);
+          if (ts && selectedLayers.includes(rawId)) {
+            topmostTileset = ts;
+          }
+        }
+      }
+    } else {
+      // Walk layerOrder from top (index 0) → bottom to find first visible raster tileset
+      for (const layerId of layerOrder) {
+        // Only tileset-layers drive analysis mode (health maps are pre-rendered,
+        // vector layers have no pixel data for vegetation index computation)
+        if (!layerId.startsWith('tileset-layer-')) continue;
 
-      const rawId = layerId.replace('tileset-layer-', '');
-      // Must be both selected AND raster visibility is on
-      if (!showRasterLayers || !selectedLayers.includes(rawId)) continue;
+        const rawId = layerId.replace('tileset-layer-', '');
+        // Must be both selected AND raster visibility is on
+        if (!showRasterLayers || !selectedLayers.includes(rawId)) continue;
 
-      const ts = tilesets.find(t => t.id === rawId);
-      if (ts) {
-        topmostTileset = ts;
-        break;
+        const ts = tilesets.find(t => t.id === rawId);
+        if (ts) {
+          topmostTileset = ts;
+          break;
+        }
       }
     }
 
@@ -797,7 +799,7 @@ const MapboxGolfCourseMap = ({
         setBandMapping({ r: 0, g: 1, b: 2, nir: 0, re: 0 }); // RGB: R(B1), G(B2), B(B3)
       }
     }
-  }, [selectedLayers, tilesets, layerOrder, showRasterLayers]);
+  }, [selectedLayers, tilesets, layerOrder, showRasterLayers, swipeEnabled, swipeLeftLayerId]);
 
 
 
@@ -1214,27 +1216,48 @@ const MapboxGolfCourseMap = ({
   // the raster-layer toggle. Deselecting all health maps no longer flips the toggle
   // off — re-selecting one renders immediately without the user re-enabling the toggle.
 
-  // When swipe is enabled, pick a default left layer if none is selected
+  // Seed swipe selections ONCE per swipe-enable transition. Defaults follow the
+  // layer-panel draw order (topmost wins). After the user picks a value,
+  // subsequent panel changes never re-overwrite it — visibility is purely a
+  // function of the dropdown.
   useEffect(() => {
     if (!swipeEnabled) return;
-    
-    // Only auto-assign if `swipeLeftLayerId` is not already manually chosen
-    if (swipeLeftLayerId && map.current?.getLayer(swipeLeftLayerId)) {
-      return; 
-    }
 
-    let targetLayerId: string | null = null;
-    
-    if (showHealthMaps && selectedHealthMapIds.length > 0) {
-      targetLayerId = `health-map-layer-${selectedHealthMapIds[selectedHealthMapIds.length - 1]}`;
-    } else if (rasterLayersLoaded && selectedLayers.length > 0) {
-      targetLayerId = `tileset-layer-${selectedLayers[0]}`;
-    }
+    // Find the topmost active eligible layer in draw order (any type for left).
+    const topmostAny = layerOrder.find(id => {
+      if (id.startsWith('tileset-layer-')) {
+        const rawId = id.replace('tileset-layer-', '');
+        return selectedLayers.includes(rawId);
+      }
+      if (id.startsWith('health-map-layer-')) {
+        if (!showHealthMaps) return false;
+        const rawId = id.replace('health-map-layer-', '');
+        return selectedHealthMapIds.includes(rawId);
+      }
+      return false;
+    }) || null;
 
-    if (targetLayerId) {
-      setSwipeLeftLayerId(targetLayerId);
-    }
-  }, [swipeEnabled, showHealthMaps, selectedHealthMapIds, rasterLayersLoaded, selectedLayers]);
+    // Topmost active RGB tileset (right pane is RGB-only).
+    const topmostRgb = layerOrder.find(id => {
+      if (!id.startsWith('tileset-layer-')) return false;
+      const rawId = id.replace('tileset-layer-', '');
+      if (!selectedLayers.includes(rawId)) return false;
+      return !isCogTilesetId(rawId);
+    }) || null;
+
+    if (!swipeLeftLayerId) setSwipeLeftLayerId(topmostAny);
+    if (!swipeRightLayerId) setSwipeRightLayerId(topmostRgb);
+    // Intentionally omit layer-panel state from deps: defaults seed once on open.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [swipeEnabled]);
+
+  // Clear swipe selections when Compare turns off so the next open re-seeds
+  // defaults from the current layer-panel state.
+  useEffect(() => {
+    if (swipeEnabled) return;
+    setSwipeLeftLayerId(null);
+    setSwipeRightLayerId(null);
+  }, [swipeEnabled]);
 
 
 
@@ -1573,30 +1596,54 @@ const MapboxGolfCourseMap = ({
 
   const canSwipe = selectedLayers.length === 2;
 
-  // Build the unified list of all available layers for the Swipe Selector
-  const getAllAvailableLayersForSwipe = () => {
-    const options = [{ id: 'null', name: t.map.baseSatellite, type: 'base' }];
-    
-    if (rasterLayersLoaded) {
-      selectedLayers.forEach(id => {
-        const metadata = getLayerMetadata(`tileset-layer-${id}`);
-        if (metadata) options.push({ id: `tileset-layer-${id}`, name: metadata.name, type: metadata.type });
-      });
-    }
+  // Left dropdown: every active raster/health/COG layer. Mirrors layer-panel
+  // draw order so the topmost layer naturally surfaces first.
+  const getLeftSwipeOptions = () => {
+    const baseOption = { id: 'null', name: t.map.baseSatellite, type: 'base' };
+    const ordered: Array<{ id: string; name: string; type: string }> = [];
 
-    if (showHealthMaps) {
-      selectedHealthMapIds.forEach(id => {
-        const metadata = getLayerMetadata(`health-map-layer-${id}`);
-        if (metadata) options.push({ id: `health-map-layer-${id}`, name: metadata.name, type: metadata.type });
-      });
-    }
+    layerOrder.forEach(layerId => {
+      if (layerId.startsWith('tileset-layer-')) {
+        const rawId = layerId.replace('tileset-layer-', '');
+        if (!selectedLayers.includes(rawId)) return;
+        const metadata = getLayerMetadata(layerId);
+        if (metadata) ordered.push({ id: layerId, name: metadata.name, type: metadata.type });
+      } else if (layerId.startsWith('health-map-layer-')) {
+        if (!showHealthMaps) return;
+        const rawId = layerId.replace('health-map-layer-', '');
+        if (!selectedHealthMapIds.includes(rawId)) return;
+        const metadata = getLayerMetadata(layerId);
+        if (metadata) ordered.push({ id: layerId, name: metadata.name, type: metadata.type });
+      }
+      // Vector layers and annotations intentionally omitted from swipe.
+    });
 
-    // Vector layers are intentionally omitted — swipe is raster-only.
-
-    return options;
+    return [...ordered, baseOption];
   };
 
-  const swipeOptions = getAllAvailableLayersForSwipe();
+  // Right dropdown: RGB orthomosaics + Base Map only. Health maps and COG-backed
+  // multispectral layers are excluded — the right map is a cloned Mapbox style
+  // with no Deck.GL overlay, so multispectral can't be drawn on it.
+  const getRightSwipeOptions = () => {
+    const baseOption = { id: 'null', name: t.map.baseSatellite, type: 'base' };
+    const ordered: Array<{ id: string; name: string; type: string }> = [];
+
+    layerOrder.forEach(layerId => {
+      if (!layerId.startsWith('tileset-layer-')) return;
+      const rawId = layerId.replace('tileset-layer-', '');
+      if (!selectedLayers.includes(rawId)) return;
+      if (isCogTilesetId(rawId)) return; // multispectral COGs not supported on right
+      const metadata = getLayerMetadata(layerId);
+      if (metadata) ordered.push({ id: layerId, name: metadata.name, type: metadata.type });
+    });
+
+    return [...ordered, baseOption];
+  };
+
+  const leftSwipeOptions = getLeftSwipeOptions();
+  const rightSwipeOptions = getRightSwipeOptions();
+  // True iff the right dropdown has any layer beyond the Base Map fallback.
+  const hasRightSwipeContent = rightSwipeOptions.some(o => o.id !== 'null');
 
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
@@ -2024,29 +2071,36 @@ const MapboxGolfCourseMap = ({
 
           {/* Swipe Selectors – bottom-center, only when active */}
           {swipeEnabled && (
-            <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 flex gap-4 w-auto max-w-2xl px-4 flex-row pointer-events-none">
-              <div className="flex-1 bg-white/95 backdrop-blur-md rounded-full border border-gray-200/50 py-1.5 px-4 shadow-lg flex items-center gap-3 pointer-events-auto transition-transform hover:scale-[1.02]">
-                <select
-                  className="bg-transparent text-sm cursor-pointer outline-none text-gray-800 font-medium truncate max-w-[180px]"
-                  value={swipeLeftLayerId || 'null'}
-                  onChange={(e) => setSwipeLeftLayerId(e.target.value === 'null' ? null : e.target.value)}
-                >
-                  {swipeOptions.map(opt => (
-                    <option key={'left-' + opt.id} value={opt.id}>{opt.name}</option>
-                  ))}
-                </select>
+            <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-2 w-auto max-w-2xl px-4 pointer-events-none">
+              <div className="flex gap-4 flex-row">
+                <div className="flex-1 bg-white/95 backdrop-blur-md rounded-full border border-gray-200/50 py-1.5 px-4 shadow-lg flex items-center gap-3 pointer-events-auto transition-transform hover:scale-[1.02]">
+                  <select
+                    className="bg-transparent text-sm cursor-pointer outline-none text-gray-800 font-medium truncate max-w-[180px]"
+                    value={swipeLeftLayerId || 'null'}
+                    onChange={(e) => setSwipeLeftLayerId(e.target.value === 'null' ? null : e.target.value)}
+                  >
+                    {leftSwipeOptions.map(opt => (
+                      <option key={'left-' + opt.id} value={opt.id}>{opt.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex-1 bg-white/95 backdrop-blur-md rounded-full border border-gray-200/50 py-1.5 px-4 shadow-lg flex items-center gap-3 pointer-events-auto transition-transform hover:scale-[1.02]">
+                  <select
+                    className="bg-transparent text-sm cursor-pointer outline-none text-gray-800 font-medium truncate max-w-[180px]"
+                    value={swipeRightLayerId || 'null'}
+                    onChange={(e) => setSwipeRightLayerId(e.target.value === 'null' ? null : e.target.value)}
+                  >
+                    {rightSwipeOptions.map(opt => (
+                      <option key={'right-' + opt.id} value={opt.id}>{opt.name}</option>
+                    ))}
+                  </select>
+                </div>
               </div>
-              <div className="flex-1 bg-white/95 backdrop-blur-md rounded-full border border-gray-200/50 py-1.5 px-4 shadow-lg flex items-center gap-3 pointer-events-auto transition-transform hover:scale-[1.02]">
-                <select
-                  className="bg-transparent text-sm cursor-pointer outline-none text-gray-800 font-medium truncate max-w-[180px]"
-                  value={swipeRightLayerId || 'null'}
-                  onChange={(e) => setSwipeRightLayerId(e.target.value === 'null' ? null : e.target.value)}
-                >
-                  {swipeOptions.map(opt => (
-                    <option key={'right-' + opt.id} value={opt.id}>{opt.name}</option>
-                  ))}
-                </select>
-              </div>
+              {!hasRightSwipeContent && (
+                <div className="text-xs bg-white/95 backdrop-blur-md rounded-full border border-gray-200/50 py-1 px-3 shadow text-gray-700 pointer-events-auto">
+                  Right pane supports RGB orthomosaics only — turn on an RGB layer to compare.
+                </div>
+              )}
             </div>
           )}
 

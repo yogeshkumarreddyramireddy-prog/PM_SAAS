@@ -505,11 +505,7 @@ export function MapAnalyticsEngine({
           id: `deck-cog-base-${shaderKey}`,
           beforeId: 'cog-deck-insert-point',
           image: cogImageData.imageData,
-          // Prefer the quad corners (correct for rotated UTM grids); fall back to
-          // the axis-aligned bbox for already-geographic COGs.
-          bounds: (cogImageData.corners ?? [
-            cogImageData.bounds[0], cogImageData.bounds[1], cogImageData.bounds[2], cogImageData.bounds[3],
-          ]) as any,
+          bounds: [cogImageData.bounds[0], cogImageData.bounds[1], cogImageData.bounds[2], cogImageData.bounds[3]] as [number, number, number, number],
         }),
       ];
 
@@ -520,9 +516,7 @@ export function MapAnalyticsEngine({
           id: `deck-cog-window-${shaderKey}`,
           beforeId: 'cog-deck-insert-point',
           image: windowImage.imageData,
-          bounds: (windowImage.corners ?? [
-            windowImage.bounds[0], windowImage.bounds[1], windowImage.bounds[2], windowImage.bounds[3],
-          ]) as any,
+          bounds: [windowImage.bounds[0], windowImage.bounds[1], windowImage.bounds[2], windowImage.bounds[3]] as [number, number, number, number],
         }));
       }
     } else if (mode === 'Multispectral' && !cogImageData) {

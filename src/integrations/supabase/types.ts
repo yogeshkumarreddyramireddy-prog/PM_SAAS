@@ -10,7 +10,32 @@ export type Database = {
   // Allows to automatically instantiate createClient with right options
   // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
   __InternalSupabase: {
-    PostgrestVersion: "14.1"
+    PostgrestVersion: "14.5"
+  }
+  graphql_public: {
+    Tables: {
+      [_ in never]: never
+    }
+    Views: {
+      [_ in never]: never
+    }
+    Functions: {
+      graphql: {
+        Args: {
+          extensions?: Json
+          operationName?: string
+          query?: string
+          variables?: Json
+        }
+        Returns: Json
+      }
+    }
+    Enums: {
+      [_ in never]: never
+    }
+    CompositeTypes: {
+      [_ in never]: never
+    }
   }
   public: {
     Tables: {
@@ -148,6 +173,56 @@ export type Database = {
         }
         Relationships: []
       }
+      annotations: {
+        Row: {
+          annotation_type: string
+          comment: string | null
+          created_at: string | null
+          created_by: string | null
+          external_code: string | null
+          geometry: Json
+          golf_course_id: number
+          id: string
+          plot_id: string | null
+          properties: Json | null
+          updated_at: string | null
+        }
+        Insert: {
+          annotation_type?: string
+          comment?: string | null
+          created_at?: string | null
+          created_by?: string | null
+          external_code?: string | null
+          geometry: Json
+          golf_course_id: number
+          id?: string
+          plot_id?: string | null
+          properties?: Json | null
+          updated_at?: string | null
+        }
+        Update: {
+          annotation_type?: string
+          comment?: string | null
+          created_at?: string | null
+          created_by?: string | null
+          external_code?: string | null
+          geometry?: Json
+          golf_course_id?: number
+          id?: string
+          plot_id?: string | null
+          properties?: Json | null
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "annotations_golf_course_id_fkey"
+            columns: ["golf_course_id"]
+            isOneToOne: false
+            referencedRelation: "active_golf_courses"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       auth_security_settings_documentation: {
         Row: {
           current_status: string | null
@@ -203,6 +278,13 @@ export type Database = {
             columns: ["golf_course_id"]
             isOneToOne: false
             referencedRelation: "active_golf_courses"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "fk_client_golf_courses_client_id_user_profiles"
+            columns: ["client_id"]
+            isOneToOne: false
+            referencedRelation: "user_profiles"
             referencedColumns: ["id"]
           },
         ]
@@ -413,6 +495,7 @@ export type Database = {
           attribution: string | null
           center_lat: number
           center_lon: number
+          cog_source_key: string | null
           created_at: string | null
           default_zoom: number
           description: string | null
@@ -441,6 +524,7 @@ export type Database = {
           attribution?: string | null
           center_lat: number
           center_lon: number
+          cog_source_key?: string | null
           created_at?: string | null
           default_zoom?: number
           description?: string | null
@@ -469,6 +553,7 @@ export type Database = {
           attribution?: string | null
           center_lat?: number
           center_lon?: number
+          cog_source_key?: string | null
           created_at?: string | null
           default_zoom?: number
           description?: string | null
@@ -871,27 +956,33 @@ export type Database = {
       }
       user_login_logs: {
         Row: {
+          email: string | null
           id: string
-          ip_address: unknown
-          logged_in_at: string
+          ip_address: string | null
+          logged_in_at: string | null
+          login_time: string | null
           metadata: Json | null
           portal_type: string | null
           user_agent: string | null
           user_id: string | null
         }
         Insert: {
+          email?: string | null
           id?: string
-          ip_address?: unknown
-          logged_in_at?: string
+          ip_address?: string | null
+          logged_in_at?: string | null
+          login_time?: string | null
           metadata?: Json | null
           portal_type?: string | null
           user_agent?: string | null
           user_id?: string | null
         }
         Update: {
+          email?: string | null
           id?: string
-          ip_address?: unknown
-          logged_in_at?: string
+          ip_address?: string | null
+          logged_in_at?: string | null
+          login_time?: string | null
           metadata?: Json | null
           portal_type?: string | null
           user_agent?: string | null
@@ -900,7 +991,6 @@ export type Database = {
         Relationships: []
       }
       user_profiles: {
-
         Row: {
           access_request_message: string | null
           access_request_pending: boolean | null
@@ -1333,6 +1423,7 @@ export type Database = {
       geomfromewkt: { Args: { "": string }; Returns: unknown }
       get_user_role_safe: { Args: { user_id: string }; Returns: string }
       gettransactionid: { Args: never; Returns: unknown }
+      is_client_in_good_standing: { Args: { uid: string }; Returns: boolean }
       is_user_admin_safe: { Args: { user_id: string }; Returns: boolean }
       longtransactionsenabled: { Args: never; Returns: boolean }
       populate_geometry_columns:
@@ -2103,6 +2194,9 @@ export type CompositeTypes<
     : never
 
 export const Constants = {
+  graphql_public: {
+    Enums: {},
+  },
   public: {
     Enums: {
       file_category_type: ["live_maps", "reports", "hd_maps", "3d_models"],

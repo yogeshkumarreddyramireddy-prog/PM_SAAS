@@ -68,20 +68,37 @@ jobs:
           echo "center_lat=$(python3 -c 'import json; m=json.load(open("/tmp/metadata.json")); print(m["center_lat"])')" >> $GITHUB_OUTPUT
           echo "center_lon=$(python3 -c 'import json; m=json.load(open("/tmp/metadata.json")); print(m["center_lon"])')" >> $GITHUB_OUTPUT
 
-      - name: Convert to Cloud Optimized GeoTIFF (COG) — keep native CRS
+      - name: Reproject to Web Mercator (EPSG:3857) and convert to COG
         run: |
-          # IMPORTANT: do NOT reproject to EPSG:4326. The client-side COGLoader
-          # handles UTM (and any projected CRS) via proj4. Reprojecting to
-          # geographic degrees here would:
-          #   • bilinearly resample every pixel, blurring sharp class boundaries
-          #     (sand/vegetation borders, plot edges)
-          #   • re-grid pixels onto a lat/lon grid that no longer aligns with
-          #     the sensor's native pixel grid, introducing a sub-pixel shift
-          #   • produce non-square pixels at non-equatorial latitudes
-          # Keeping the native projection preserves the original sensor data
-          # exactly and gives the inspector pixel-accurate alignment.
-          echo "Converting to COG in original CRS..."
-          gdal_translate /tmp/input.tif /tmp/output_cog.tif \
+          # Reproject to EPSG:3857 — the projection Mapbox/Deck.GL use for the
+          # basemap. This makes the COG north-up, so the client can place it with
+          # an axis-aligned bounding box that lines up exactly with the basemap.
+          #
+          # Why NOT keep native UTM: a UTM grid is rotated ~1-3deg from geographic
+          # north (meridian convergence). Placing such an image in a north-aligned
+          # lon/lat box skews it against the basemap AND makes the low-res "base"
+          # and high-res "window" overlay layers disagree at the edges (visible as
+          # a blocky fringe next to the sharp interior).
+          #
+          # Why 3857 and NOT 4326: EPSG:4326 re-grids onto a lat/lon degree grid,
+          # which at this latitude dropped ~30% of the rows and made non-square
+          # pixels. EPSG:3857 is conformal and metre-based, so reprojection from
+          # UTM barely changes scale. We force the output width to the source
+          # width (-ts W 0) so NO resolution is lost; the height is derived to
+          # keep the aspect ratio.
+          SRC_W=$(gdalinfo -json /tmp/input.tif | python3 -c "import json,sys; print(json.load(sys.stdin)['size'][0])")
+          echo "Source width: ${SRC_W}px — reprojecting to EPSG:3857 at matching width..."
+          gdalwarp \
+            -t_srs EPSG:3857 \
+            -r bilinear \
+            -ts "$SRC_W" 0 \
+            -of GTiff \
+            -co BIGTIFF=YES \
+            /tmp/input.tif \
+            /tmp/reprojected.tif
+
+          echo "Converting reprojected TIFF to Cloud Optimized GeoTIFF..."
+          gdal_translate /tmp/reprojected.tif /tmp/output_cog.tif \
             -of COG \
             -co COMPRESS=DEFLATE \
             -co PREDICTOR=YES \
@@ -90,7 +107,7 @@ jobs:
             -co BIGTIFF=YES
 
           echo "Size comparison:"
-          ls -lh /tmp/input.tif /tmp/output_cog.tif
+          ls -lh /tmp/input.tif /tmp/reprojected.tif /tmp/output_cog.tif
 
       - name: Upload Single COG to R2
         env:

@@ -16,6 +16,15 @@ INSERT INTO public.active_golf_courses (id, name, location, max_users, signup_en
             VALUES (10, 'Het Woold', NULL, 5, true, '2025-08-12 07:20:21.46361+00', '2025-08-12 07:20:21.46361+00', NULL)
             ON CONFLICT (id) DO NOTHING;
 
+-- The inserts above use explicit id values, which does NOT advance the SERIAL
+-- sequence. Without this resync the sequence still points at an already-used id,
+-- so the next app-driven INSERT (which omits id) collides on the primary key and
+-- fails with a 409 Conflict. Bump the sequence past the highest existing id.
+SELECT setval(
+  pg_get_serial_sequence('public.active_golf_courses', 'id'),
+  (SELECT COALESCE(MAX(id), 1) FROM public.active_golf_courses)
+);
+
 -- Add content files
 
 -- Ensure client@123.com is approved and assigned a course

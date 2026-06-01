@@ -80,13 +80,14 @@ export const AdminContentManagement = () => {
         throw new Error('No active session')
       }
 
-      // Try scanning with different prefixes to find nested tile structures
-      // PRIORITIZE the correct path based on user's actual folder structure
+      // Try scanning with different prefixes to find nested tile structures,
+      // derived from the SELECTED client's name (never hardcode a specific
+      // course folder — that scanned an unrelated client's folder for everyone).
+      const courseFolder = selectedClient.name.replace(/\s+/g, '_')
       const scanPrefixes = [
-        'phytomaps-files/Worlds_Best_Golf_Club/', // USER'S ACTUAL FOLDER STRUCTURE - PRIORITY #1
-        'phytomaps-files/', // CLI upload prefix
-        'Worlds_Best_Golf_Club/', // Direct golf course folder
-        `phytomaps-files/${selectedClient.name.replace(/\s+/g, '_')}/`, // CLI upload with underscores
+        `phytomaps-files/${courseFolder}/`, // CLI upload prefix for this course
+        `${courseFolder}/`, // Direct golf course folder
+        'phytomaps-files/', // CLI upload prefix (broader)
         '', // Root level scan (last resort)
       ]
 

@@ -318,7 +318,7 @@ export class ImageService {
       flightTime?: string
     },
     onProgress?: (progress: { uploaded: number; total: number; percentage: number }) => void
-  ): Promise<{ success: boolean; count: number; error?: string }> {
+  ): Promise<{ success: boolean; count: number; failed?: number; error?: string }> {
     try {
       const { data: { session } } = await supabase.auth.getSession()
       if (!session) throw new Error('Authentication required')
@@ -331,7 +331,8 @@ export class ImageService {
       let uploaded = 0; // Number of files fully uploaded
       let uploadedBytes = 0;
       const totalBytes = files.reduce((acc, f) => acc + f.size, 0);
-      const recordsToInsert: ImageInsert[] = [];
+      let recordsToInsert: ImageInsert[] = [];
+      const failedFiles: string[] = [];
 
       // Process in outer chunks (e.g. 500 files) to avoid payload too large errors
       // and expiration for very large data dumps.
@@ -534,23 +535,40 @@ export class ImageService {
                 });
               }
             } catch (err: any) {
+              // Don't abort the whole batch on one file: record the failure and
+              // continue. Aborting here used to orphan every file already PUT to
+              // R2 in this (and prior) chunks, because the DB insert only ran at
+              // the very end. Now successful files are persisted per chunk below.
               console.error(`Final error uploading ${file.name}:`, err);
-              throw new Error(`Failed to upload ${file.name}. Ensure connection is stable. ${err.message}`);
+              failedFiles.push(file.name);
             }
           }
         });
 
         // Wait for all workers in this chunk to finish
         await Promise.all(workerPool);
+
+        // Flush this chunk's successful records immediately so a later failure
+        // can never orphan files that already uploaded.
+        if (recordsToInsert.length > 0) {
+          const { error: dbError } = await supabase.from('images').insert(recordsToInsert)
+          if (dbError) {
+            console.error('Image record insert failed for a chunk:', dbError)
+            // Surface as a partial failure rather than silently losing the rows.
+            recordsToInsert.forEach(r => failedFiles.push(r.original_filename || r.filename))
+          }
+          recordsToInsert = [];
+        }
       }
 
-      // Bulk insert into Supabase
-      if (recordsToInsert.length > 0) {
-        const { error: dbError } = await supabase.from('images').insert(recordsToInsert)
-        if (dbError) throw new Error(`Database error: ${dbError.message}`)
+      return {
+        success: failedFiles.length === 0,
+        count: uploaded,
+        failed: failedFiles.length,
+        error: failedFiles.length > 0
+          ? `${failedFiles.length} file(s) failed: ${failedFiles.slice(0, 5).join(', ')}${failedFiles.length > 5 ? '…' : ''}`
+          : undefined,
       }
-
-      return { success: true, count: uploaded }
     } catch (error) {
       console.error('Batch upload error:', error)
       return { success: false, count: 0, error: error instanceof Error ? error.message : 'Unknown error' }

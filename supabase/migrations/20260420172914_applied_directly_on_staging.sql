@@ -1,0 +1,12 @@
+-- History-alignment placeholder.
+--
+-- Version 20260420172914 was applied DIRECTLY to the staging database (it exists in the
+-- remote supabase_migrations history table) but its SQL file was never committed
+-- to the repo. The Supabase CLI refuses to push while local/remote histories
+-- diverge, so this empty file re-aligns the history.
+--
+-- The schema objects that these hand-applied migrations introduced (the
+-- 'annotations' table, 'user_login_logs' table, and
+-- 'golf_course_tilesets.cog_source_key' column) are (re)created idempotently in
+-- 20260603000000_reconcile_schema_drift.sql, so a from-scratch `supabase db
+-- reset` still produces the correct schema. Intentionally a no-op.

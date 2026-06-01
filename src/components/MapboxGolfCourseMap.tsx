@@ -11,7 +11,6 @@ import { TilesetService } from '@/lib/tilesetService';
 import { supabase } from '@/integrations/supabase/client';
 import DateLayerDropdown from '@/components/DateLayerDropdown';
 import RasterLayerDropdown from '@/components/RasterLayerDropdown';
-import MapSwipeControl from '@/components/MapSwipeControl';
 import DualMapSwipe from '@/components/DualMapSwipe';
 import { applySwipeVisibility } from '@/lib/mapSwipeVisibility';
 import { reprojectGeoJSONToWGS84 } from '@/lib/reprojectGeoJSON';
@@ -975,6 +974,16 @@ const MapboxGolfCourseMap = ({
       ids.forEach(id => {
         if (map.current!.getLayer(id)) {
           map.current!.setLayoutProperty(id, 'visibility', visibility);
+          // Hoist visible vector layers to the very top of the Mapbox stack.
+          // The multispectral COG renders through a deck.gl MapboxOverlay; if its
+          // insert-point sentinel isn't in place when the overlay mounts, the COG
+          // ends up above the vector layers and hides polygons that sit over the
+          // imaged area (e.g. management "zones" over a fairway). Re-asserting the
+          // z-order here — which runs on every visibility toggle — keeps shown
+          // vectors on top regardless of COG/overlay mount ordering.
+          if (visibility === 'visible') {
+            try { map.current!.moveLayer(id); } catch (_) { /* noop */ }
+          }
         }
       });
 
@@ -984,6 +993,14 @@ const MapboxGolfCourseMap = ({
         : 'none';
       if (map.current!.getLayer(labelId)) {
         map.current!.setLayoutProperty(labelId, 'visibility', labelVisibility);
+        if (labelVisibility === 'visible') {
+          try { map.current!.moveLayer(labelId); } catch (_) { /* noop */ }
+        }
+      }
+
+      if (visibility === 'visible') {
+        const present = ids.filter(id => map.current!.getLayer(id));
+        console.log(`[vector] "${layer.name}" visible — layers on map: [${present.join(', ')}]`);
       }
     });
 
@@ -1209,6 +1226,9 @@ const MapboxGolfCourseMap = ({
               console.error(`❌ Failed to add label layer for ${layer.name}:`, err);
             }
           }
+
+          const featureCount = Array.isArray(geojsonData?.features) ? geojsonData.features.length : 0;
+          console.log(`[vector] preloaded "${layer.name}" (${featureCount} features) — source=${sourceId}, fill-layer added=${!!map.current?.getLayer(vectorLayerId)}`);
 
         } catch (err) {
           console.error(`❌ Failed to preload ${layer.name}:`, err);

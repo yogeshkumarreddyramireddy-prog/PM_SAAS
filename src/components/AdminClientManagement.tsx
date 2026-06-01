@@ -80,7 +80,9 @@ export const AdminClientManagement = () => {
     )
   }
 
-  const activeUsers = userProfiles.filter(user => user.approved).length
+  // "Active" must exclude suspended users to agree with AdminUserManagement and
+  // AdminStatsCards (which both use approved && !access_suspended).
+  const activeUsers = userProfiles.filter(user => user.approved && !user.access_suspended).length
   const pendingUsers = userProfiles.filter(user => !user.approved).length
 
   return (

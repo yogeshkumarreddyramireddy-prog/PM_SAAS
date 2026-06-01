@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { getCorsHeaders } from '../_shared/cors.ts'
+import { authenticate, AuthError } from '../_shared/auth.ts'
 import { S3Client, PutObjectCommand } from "npm:@aws-sdk/client-s3";
 import { getSignedUrl } from "npm:@aws-sdk/s3-request-presigner";
 
@@ -20,6 +21,21 @@ serve(async (req) => {
   }
 
   try {
+    // verify_jwt=false: authenticate in-code. Uploads are an admin operation.
+    try {
+      const ctx = await authenticate(req, { requireApproved: true })
+      if (ctx.user && ctx.user.role !== 'admin') {
+        return new Response(JSON.stringify({ error: 'Forbidden - admin only' }), {
+          status: 403, headers: { ...getCorsHeaders(origin), 'Content-Type': 'application/json' },
+        })
+      }
+    } catch (authErr) {
+      const status = authErr instanceof AuthError ? authErr.status : 401
+      return new Response(JSON.stringify({ error: (authErr as Error).message }), {
+        status, headers: { ...getCorsHeaders(origin), 'Content-Type': 'application/json' },
+      })
+    }
+
     const { fileName, fileSize, golfCourseId, category, metadata = {}, gpsCoordinates, fileType: parsedFileType = '' }: R2PresignRequest & { fileType?: string } = await req.json()
 
 

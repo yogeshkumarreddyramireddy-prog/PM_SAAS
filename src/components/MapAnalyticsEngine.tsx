@@ -199,8 +199,9 @@ export function MapAnalyticsEngine({
     const dataArray = cogImageData.imageData.data;
     const { calculate } = config;
 
-    // COGLoader packs: R=band0(Red), G=band1(Green), B=band2(NIR), A=band3(RedEdge)
-    // bandMapping indices directly address texture channels 0=R,1=G,2=B,3=A
+    // COGLoader packs POSITIONALLY: R←band0, G←band1, B←band2, A←band3. For our
+    // Solvi COGs (Green/Red/RedEdge/NIR order) the channels hold R=Green, G=Red,
+    // B=RedEdge, A=NIR. bandMapping indices address texture channels 0=R,1=G,2=B,3=A.
     const getChannel = (idx: number, pixels: Uint8ClampedArray, offset: number): number => {
       if (idx === 0) return pixels[offset]     / 255;
       if (idx === 1) return pixels[offset + 1] / 255;

@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS public.user_profiles (
   full_name TEXT,
   golf_course_id INTEGER REFERENCES public.active_golf_courses(id),
   golf_course_name TEXT,
-  approved BOOLEAN NOT NULL DEFAULT true,
+  approved BOOLEAN NOT NULL DEFAULT false,
   requested_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
   request_reason TEXT,
   access_suspended BOOLEAN DEFAULT false,

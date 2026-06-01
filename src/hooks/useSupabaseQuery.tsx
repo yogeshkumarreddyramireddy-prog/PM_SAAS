@@ -203,8 +203,10 @@ export const useDeleteUser = () => {
 
   return useMutation({
     mutationFn: async (userId: string) => {
+      const { data: { session } } = await supabase.auth.getSession()
       const { data, error } = await supabase.functions.invoke('delete-user', {
-        body: { userId }
+        body: { userId },
+        headers: session ? { Authorization: `Bearer ${session.access_token}` } : undefined,
       })
 
       if (error) throw error
@@ -235,8 +237,10 @@ export const useApproveUser = () => {
 
   return useMutation({
     mutationFn: async (userId: string) => {
+      const { data: { session } } = await supabase.auth.getSession()
       const { data, error } = await supabase.functions.invoke('approve-user', {
-        body: { userId }
+        body: { userId },
+        headers: session ? { Authorization: `Bearer ${session.access_token}` } : undefined,
       })
 
       if (error) throw error
@@ -349,6 +353,12 @@ export const useUserSuspension = () => {
         suspended_at: suspended ? new Date().toISOString() : null,
         suspended_by: suspended ? (await supabase.auth.getUser()).data.user?.id : null,
         suspension_reason: suspended ? reason : null
+      }
+      // When restoring access directly, also clear any pending access request so
+      // the user doesn't stay stuck in a "pending" state (the access-request
+      // approval flow manages this flag separately).
+      if (!suspended) {
+        updateData.access_request_pending = false
       }
 
       const { error } = await supabase
@@ -673,7 +683,7 @@ export const useUpdateUserRole = () => {
 
 // Hook for fetching all golf courses (not just active)
 export const useAllGolfCourses = () => {
-  return useQuery<{ id: number; name: string }[]>({
+  return useQuery<{ id: string; name: string }[]>({
     queryKey: ['all-golf-courses'],
     queryFn: async () => {
       const { data, error } = await supabase
@@ -681,8 +691,10 @@ export const useAllGolfCourses = () => {
         .select('id, name')
         .order('name', { ascending: true })
       if (error) throw error
-      function isGolfCourse(obj: any): obj is { id: number; name: string } {
-        return obj && typeof obj.id === 'number' && typeof obj.name === 'string';
+      // all_golf_courses.id is a UUID (string). The previous guard required a
+      // number, so EVERY row was filtered out and the hook always returned [].
+      function isGolfCourse(obj: any): obj is { id: string; name: string } {
+        return obj && typeof obj.id === 'string' && typeof obj.name === 'string';
       }
       const arr = (data ?? []) as unknown[];
       const filtered = arr.filter(isGolfCourse);

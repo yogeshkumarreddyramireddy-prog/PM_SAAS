@@ -26,12 +26,16 @@ serve(async (req) => {
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
 
     const supabaseAnon = createClient(supabaseUrl, supabaseAnonKey, {
-      global: { headers: { Authorization: authHeader } },
       auth: { autoRefreshToken: false, persistSession: false }
     })
-    
-    // Verify user is authenticated
-    const { data: { user }, error: authError } = await supabaseAnon.auth.getUser()
+
+    // Verify user is authenticated. The token MUST be passed explicitly to
+    // getUser(): with persistSession:false there is no stored session, and
+    // supabase-js ignores the global Authorization header when no token arg is
+    // given, so a bare getUser() returns "Auth session missing" and 401s every
+    // caller. This matches the working delete-user / approve-user functions.
+    const token = authHeader.replace('Bearer ', '')
+    const { data: { user }, error: authError } = await supabaseAnon.auth.getUser(token)
     
     if (authError || !user) {
       console.error("Auth error:", authError)

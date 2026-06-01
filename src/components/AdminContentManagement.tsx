@@ -237,7 +237,7 @@ export const AdminContentManagement = () => {
                 key={client.id}
                 variant={selectedClientId === client.id ? "teal" : "outline"}
                 className="h-auto p-4 flex flex-col items-start"
-                onClick={() => setSelectedClientId(client.id)}
+                onClick={() => { setSelectedClientId(client.id); setViewMode('files'); }}
               >
                 <span className="font-semibold">{client.name}</span>
                 <span className="text-xs opacity-70">
@@ -306,14 +306,16 @@ export const AdminContentManagement = () => {
             {viewMode === 'map' ? (
               <div className="flex flex-col gap-6 w-full relative z-10">
                 <MapboxGolfCourseMap
+                  key={selectedClient.id}
                   golfCourseId={selectedClient.id.toString()}
                   mapboxAccessToken={import.meta.env.VITE_MAPBOX_ACCESS_TOKEN || ''}
                   className="w-full"
                   isAdmin={true}
                 />
-                <VectorLayerManager 
-                  golfCourseId={selectedClient.id.toString()} 
-                  isAdmin={true} 
+                <VectorLayerManager
+                  key={`vl-${selectedClient.id}`}
+                  golfCourseId={selectedClient.id.toString()}
+                  isAdmin={true}
                 />
               </div>
             ) : (

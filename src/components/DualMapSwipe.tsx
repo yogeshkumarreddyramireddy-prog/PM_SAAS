@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import mapboxgl from 'mapbox-gl';
 import { Button } from '@/components/ui/button';
 import { MoveHorizontal, X } from 'lucide-react';
+import { applySwipeVisibility } from '@/lib/mapSwipeVisibility';
 
 interface LayerMetadata {
   name: string;
@@ -100,50 +101,10 @@ export const DualMapSwipe = ({
     rightMap.on('load', () => {
       console.log('✅ Right map loaded');
 
-      // Wait for style to fully load before modifying layers
+      // Wait for style to fully load before modifying layers, then apply the
+      // shared swipe visibility rule (raster-only target, all vectors hidden).
       rightMap.once('idle', () => {
-        console.log('🎯 Right map idle, applying swipe layer removal');
-        
-        // Hide ALL vector layers on right map (they should only show on left/main map)
-        const rightStyle = rightMap.getStyle();
-        if (rightStyle && rightStyle.layers) {
-          rightStyle.layers.forEach((layer: any) => {
-            if (layer.id.startsWith('vector-layer-')) {
-              try {
-                rightMap.setLayoutProperty(layer.id, 'visibility', 'none');
-                console.log(`👁️ Hidden vector layer ${layer.id} on right map`);
-              } catch (e) {
-                console.warn(`Could not hide vector layer ${layer.id}:`, e);
-              }
-            }
-          });
-        }
-        
-        // Show/Hide target layers appropriately on right map
-        
-        // 1. Right map ALWAYS hides leftLayerId (if it exists)
-        if (leftLayerId && rightMap.getLayer(leftLayerId)) {
-          try {
-            rightMap.setLayoutProperty(leftLayerId, 'visibility', 'none');
-            console.log(`👁️ Left layer ${leftLayerId} explicitly hidden from right map`);
-          } catch (e) {
-            console.warn(`Could not hide left layer ${leftLayerId} on right map:`, e);
-          }
-        }
-
-        // 2. Main map ALWAYS hides rightLayerId (if it exists)
-        // Note: we're applying this to `map` (main map), so we should do this dynamically in a separate useEffect
-        // But for rightMap setup, we only manage what rightMap shows.
-        
-        // Right map should explicitly SHOW rightLayerId if it was hidden by default
-        if (rightLayerId && rightMap.getLayer(rightLayerId)) {
-          try {
-            rightMap.setLayoutProperty(rightLayerId, 'visibility', 'visible');
-            console.log(`👁️ Right layer ${rightLayerId} explicitly shown on right map`);
-          } catch (e) {
-            console.warn(`Could not show right layer ${rightLayerId} on right map:`, e);
-          }
-        }
+        applySwipeVisibility(rightMap, rightLayerId);
       });
 
       // Sync maps
@@ -200,45 +161,22 @@ export const DualMapSwipe = ({
   // Only depend on enabled/map/token — DO NOT include layer IDs or the map will be recreated on every selection change
   }, [enabled, map, mapboxAccessToken]);
 
-  // ── Separate effect: update right-map layer visibility when selection changes ──
+  // ── Re-apply right-map visibility whenever the right selection changes. ──
   useEffect(() => {
     if (!enabled || !rightMapRef.current) return;
 
-    // On right map: show everything EXCEPT rightLayerId (Wait, right map should ONLY show rightLayerId)
-    const applyRightMapVisibility = () => {
-      const rightMap = rightMapRef.current;
-      if (!rightMap || !rightMap.loaded() || !rightMap.isStyleLoaded()) return;
-      try {
-        const style = rightMap.getStyle();
-        if (!style?.layers) return;
-        style.layers.forEach((l: any) => {
-          if (l.id.startsWith('tileset-layer-') || l.id.startsWith('health-map-layer-') || l.id.startsWith('vector-layer-')) {
-            const isTarget = l.id === rightLayerId;
-            if (isTarget) {
-              rightMap.setLayoutProperty(l.id, 'visibility', 'visible');
-            } else {
-              rightMap.setLayoutProperty(l.id, 'visibility', 'none');
-            }
-          }
-        });
-      } catch (e) {
-        console.warn('Could not apply right map visibility:', e);
-      }
-    };
+    const rightMap = rightMapRef.current;
+    applySwipeVisibility(rightMap, rightLayerId);
 
-    applyRightMapVisibility();
-    
-    // We can run this once on 'idle' to catch any layers that loaded late,
-    // but we must remove it immediately to avoid infinite layout loops.
+    // Catch layers that loaded late by running once more on the next idle.
     const onIdle = () => {
-        applyRightMapVisibility();
-        rightMapRef.current?.off('idle', onIdle);
+      applySwipeVisibility(rightMap, rightLayerId);
+      rightMap.off('idle', onIdle);
     };
-    rightMapRef.current.on('idle', onIdle);
+    rightMap.on('idle', onIdle);
 
     return () => {
-      if (rightMapRef.current) rightMapRef.current.off('idle', onIdle);
-      // Main map restoration is handled by MapboxGolfCourseMap's syncLayerOrder when swipe becomes disabled.
+      rightMap.off('idle', onIdle);
     };
   }, [enabled, rightLayerId]);
 
@@ -259,108 +197,62 @@ export const DualMapSwipe = ({
       const rightStyle = rightMap.getStyle();
       if (!rightStyle || !rightStyle.layers) return;
 
-      // 1. Remove layers from right map that don't exist in main map anymore
+      // 1. Remove layers from right map that don't exist in main map anymore.
       rightStyle.layers.forEach((layer: any) => {
-        if ((layer.id.startsWith('tileset-layer-') || 
+        if ((layer.id.startsWith('tileset-layer-') ||
              layer.id.startsWith('health-map-layer-') ||
-             layer.id.startsWith('vector-layer-')) && 
+             layer.id.startsWith('vector-layer-')) &&
             !mainLayerIds.has(layer.id)) {
-          // If this layer was explicitly added to right map by another mechanic, keep it? 
-          // No, we sync strictly with main map structure.
           try {
             const sourceId = layer.source;
             if (rightMap.getLayer(layer.id)) {
               rightMap.removeLayer(layer.id);
-              console.log(`🗑️ Removed orphaned layer ${layer.id} from right map`);
             }
-            // Also remove the source if it exists and no other layer uses it
             if (sourceId && rightMap.getSource(sourceId)) {
-              // Check if any other layer uses this source
               const rightLayers = rightMap.getStyle()?.layers || [];
               const sourceInUse = rightLayers.some((l: any) => l.source === sourceId && l.id !== layer.id);
               if (!sourceInUse) {
                 rightMap.removeSource(sourceId);
-                console.log(`🗑️ Removed orphaned source ${sourceId} from right map`);
               }
             }
           } catch (e) {
             console.warn(`Could not remove layer ${layer.id}:`, e);
           }
         }
-        
-        // Re-enforce explicit visibilities during sync
-        if (layer.id === leftLayerId) {
-           try {
-              if (rightMap.getLayoutProperty(layer.id, 'visibility') !== 'none') {
-                rightMap.setLayoutProperty(layer.id, 'visibility', 'none');
-              }
-           } catch(e){}
-        }
-        if (layer.id === rightLayerId) {
-           try {
-              if (rightMap.getLayoutProperty(layer.id, 'visibility') !== 'visible') {
-                 rightMap.setLayoutProperty(layer.id, 'visibility', 'visible');
-              }
-           } catch(e){}
-        }
       });
 
-      // 3. Add new layers to right map that exist in main but not in right
+      // 2. Add new layers from main map that aren't on right map yet. Visibility
+      //    is normalized below by applySwipeVisibility — don't second-guess it here.
       mainStyle.layers.forEach((layer: any) => {
-        if ((layer.id.startsWith('tileset-layer-') || 
+        if ((layer.id.startsWith('tileset-layer-') ||
              layer.id.startsWith('health-map-layer-') ||
-             layer.id.startsWith('vector-layer-')) && 
+             layer.id.startsWith('vector-layer-')) &&
             !rightMap.getLayer(layer.id)) {
           try {
-            // Get the source from main map
             const sourceId = layer.source;
-            
             if (!rightMap.getSource(sourceId)) {
               const mainSource = map.getSource(sourceId);
-              
               if (mainSource) {
-                // For GeoJSON sources (vector layers), get the data directly
                 if ((mainSource as any).type === 'geojson') {
                   const geojsonData = (mainSource as any)._data;
-                  rightMap.addSource(sourceId, {
-                    type: 'geojson',
-                    data: geojsonData
-                  });
-                  console.log(`➕ Added GeoJSON source ${sourceId} to right map`);
+                  rightMap.addSource(sourceId, { type: 'geojson', data: geojsonData });
                 } else {
-                  // For raster sources, serialize normally
                   const sourceData = (mainSource as any).serialize();
                   rightMap.addSource(sourceId, sourceData);
-                  console.log(`➕ Added raster source ${sourceId} to right map`);
                 }
               }
             }
-
-            // Add layer to right map if source exists
             if (rightMap.getSource(sourceId)) {
-              // Clone the layer definition
-              const layerDef = JSON.parse(JSON.stringify(layer));
-
-              // Hide left layer explicitly
-              if (layer.id === leftLayerId) {
-                if (!layerDef.layout) layerDef.layout = {};
-                layerDef.layout.visibility = 'none';
-              }
-              
-              // Show right layer explicitly
-              if (layer.id === rightLayerId) {
-                 if (!layerDef.layout) layerDef.layout = {};
-                 layerDef.layout.visibility = 'visible';
-              }
-              
-              rightMap.addLayer(layerDef);
-              console.log(`➕ Added layer ${layer.id} to right map`);
+              rightMap.addLayer(JSON.parse(JSON.stringify(layer)));
             }
           } catch (e) {
             console.warn(`Could not add layer ${layer.id} to right map:`, e);
           }
         }
       });
+
+      // 3. Single source of truth for visibility on the right map.
+      applySwipeVisibility(rightMap, rightLayerId);
     };
 
     // Sync immediately
@@ -372,7 +264,7 @@ export const DualMapSwipe = ({
     return () => {
       clearInterval(intervalId);
     };
-  }, [enabled, map, leftLayerId, rightLayerId]);
+  }, [enabled, map, rightLayerId]);
 
   // Handle drag
   const handleDragStart = (clientX: number) => {

@@ -63,67 +63,34 @@ export const FileDownloader = ({
   const handleDownload = async () => {
     setIsDownloading(true)
     try {
-      if (!file.r2_object_key || !file.r2_bucket_name) {
+      if (!file.r2_object_key) {
         throw new Error('File not stored in R2')
       }
 
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session) {
-        throw new Error('Not authenticated')
-      }
-
-      // Get the file data from R2
-      const { data, error } = await supabase.functions.invoke('r2-download', {
-        body: {
-          objectKey: file.r2_object_key,
-          bucketName: file.r2_bucket_name,
-          fileName: file.original_filename || file.filename
-        }
+      // Use r2-sign (same path as COG streaming) — avoids AWS SDK checksum params
+      // that cause R2 to return error responses without CORS headers.
+      const { data, error } = await supabase.functions.invoke('r2-sign', {
+        body: { action: 'getGetUrl', key: file.r2_object_key, expiresInSeconds: 3600 }
       })
 
       if (error) throw error
-      if (!data) throw new Error('No file data received')
-      
-      // Log the access
+      if (!data?.url) throw new Error('No download URL received')
+
       await logFileAccess('download')
-      
-      // Create blob and download
-      let blob: Blob
-      
-      if (data?.downloadUrl) {
-        // Fetch the actual file content from the signed URL
-        const response = await fetch(data.downloadUrl)
-        if (!response.ok) throw new Error('Failed to fetch file from signed URL')
-        blob = await response.blob()
-      } else if (data instanceof ArrayBuffer) {
-        blob = new Blob([data], { type: file.mime_type || 'application/octet-stream' })
-      } else if (data instanceof Uint8Array) {
-        blob = new Blob([data as unknown as BlobPart], { type: file.mime_type || 'application/octet-stream' })
-      } else if (typeof data === 'string') {
-        // Handle data URLs or base64 encoded data
-        if (data.startsWith('data:')) {
-          const response = await fetch(data)
-          blob = await response.blob()
-        } else {
-          blob = new Blob([data], { type: file.mime_type || 'text/plain' })
-        }
-      } else {
-        // Handle object data (convert to JSON) as a fallback
-        const jsonString = JSON.stringify(data)
-        blob = new Blob([jsonString], { type: 'application/json' })
-      }
-      
-      // Create download URL and trigger download
-      const downloadUrl = URL.createObjectURL(blob)
+
+      // Fetch via the working presigned URL and create a local blob for download
+      const response = await fetch(data.url)
+      if (!response.ok) throw new Error(`Failed to fetch file: ${response.status}`)
+      const blob = await response.blob()
+
+      const blobUrl = URL.createObjectURL(blob)
       const link = document.createElement('a')
-      link.href = downloadUrl
+      link.href = blobUrl
       link.download = file.original_filename || file.filename
       document.body.appendChild(link)
       link.click()
       document.body.removeChild(link)
-      
-      // Clean up the URL
-      URL.revokeObjectURL(downloadUrl)
+      URL.revokeObjectURL(blobUrl)
 
       toast({
         title: "Download started",
@@ -143,19 +110,17 @@ export const FileDownloader = ({
 
   const handlePreview = async () => {
     try {
-      const { data, error } = await supabase.functions.invoke('r2-download', {
-        body: {
-          objectKey: file.r2_object_key,
-          bucketName: file.r2_bucket_name,
-          fileName: file.original_filename || file.filename
-        }
+      if (!file.r2_object_key) throw new Error('File not stored in R2')
+
+      const { data, error } = await supabase.functions.invoke('r2-sign', {
+        body: { action: 'getGetUrl', key: file.r2_object_key, expiresInSeconds: 3600 }
       })
 
       if (error) throw error
-      if (!data?.downloadUrl) throw new Error('No preview URL received')
+      if (!data?.url) throw new Error('No preview URL received')
 
       await logFileAccess('preview')
-      setPreviewUrl(data.downloadUrl)
+      setPreviewUrl(data.url)
       setShowPreviewDialog(true)
     } catch (error) {
       toast({

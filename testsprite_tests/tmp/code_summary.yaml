@@ -1,0 +1,64 @@
+version: "2"
+type: frontend
+tech_stack:
+  - TypeScript
+  - React
+  - Vite
+  - Tailwind CSS
+  - Supabase
+routes:
+  - path: /
+    file: src/pages/PMVApp.tsx
+    auth_required: false
+    description: Main application page, includes login and map interface based on auth state
+  - path: /admin
+    file: src/pages/PMVApp.tsx
+    auth_required: true
+    description: Admin dashboard view within the main app
+  - path: /signup
+    file: src/pages/PMVApp.tsx
+    auth_required: false
+    description: Signup view within the main app
+  - path: /reset-password
+    file: src/pages/ResetPassword.tsx
+    auth_required: false
+    description: Password reset page
+features:
+  - name: User Authentication
+    description: Login and signup functionality
+    files:
+      - src/components/LoginForm.tsx
+      - src/components/SignupForm.tsx
+      - src/hooks/useAuth.tsx
+    entry_route: /
+    user_interactions:
+      - Fill email and password fields
+      - Click submit button
+      - See error or success messages
+    api_calls:
+      - method: POST
+        endpoint: supabase.auth.signInWithPassword
+    auth_required: false
+  - name: Map Visualization
+    description: View multispectral and drone imagery maps
+    files:
+      - src/components/VectorLayerMap.tsx
+      - src/components/MapAnalyticsEngine.tsx
+    entry_route: /
+    user_interactions:
+      - Pan and zoom map
+      - Select layers to view
+      - Toggle map analytics
+    auth_required: true
+  - name: Admin Management
+    description: Admin tools to manage clients and maps
+    files:
+      - src/components/AdminDashboard.tsx
+      - src/components/AdminClientManagement.tsx
+    entry_route: /admin
+    user_interactions:
+      - View clients list
+      - Assign golf courses or maps
+      - Upload new layers
+    auth_required: true
+known_limitations: []

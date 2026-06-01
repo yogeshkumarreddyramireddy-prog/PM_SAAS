@@ -4,8 +4,8 @@ import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
+import { cn } from '@/lib/utils';
 import { MapPin, Layers, ZoomIn, ZoomOut, Maximize2, LocateFixed, AlertCircle, Activity, ArrowRight, ArrowDown, ArrowLeft, ArrowUp, X, MoveHorizontal, Tag } from 'lucide-react';
 import { TilesetService } from '@/lib/tilesetService';
 import { supabase } from '@/integrations/supabase/client';
@@ -13,6 +13,8 @@ import DateLayerDropdown from '@/components/DateLayerDropdown';
 import RasterLayerDropdown from '@/components/RasterLayerDropdown';
 import MapSwipeControl from '@/components/MapSwipeControl';
 import DualMapSwipe from '@/components/DualMapSwipe';
+import { applySwipeVisibility } from '@/lib/mapSwipeVisibility';
+import { reprojectGeoJSONToWGS84 } from '@/lib/reprojectGeoJSON';
 import HealthMapStack from '@/components/HealthMapStack';
 import HealthMapDropdown from '@/components/HealthMapDropdown';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -28,6 +30,8 @@ import { AnnotationDialog } from './AnnotationDialog';
 import { AnnotationContextMenu } from './AnnotationContextMenu';
 import { DrawPlotsPanel } from './DrawPlotsPanel';
 import { MeasurementTooltip } from './MeasurementTooltip';
+import { ZonalStatsPanel } from './ZonalStatsPanel';
+import { PixelInspectorTooltip } from './PixelInspectorTooltip';
 
 import { GolfCourseTileset } from "@/lib/tilesetService";
 
@@ -81,19 +85,27 @@ const MapboxGolfCourseMap = ({
   const [selectedHealthMapIds, setSelectedHealthMapIds] = useState<string[]>([]);
   const [containerReady, setContainerReady] = useState(false);
   const [healthMapLoaded, setHealthMapLoaded] = useState(false);
-  const [healthMapOpacity, setHealthMapOpacity] = useState(0.7);
+  const [healthMapOpacity, setHealthMapOpacity] = useState(1);
   const [isAnimating, setIsAnimating] = useState(false);
   const animationRef = useRef<number | null>(null);
   const mapInitializedRef = useRef(false);
   const [mapReady, setMapReady] = useState(false);
+  // Tracks which COG key the current presigned URL was fetched for.
+  // Prevents the analysis effect from resetting mode/URL on every layerOrder shuffle.
+  const activeCogKeyRef = useRef<string | null>(null);
+  // Tracks the currently loaded RGB tileset so we don't reset the user's
+  // analysis index/range/bandMapping every time layerOrder shuffles for an
+  // unrelated reason (vector layer arrival, health map load, drag reorder).
+  const activeRgbTilesetIdRef = useRef<string | null>(null);
 
   // Vectorization & Drawing Tools
-  const drawing = useDrawingManager(map.current, Number(golfCourseId) || null, mapReady);
+  const drawing = useDrawingManager(map.current, Number(golfCourseId) || null, mapReady, golfCourseId);
   
   // Vector layer states
   const [vectorLayers, setVectorLayers] = useState<VectorLayer[]>([]);
   const [visibleVectorLayers, setVisibleVectorLayers] = useState<Set<string>>(new Set());
   const [showVectorLayerPanel, setShowVectorLayerPanel] = useState(false);
+  const [showAnalysisPanel, setShowAnalysisPanel] = useState(false);
   const [vectorLayersAboveHealth, setVectorLayersAboveHealth] = useState(true);
 
   // Analysis Panel States
@@ -106,7 +118,16 @@ const MapboxGolfCourseMap = ({
   const [analysisTileBounds, setAnalysisTileBounds] = useState<[number, number, number, number] | undefined>(undefined);
   const [analysisTileMinZoom, setAnalysisTileMinZoom] = useState<number>(14);
   const [analysisHistogramData, setAnalysisHistogramData] = useState<Array<{ value: number; count: number }>>([]);
-  const [bandMapping, setBandMapping] = useState({ r: 0, g: 1, b: 2, nir: 2, re: 3 }); // NIR=Band 3, RedEdge=Band 4
+  // Default band order for the multispectral COGs we ingest (Solvi exports):
+  // Band 1=Green(560), 2=Red(650), 3=RedEdge(730), 4=NIR(860), 5=Alpha. Indices
+  // are 0-based, so Red=1, NIR=3, RedEdge=2. Getting NIR/Red right is what makes
+  // NDVI = (NIR-Red)/(NIR+Red) correct; the prior default used RedEdge as NIR.
+  // Sensors with a different band order can be corrected in Sensor Calibration.
+  const [bandMapping, setBandMapping] = useState({ r: 1, g: 0, b: 2, nir: 3, re: 2 });
+
+  // Zonal Stats + Pixel Inspector state
+  const [showZonalStats, setShowZonalStats] = useState(false);
+  const [isPixelInspectorActive, setIsPixelInspectorActive] = useState(false);
 
   // When the user picks a new index, reset the range to that index's theoretical domain
   // so stale values from the previous index don't persist in the slider labels.
@@ -121,7 +142,7 @@ const MapboxGolfCourseMap = ({
   
   // Raster layer control - always shown by default
   const [showRasterLayers, setShowRasterLayers] = useState(true);
-  const [rasterOpacity, setRasterOpacity] = useState(0.85);
+  const [rasterOpacity, setRasterOpacity] = useState(1);
   const rasterLoadingRef = useRef(false);
   const [rasterLayersLoaded, setRasterLayersLoaded] = useState(false);
   
@@ -157,80 +178,72 @@ const MapboxGolfCourseMap = ({
 
   const syncLayerOrder = useCallback(() => {
     if (!map.current || !map.current.isStyleLoaded() || layerOrder.length === 0) return;
-    
-    // Debugging: Log all layers currently on the map
-    const style = map.current.getStyle();
-    if (style && style.layers) {
-        const dynamicLayers = style.layers.filter(l => 
-            l.id.startsWith('tileset-layer-') || 
-            l.id.startsWith('health-map-layer-') || 
-            l.id.startsWith('vector-layer-')
-        );
-        console.log(`🗺️ Mapbox Style Report: Found ${dynamicLayers.length} dynamic layers on map:`, 
-            dynamicLayers.map(l => `${l.id} (${ (l.layout as any)?.visibility || 'visible'})`)
-        );
-    }
-    
-    console.log('🔄 Syncing layer z-indices based on layerOrder:', layerOrder);
-    
-    // Mapbox moveLayer without beforeId puts it at the TOP.
-    // Iterating in reverse ensures the first item in layerOrder is placed last (on top).
-    const reversedOrder = [...layerOrder].reverse();
-    
-    reversedOrder.forEach(layerId => {
-      const applyLayerState = (id: string, isVisible: boolean) => {
-        if (!map.current!.getLayer(id)) return;
-        try {
+
+    const applyLayerState = (id: string, isVisible: boolean, beforeId?: string) => {
+      if (!map.current!.getLayer(id)) return;
+      try {
+        if (beforeId && map.current!.getLayer(beforeId)) {
+          map.current!.moveLayer(id, beforeId);
+        } else {
           map.current!.moveLayer(id);
-          const currentVisibility = map.current!.getLayoutProperty(id, 'visibility') || 'visible';
-          const targetVisibility = isVisible ? 'visible' : 'none';
-          if (currentVisibility !== targetVisibility) {
-             map.current!.setLayoutProperty(id, 'visibility', targetVisibility);
-          }
-        } catch (e) {
-          console.warn(`Failed to move/show layer ${id}:`, e);
         }
-      };
+        const currentVisibility = map.current!.getLayoutProperty(id, 'visibility') || 'visible';
+        const targetVisibility = isVisible ? 'visible' : 'none';
+        if (currentVisibility !== targetVisibility) {
+          map.current!.setLayoutProperty(id, 'visibility', targetVisibility);
+        }
+      } catch (e) {
+        console.warn(`Failed to move/show layer ${id}:`, e);
+      }
+    };
+
+    // ── Pass 0: Pin raster tileset layers (RGB orthomosaic) just below the raster ceiling ──
+    // Forward iteration so layerOrder[0] (bottom) ends up lowest in the raster group.
+    // These stay below the COG/Deck.GL layers which are anchored above the ceiling via beforeId.
+    layerOrder.forEach(layerId => {
+      if (!layerId.startsWith('tileset-layer-')) return;
+      const rawId = layerId.replace('tileset-layer-', '');
+      if (isCogTilesetId(rawId)) return; // COG tilesets live in Deck.GL — no Mapbox layer
+      if (!map.current!.getLayer(layerId)) return;
+      // While swipe is active, the left-map visibility is owned by
+      // applySwipeVisibility — skip this pass so we don't fight it.
+      if (swipeEnabled) return;
+      const shouldBeVisible = showRasterLayers && selectedLayers.includes(rawId);
+      applyLayerState(layerId, shouldBeVisible, 'raster-tileset-ceiling');
+    });
+
+    // ── Pass 1: Reorder health maps and vector layers (reverse so layerOrder[0] = bottom) ──
+    // Mapbox moveLayer without beforeId puts the layer at the TOP of the current stack.
+    const reversedOrder = [...layerOrder].reverse();
+    reversedOrder.forEach(layerId => {
+      if (layerId.startsWith('tileset-layer-')) return; // handled in pass 0
 
       if (map.current!.getLayer(layerId)) {
-        // Force visibility state based on current selection
-        const isRaster = layerId.startsWith('tileset-layer-');
         const isHealth = layerId.startsWith('health-map-layer-');
         const isVector = layerId.startsWith('vector-layer-');
-        
-        const rawId = layerId.replace('tileset-layer-', '').replace('health-map-layer-', '').replace('vector-layer-', '');
-        
+        const rawId = layerId.replace('health-map-layer-', '').replace('vector-layer-', '');
+
         let shouldBeVisible = false;
-        if (isRaster) shouldBeVisible = showRasterLayers && selectedLayers.includes(rawId);
         if (isHealth) shouldBeVisible = showHealthMaps && selectedHealthMapIds.includes(rawId);
         if (isVector) shouldBeVisible = visibleVectorLayers.has(rawId);
 
-        // If Swipe Mode is enabled, the main map ONLY shows the leftLayerId!
-        if (swipeEnabled) {
-           shouldBeVisible = swipeLeftLayerId ? layerId === swipeLeftLayerId : false;
-        }
-
         if (isVector) {
-          // Vector layer visibility is managed by syncVectorVisibility, not here
-          // Just move the non-label sub-layers; labels are hoisted in the second pass below.
+          // Visibility is managed by syncVectorVisibility; just maintain z-order here.
+          // Labels are hoisted in the second pass below.
           const layerIds = [layerId, `${layerId}-outline`, `${layerId}-line`, `${layerId}-point`];
           layerIds.forEach(id => {
             if (map.current!.getLayer(id)) {
               try { map.current!.moveLayer(id); } catch(e) {}
             }
           });
-        } else {
-          // Standard Raster or Health Map layers
-          applyLayerState(layerId, shouldBeVisible);
-        }
-      } else if (layerId.startsWith('tileset-layer-')) {
-          // COG tilesets render in Deck.GL and have no Mapbox layer — silently skip
-          const tilesetId = layerId.replace('tileset-layer-', '');
-          if (!isCogTilesetId(tilesetId)) {
-            console.log(`⚠️ Layer ${layerId} in order list but NOT FOUND on map style.`);
+        } else if (isHealth) {
+          // Skip visibility while swipe owns it; still maintain z-order.
+          if (swipeEnabled) {
+            try { map.current!.moveLayer(layerId); } catch(e) {}
+          } else {
+            applyLayerState(layerId, shouldBeVisible);
           }
-      } else if (layerId.startsWith('health-map-layer-')) {
-          console.log(`⚠️ Layer ${layerId} in order list but NOT FOUND on map style.`);
+        }
       }
     });
 
@@ -257,26 +270,24 @@ const MapboxGolfCourseMap = ({
       }
     });
 
-  }, [layerOrder, selectedLayers, selectedHealthMapIds, visibleVectorLayers, showRasterLayers, showHealthMaps, swipeEnabled, swipeLeftLayerId]);
+  }, [layerOrder, selectedLayers, selectedHealthMapIds, visibleVectorLayers, showRasterLayers, showHealthMaps, swipeEnabled]);
 
-  // Sync Mapbox z-index whenever order or selection changes
+  // Sync Mapbox z-index whenever order or selection changes.
+  // If the style isn't loaded yet, syncLayerOrder bails — we register a one-shot
+  // 'idle' listener to retry once. Previously this attached a permanent listener
+  // that re-ran on every pan/zoom, doing redundant work and spamming the console.
   useEffect(() => {
     if (!map.current) return;
-    
-    syncLayerOrder();
 
-    // Use a small delay for the idle listener to prevent loops
-    let idleTimeout: any = null;
-    const onIdle = () => {
-        if (idleTimeout) clearTimeout(idleTimeout);
-        idleTimeout = setTimeout(() => syncLayerOrder(), 100);
-    };
-    
-    map.current.on('idle', onIdle);
-    
+    if (map.current.isStyleLoaded()) {
+      syncLayerOrder();
+      return;
+    }
+
+    const onIdleOnce = () => syncLayerOrder();
+    map.current.once('idle', onIdleOnce);
     return () => {
-      if (idleTimeout) clearTimeout(idleTimeout);
-      map.current?.off('idle', onIdle);
+      map.current?.off('idle', onIdleOnce);
     };
   }, [syncLayerOrder, rasterLayersLoaded, healthMapLoaded]);
 
@@ -289,7 +300,6 @@ const MapboxGolfCourseMap = ({
 
   const setMapContainerRef = useCallback((node: HTMLDivElement | null) => {
     if (node && !mapContainer.current) {
-      console.log('✅ Main map container mounted');
       mapContainer.current = node;
       setContainerReady(true);
     }
@@ -301,9 +311,17 @@ const MapboxGolfCourseMap = ({
       setIsLoading(true);
       setError(null);
 
+      // Clear state from the previous course so orphan IDs from another course
+      // don't linger in selection/visibility sets while new data is fetched.
+      // visibleVectorLayers is pruned by fetchVectorLayers itself.
+      setSelectedLayers([]);
+      setSelectedHealthMapIds([]);
+      setHealthMapTilesets([]);
+      setRasterFileNames({});
+
       try {
         const tilesetsData = await TilesetService.getTilesetsForGolfClub(golfCourseId);
-        
+
         setTilesets(tilesetsData || []);
         if (tilesetsData && tilesetsData.length > 0) {
           setSelectedLayers([tilesetsData[0].id]);
@@ -335,7 +353,6 @@ const MapboxGolfCourseMap = ({
           console.warn('Could not load layer display names (non-fatal):', nameErr);
         }
 
-        console.log('Loading health maps for golf_course_id:', golfCourseId);
         const { data: healthMaps, error: healthError } = await (supabase as any)
           .from('health_map_tilesets')
           .select('*')
@@ -347,10 +364,7 @@ const MapboxGolfCourseMap = ({
         if (healthError) {
           console.error('Error loading health maps:', healthError);
         } else if (healthMaps) {
-          console.log('Loaded health maps:', healthMaps);
           setHealthMapTilesets(healthMaps || []);
-        } else {
-          console.log('No health maps found');
         }
         
       } catch (err) {
@@ -362,7 +376,6 @@ const MapboxGolfCourseMap = ({
     };
 
     const fetchVectorLayers = async () => {
-      console.log('Loading vector layers for golf_course_id:', golfCourseId);
       const { data: vectorLayersData, error: vectorError } = await (supabase as any)
         .from('vector_layers')
         .select('*')
@@ -373,7 +386,6 @@ const MapboxGolfCourseMap = ({
       if (vectorError) {
         console.error('Error loading vector layers:', vectorError);
       } else if (vectorLayersData && vectorLayersData.length > 0) {
-        console.log('Loaded vector layers:', vectorLayersData);
         setVectorLayers(vectorLayersData);
         
         // When dynamically fetching layers, don't brutally reset visible layers if some already existed
@@ -389,7 +401,6 @@ const MapboxGolfCourseMap = ({
            return next;
         });
       } else {
-        console.log('No vector layers found');
         setVectorLayers([]);
       }
     };
@@ -407,8 +418,7 @@ const MapboxGolfCourseMap = ({
           table: 'vector_layers',
           filter: `golf_course_id=eq.${golfCourseId}`
         },
-        (payload) => {
-          console.log('🔔 Vector layer changed, refreshing...', payload);
+        () => {
           fetchVectorLayers();
         }
       )
@@ -421,23 +431,8 @@ const MapboxGolfCourseMap = ({
 
   // Initialize map
   useEffect(() => {
-    console.log('🗺️ Map init check:', {
-      hasContainer: !!mapContainer.current,
-      tilesetsCount: tilesets.length,
-      mapAlreadyExists: !!map.current,
-      mapInitialized: mapInitializedRef.current,
-      containerReady
-    });
-
-    if (mapInitializedRef.current) {
-      console.log('⏸️ Map already initialized, skipping');
-      return;
-    }
-
-    if (!mapContainer.current || map.current) {
-      console.log('⏸️ Skipping map init - waiting for container');
-      return;
-    }
+    if (mapInitializedRef.current) return;
+    if (!mapContainer.current || map.current) return;
 
     mapInitializedRef.current = true;
 
@@ -473,15 +468,12 @@ const MapboxGolfCourseMap = ({
           [primaryTileset.min_lon, primaryTileset.min_lat],
           [primaryTileset.max_lon, primaryTileset.max_lat]
         ];
-        console.log('✅ Initializing main map with tileset:', primaryTileset.name);
       } else {
-        console.warn('⚠️ Tileset has invalid coordinates, using default center:', {
+        console.warn('Tileset has invalid coordinates, using default center:', {
           center_lat: primaryTileset.center_lat,
           center_lon: primaryTileset.center_lon,
         });
       }
-    } else {
-      console.log('ℹ️ No tilesets yet, showing default map view');
     }
 
     try {
@@ -523,7 +515,6 @@ const MapboxGolfCourseMap = ({
       });
 
       map.current.on('load', async () => {
-        console.log('Map loaded successfully');
         setMapReady(true);
 
         if (!map.current!.getLayer('dynamic-layers-anchor')) {
@@ -534,8 +525,28 @@ const MapboxGolfCourseMap = ({
             layout: { visibility: 'none' }
           }, firstLayerId);
         }
+
+        // Sentinel 1: raster tileset layers (RGB orthomosaic) are anchored just below this.
+        // Keeps them above the basemap but below the COG/vegetation-index rendering.
+        if (!map.current!.getLayer('raster-tileset-ceiling')) {
+          map.current!.addLayer({
+            id: 'raster-tileset-ceiling',
+            type: 'background',
+            paint: { 'background-opacity': 0 }
+          });
+        }
+
+        // Sentinel 2: Deck.GL COG layers (NDVI, vegetation indices) are anchored just below
+        // this via beforeId:'cog-deck-insert-point'. Sits above raster-tileset-ceiling so
+        // vegetation index overlays render on top of the RGB orthomosaic.
+        if (!map.current!.getLayer('cog-deck-insert-point')) {
+          map.current!.addLayer({
+            id: 'cog-deck-insert-point',
+            type: 'background',
+            paint: { 'background-opacity': 0 }
+          });
+        }
         
-        console.log('onMapReady callback:', !!onMapReady, 'map.current:', !!map.current);
         if (onMapReady && map.current) {
           onMapReady(map.current);
         }
@@ -556,33 +567,28 @@ const MapboxGolfCourseMap = ({
     };
   }, [tilesets, baseStyle, showControls, containerReady]);
 
-  // Auto-enable layers selected in the swipe tool so they exist on the main map
+  // Note: swipe never auto-enables layers in the panel anymore. Dropdown options
+  // are scoped to layers the user has already turned on, so picking a value is
+  // a pure display choice and never mutates layer-panel state.
+
+  // While swipe is active, the LEFT pane (main map) shows ONLY swipeLeftLayerId.
+  // Mirrors what DualMapSwipe does for the right pane via the same helper.
+  // Restoration on swipe-exit happens automatically: syncLayerOrder and
+  // syncVectorVisibility both depend on `swipeEnabled` and re-run when it flips.
   useEffect(() => {
-    if (!swipeEnabled) return;
-    
-    const forceEnableLayer = (layerId: string | null) => {
-      if (!layerId) return;
-      if (layerId.startsWith('tileset-layer-')) {
-        const id = layerId.replace('tileset-layer-', '');
-        setSelectedLayers(prev => prev.includes(id) ? prev : [...prev, id]);
-      } else if (layerId.startsWith('health-map-layer-')) {
-        const id = layerId.replace('health-map-layer-', '');
-        setSelectedHealthMapIds(prev => prev.includes(id) ? prev : [...prev, id]);
-        setShowHealthMaps(true);
-      } else if (layerId.startsWith('vector-layer-')) {
-        const id = layerId.replace('vector-layer-', '');
-        setVisibleVectorLayers(prev => {
-          if (prev.has(id)) return prev;
-          const next = new Set(prev);
-          next.add(id);
-          return next;
-        });
-      }
+    if (!swipeEnabled || !map.current) return;
+
+    const m = map.current;
+    const apply = () => applySwipeVisibility(m, swipeLeftLayerId);
+
+    apply();
+    // Re-apply on idle so layers added late (e.g. just after force-enable) get gated.
+    const onIdle = () => apply();
+    m.on('idle', onIdle);
+    return () => {
+      m.off('idle', onIdle);
     };
-    
-    forceEnableLayer(swipeLeftLayerId);
-    forceEnableLayer(swipeRightLayerId);
-  }, [swipeEnabled, swipeLeftLayerId, swipeRightLayerId]);
+  }, [swipeEnabled, swipeLeftLayerId, selectedLayers, selectedHealthMapIds]);
 
   // Load, show, and hide raster layers dynamically
   useEffect(() => {
@@ -590,10 +596,7 @@ const MapboxGolfCourseMap = ({
       return;
     }
 
-    if (!mapReady || !map.current.isStyleLoaded()) {
-      console.log('⏸️ Map style not yet loaded for raster layers, waiting...');
-      return;
-    }
+    if (!mapReady || !map.current.isStyleLoaded()) return;
 
     // If toggle is OFF, securely remove all raster layers
     if (!showRasterLayers) {
@@ -643,21 +646,14 @@ const MapboxGolfCourseMap = ({
         // COG tilesets render via Deck.GL (byte-range streaming), NOT via tile-proxy.
         // Skip adding a Mapbox raster source/layer for them — it would 404 and spam warnings.
         const isCogTileset = tileset.format === 'cog' || !!(tileset as any).cog_source_key;
-        if (isCogTileset) {
-          console.log(`🌐 Skipping Mapbox raster layer for COG tileset: ${tileset.name} — rendered via Deck.GL`);
-          return;
-        }
+        if (isCogTileset) return;
 
         const sourceId = `tileset-source-${tileset.id}`;
         const layerId = `tileset-layer-${tileset.id}`;
         const tileUrlTemplate = `${supabaseUrl}/functions/v1/tile-proxy/${encodeURIComponent(tileset.id)}/{z}/{x}/{y}.png`;
-        
-        console.log(`📍 Processing tileset: ${tileset.name} (id: ${tileset.id})`);
-        console.log(`   Source exists: ${!!map.current!.getSource(sourceId)}, Layer exists: ${!!map.current!.getLayer(layerId)}`);
 
         // Add source if it doesn't exist
         if (!map.current!.getSource(sourceId)) {
-          console.log(`   ➕ Adding source: ${sourceId}`);
           map.current!.addSource(sourceId, {
             type: 'raster',
             tiles: [tileUrlTemplate],
@@ -675,7 +671,9 @@ const MapboxGolfCourseMap = ({
 
         // Add layer if it doesn't exist (SEPARATE from source check — source may exist but layer may be missing)
         if (!map.current!.getLayer(layerId)) {
-          console.log(`   ➕ Adding layer: ${layerId}`);
+          // Insert below the raster ceiling sentinel so the initial position is
+          // correct before syncLayerOrder runs (otherwise Mapbox places it on top).
+          const beforeId = map.current!.getLayer('raster-tileset-ceiling') ? 'raster-tileset-ceiling' : undefined;
           map.current!.addLayer({
             id: layerId,
             type: 'raster',
@@ -684,9 +682,8 @@ const MapboxGolfCourseMap = ({
             paint: {
               'raster-opacity': rasterOpacity
             }
-          });
+          }, beforeId);
         } else {
-          console.log(`   ✅ Layer ${layerId} already exists, ensuring visibility`);
           map.current!.setLayoutProperty(layerId, 'visibility', 'visible');
         }
       });
@@ -704,31 +701,53 @@ const MapboxGolfCourseMap = ({
   // When multiple layers are visible, the topmost one determines whether the
   // AnalysisPanel shows RGB or Multispectral vegetation indices.
   useEffect(() => {
-    // Walk layerOrder from top (index 0) → bottom to find first visible raster tileset
+    // While swipe is active, the analysis engine tracks the LEFT-pane swipe
+    // selection directly — not the layer-panel draw order. If the user picked
+    // a tileset (RGB or COG) on the left, analysis follows it; if they picked
+    // a health map / base map / nothing, analysis is suppressed.
     let topmostTileset: GolfCourseTileset | null = null;
 
-    for (const layerId of layerOrder) {
-      // Only tileset-layers drive analysis mode (health maps are pre-rendered,
-      // vector layers have no pixel data for vegetation index computation)
-      if (!layerId.startsWith('tileset-layer-')) continue;
+    if (swipeEnabled) {
+      // The Plant-Health overlay tracks the LEFT swipe selection. Both RGB
+      // (vegetation indices via tile-proxy) and COG (multispectral via Deck.GL)
+      // are valid analysis targets — the existing isCog branch below routes
+      // each one correctly. Health-map / base-map picks have no analysis target.
+      if (swipeLeftLayerId && swipeLeftLayerId.startsWith('tileset-layer-')) {
+        const rawId = swipeLeftLayerId.replace('tileset-layer-', '');
+        const ts = tilesets.find(t => t.id === rawId);
+        if (ts && selectedLayers.includes(rawId)) {
+          topmostTileset = ts;
+        }
+      }
+    } else {
+      // Walk layerOrder from top (index 0) → bottom to find first visible raster tileset
+      for (const layerId of layerOrder) {
+        // Only tileset-layers drive analysis mode (health maps are pre-rendered,
+        // vector layers have no pixel data for vegetation index computation)
+        if (!layerId.startsWith('tileset-layer-')) continue;
 
-      const rawId = layerId.replace('tileset-layer-', '');
-      // Must be both selected AND raster visibility is on
-      if (!showRasterLayers || !selectedLayers.includes(rawId)) continue;
+        const rawId = layerId.replace('tileset-layer-', '');
+        // Must be both selected AND raster visibility is on
+        if (!showRasterLayers || !selectedLayers.includes(rawId)) continue;
 
-      const ts = tilesets.find(t => t.id === rawId);
-      if (ts) {
-        topmostTileset = ts;
-        break;
+        const ts = tilesets.find(t => t.id === rawId);
+        if (ts) {
+          topmostTileset = ts;
+          break;
+        }
       }
     }
 
     if (!topmostTileset) {
-      // No visible raster layers → disable analysis
+      activeCogKeyRef.current = null;
+      activeRgbTilesetIdRef.current = null;
       setAnalysisModeMap('None');
       setAnalysisTileUrl(null);
       setAnalysisTileBounds(undefined);
-      setAnalysisModeEnabled(false);
+      // Do NOT touch analysisModeEnabled here. The user's toggle preference must
+      // survive the brief moment when selectedLayers is empty between switching
+      // layers (turn Layer A off → turn Layer B on). The overlay is already
+      // suppressed by mode='None' in MapAnalyticsEngine.
       return;
     }
 
@@ -737,40 +756,57 @@ const MapboxGolfCourseMap = ({
     const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 
     if (isCog && cogKey) {
-      // Pathway B: Multispectral COG — get a long-lived presigned R2 URL
-      setAnalysisModeMap('None');
-      setAnalysisTileUrl(null); // Clear old proxy URL
-      setAnalysisTileBounds(undefined);
-      setAnalysisIndex('MS_NDVI');
-      setAnalysisRange([-1, 1]);
-      setBandMapping({ r: 0, g: 1, b: 2, nir: 2, re: 3 });
-      // Auto-enable the analysis panel so user sees the overlay immediately
+      // Pathway B: Multispectral COG — get a long-lived presigned R2 URL.
+      // Guard: if this exact COG key is already loaded/loading, just ensure
+      // analysis is enabled and leave the existing URL/mode untouched.
+      // This prevents every layerOrder shuffle (as tilesets/vectorLayers/healthMaps
+      // arrive at different times) from resetting mode→'None' and blanking the overlay.
+      activeRgbTilesetIdRef.current = null;
       setAnalysisModeEnabled(true);
-      // Fetch a presigned URL for the COG .tif file (needs long expiry for byte-range requests)
-      import('@/lib/r2Service').then(({ R2Service }) => {
-        R2Service.getGetUrl(cogKey, 4 * 3600)
-          .then(({ url }) => {
-              console.log('[COG] Got presigned URL, enabling Multispectral mode');
-              setAnalysisModeMap('Multispectral'); 
+      if (cogKey !== activeCogKeyRef.current) {
+        activeCogKeyRef.current = cogKey;
+        setAnalysisModeMap('None');
+        setAnalysisTileUrl(null);
+        setAnalysisTileBounds(undefined);
+        setAnalysisIndex('MS_NDVI');
+        setAnalysisRange([-1, 1]);
+        // Green/Red/RedEdge/NIR/Alpha band order (see useState default above).
+        setBandMapping({ r: 1, g: 0, b: 2, nir: 3, re: 2 });
+        import('@/lib/r2Service').then(({ R2Service }) => {
+          R2Service.getGetUrl(cogKey, 4 * 3600)
+            .then(({ url }) => {
+              if (activeCogKeyRef.current !== cogKey) return; // superseded
+              setAnalysisModeMap('Multispectral');
               setAnalysisTileUrl(url);
-          })
-          .catch(err => {
-            console.error('[COG] Failed to get presigned URL:', err);
-            setAnalysisTileUrl(null);
-            setAnalysisModeEnabled(false);
-          });
-      });
+            })
+            .catch(err => {
+              console.error('[COG] Failed to get presigned URL:', err);
+              if (activeCogKeyRef.current === cogKey) {
+                setAnalysisTileUrl(null);
+                setAnalysisModeEnabled(false);
+              }
+            });
+        });
+      }
     } else {
-      // Pathway A: Standard RGB PNG tiles — route through tile-proxy
-      setAnalysisModeMap('RGB');
+      // Pathway A: Standard RGB PNG tiles — route through tile-proxy.
+      // Symmetric guard with the COG path: only reset analysis settings when
+      // switching to a *different* RGB tileset. Otherwise unrelated layerOrder
+      // shuffles would clobber the user's chosen index/range every time.
+      activeCogKeyRef.current = null;
+      setAnalysisModeEnabled(true);
       setAnalysisTileUrl(`${supabaseUrl}/functions/v1/tile-proxy/${encodeURIComponent(topmostTileset.id)}/{z}/{x}/{y}.png`);
       setAnalysisTileBounds([topmostTileset.min_lon, topmostTileset.min_lat, topmostTileset.max_lon, topmostTileset.max_lat]);
       setAnalysisTileMinZoom(topmostTileset.min_zoom);
-      setAnalysisIndex('RGB_VARI');
-      setAnalysisRange([-0.5, 0.5]);
-      setBandMapping({ r: 0, g: 1, b: 2, nir: 0, re: 0 }); // RGB: R(B1), G(B2), B(B3)
+      if (topmostTileset.id !== activeRgbTilesetIdRef.current) {
+        activeRgbTilesetIdRef.current = topmostTileset.id;
+        setAnalysisModeMap('RGB');
+        setAnalysisIndex('RGB_VARI');
+        setAnalysisRange([-0.5, 0.5]);
+        setBandMapping({ r: 0, g: 1, b: 2, nir: 0, re: 0 }); // RGB: R(B1), G(B2), B(B3)
+      }
     }
-  }, [selectedLayers, tilesets, layerOrder, showRasterLayers]);
+  }, [selectedLayers, tilesets, layerOrder, showRasterLayers, swipeEnabled, swipeLeftLayerId]);
 
 
 
@@ -789,30 +825,33 @@ const MapboxGolfCourseMap = ({
     });
   }, [rasterOpacity, selectedLayers]);
 
+  // Update health map opacity dynamically. Skipped while a swipe animation is
+  // running so it doesn't fight the per-frame setPaintProperty calls in animateSwipe.
+  useEffect(() => {
+    if (!map.current || isAnimating) return;
+    selectedHealthMapIds.forEach(id => {
+      const layerId = `health-map-layer-${id}`;
+      if (map.current!.getLayer(layerId)) {
+        try {
+          map.current!.setPaintProperty(layerId, 'raster-opacity', healthMapOpacity);
+        } catch (e) {
+          console.warn(`Could not set opacity for ${layerId}:`, e);
+        }
+      }
+    });
+  }, [healthMapOpacity, selectedHealthMapIds, isAnimating]);
+
   // FIX 3: Handle health map toggle - REMOVE layers when toggling off
   useEffect(() => {
-    if (!map.current) {
-      console.log('⏸️ Map not ready for health maps - no map instance');
-      return;
-    }
+    if (!map.current) return;
+    if (!mapReady || !map.current.isStyleLoaded()) return;
 
-    if (!mapReady || !map.current.isStyleLoaded()) {
-      console.log('⏸️ Map style not yet loaded for health map layers, waiting...');
-      return;
-    }
-
-    console.log('🔍 Health map effect triggered:', {
-      showHealthMaps,
-      selectedHealthMapIds,
-      healthMapCount: healthMapTilesets.length
-    });
-
-    // FIX 3: If toggling off, REMOVE all health map layers (not just hide)
+    // If toggling off, remove all health map layers (not just hide)
     if (!showHealthMaps) {
       healthMapTilesets.forEach(hm => {
         const layerId = `health-map-layer-${hm.id}`;
         const sourceId = `health-map-source-${hm.id}`;
-        
+
         if (map.current!.getLayer(layerId)) {
           map.current!.removeLayer(layerId);
         }
@@ -820,7 +859,6 @@ const MapboxGolfCourseMap = ({
           map.current!.removeSource(sourceId);
         }
       });
-      console.log('🗑️ All health map layers removed');
       return;
     }
 
@@ -874,15 +912,17 @@ const MapboxGolfCourseMap = ({
             }
 
             if (!map.current!.getLayer(layerId)) {
+              // Insert above the raster ceiling but below the COG insert point so
+              // health maps stack above orthomosaics yet under vegetation indices.
+              const beforeId = map.current!.getLayer('cog-deck-insert-point') ? 'cog-deck-insert-point' : undefined;
               map.current!.addLayer({
                 id: layerId,
                 type: 'raster',
                 source: sourceId,
                 paint: {
-                  'raster-opacity': 0.7
+                  'raster-opacity': healthMapOpacity
                 }
-              });
-              console.log(`✅ Added health map layer: ${healthMap.name || layerId}`);
+              }, beforeId);
             } else {
               map.current!.setLayoutProperty(layerId, 'visibility', 'visible');
             }
@@ -927,25 +967,98 @@ const MapboxGolfCourseMap = ({
     vectorLayers.forEach(layer => {
       const vid = `vector-layer-${layer.id}`;
       const ids = [vid, `${vid}-outline`, `${vid}-line`, `${vid}-point`];
-      const visibility = visibleVectorLayers.has(layer.id) ? 'visible' : 'none';
+      // Swipe is raster-only — every vector layer is force-hidden while it's active.
+      const visibility = swipeEnabled
+        ? 'none'
+        : (visibleVectorLayers.has(layer.id) ? 'visible' : 'none');
 
       ids.forEach(id => {
         if (map.current!.getLayer(id)) {
           map.current!.setLayoutProperty(id, 'visibility', visibility);
         }
       });
-      
+
       const labelId = `${vid}-label`;
-      const labelVisibility = (visibleVectorLayers.has(layer.id) && showVectorLabels) ? 'visible' : 'none';
+      const labelVisibility = (!swipeEnabled && visibleVectorLayers.has(layer.id) && showVectorLabels)
+        ? 'visible'
+        : 'none';
       if (map.current!.getLayer(labelId)) {
         map.current!.setLayoutProperty(labelId, 'visibility', labelVisibility);
       }
     });
-  }, [vectorLayers, visibleVectorLayers, showVectorLabels]);
+
+    // Sync drawing-manager annotation layers (allowlist approach).
+    // A published annotation is shown ONLY if its `published_layer_name` matches a
+    // currently-visible vector layer. Annotations without `published_layer_name`
+    // are true drafts (in-progress drawings) and always render.
+    //
+    // Allowlist (not denylist) is critical: on initial load `vectorLayers` may be
+    // [] before Supabase responds. With a denylist, an empty hidden-list meant
+    // *no filter*, leaking every published annotation onto the map until the user
+    // clicked something. With an allowlist, an empty visible-list correctly hides
+    // all published annotations.
+    // While swipe is active, suppress every published annotation too — swipe is
+    // raster-only, and annotations belong to the vector overlay family.
+    const visibleLayerNames: string[] = swipeEnabled
+      ? []
+      : vectorLayers
+          .filter(l => visibleVectorLayers.has(l.id))
+          .map(l => l.name);
+
+    const m = map.current!;
+
+    const allowClause: any[] = ['any',
+      ['!', ['has', 'published_layer_name']],
+      ['==', ['get', 'published_layer_name'], ''],
+      ['in', ['get', 'published_layer_name'], ['literal', visibleLayerNames]]
+    ];
+
+    const withVisibility = (baseFilter: any[]) =>
+      ['all', baseFilter, allowClause];
+
+    if (m.getLayer('annotations-fill'))
+      m.setFilter('annotations-fill',   withVisibility(['==', ['geometry-type'], 'Polygon']));
+    if (m.getLayer('annotations-line'))
+      m.setFilter('annotations-line',   withVisibility(['match', ['geometry-type'], ['LineString', 'Polygon'], true, false]));
+    if (m.getLayer('annotations-points'))
+      m.setFilter('annotations-points', withVisibility(['==', ['geometry-type'], 'Point']));
+    if (m.getLayer('annotations-labels'))
+      m.setFilter('annotations-labels', withVisibility(['has', 'plot_id']));
+  }, [vectorLayers, visibleVectorLayers, showVectorLabels, mapReady, swipeEnabled]);
 
   useEffect(() => {
     syncVectorVisibility();
   }, [syncVectorVisibility]);
+
+  // Always keep a ref to the latest syncVectorVisibility so async code
+  // (preloadAll, map.on('load') callbacks) can call it without stale closures.
+  const syncVectorVisibilityRef = useRef(syncVectorVisibility);
+  useEffect(() => { syncVectorVisibilityRef.current = syncVectorVisibility; }, [syncVectorVisibility]);
+
+  // Re-apply annotation filters once the map is ready. We must run this even
+  // when `vectorLayers` is still empty: the drawing-manager adds annotation
+  // layers with permissive default filters, so until syncVectorVisibility runs
+  // every annotation in the source is rendered. With the allowlist filter, an
+  // empty vectorLayers list correctly hides all *published* annotations and
+  // shows only true drafts.
+  //
+  // Schedule a few retries to win the race against:
+  //   - useDrawingManager adding annotation layers after mapReady flips true
+  //   - fetchVectorLayers resolving from Supabase
+  //   - syncLayerOrder needing the style to be fully loaded
+  useEffect(() => {
+    if (!mapReady) return;
+    const run = () => {
+      syncVectorVisibilityRef.current?.();
+      syncLayerOrder();
+    };
+    run();
+    const t1 = setTimeout(run, 100);
+    const t2 = setTimeout(run, 400);
+    const t3 = setTimeout(run, 1000);
+    return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mapReady, vectorLayers.length, tilesets.length, selectedLayers.join(',')]);
 
   // PRELOAD: Load ALL vector layers onto the map once, all hidden.
   // Visibility toggling is then handled separately and synchronously.
@@ -958,7 +1071,6 @@ const MapboxGolfCourseMap = ({
 
     const preloadAll = async () => {
       vectorPreloadRunningRef.current = true;
-      console.log(`🚀 Preloading ${vectorLayers.length} vector layers...`);
 
       for (const layer of vectorLayers) {
         if (!map.current) break;
@@ -967,12 +1079,8 @@ const MapboxGolfCourseMap = ({
         const vectorLayerId = `vector-layer-${layer.id}`;
 
         // Already loaded — skip
-        if (map.current.getSource(sourceId)) {
-          console.log(`⏭️ Already loaded: ${layer.name}`);
-          continue;
-        }
+        if (map.current.getSource(sourceId)) continue;
 
-        console.log(`🔄 Preloading: ${layer.name}`);
         try {
           let geojsonData;
 
@@ -999,6 +1107,13 @@ const MapboxGolfCourseMap = ({
           }
 
           if (!map.current) break;
+
+          // GeoJSON exported from projected (UTM) sources keeps metre coordinates,
+          // which Mapbox plots off the globe — the polygons render with no error
+          // but are nowhere near the map. Reproject to WGS84 if needed, using the
+          // current map centre as the UTM-zone hint when the file omits a `crs`.
+          const center = map.current.getCenter();
+          geojsonData = reprojectGeoJSONToWGS84(geojsonData, [center.lng, center.lat]);
 
           map.current.addSource(sourceId, { type: 'geojson', data: geojsonData });
 
@@ -1095,7 +1210,6 @@ const MapboxGolfCourseMap = ({
             }
           }
 
-          console.log(`✅ Preloaded: ${layer.name}`);
         } catch (err) {
           console.error(`❌ Failed to preload ${layer.name}:`, err);
         }
@@ -1103,62 +1217,61 @@ const MapboxGolfCourseMap = ({
 
       vectorPreloadRunningRef.current = false;
 
-      // After ALL layers are loaded, apply current visibility state
-      syncVectorVisibility();
+      // Use the ref so we always call the latest closure (vectorLayers/visibleVectorLayers
+      // may have changed while preloadAll was running its async fetches).
+      syncVectorVisibilityRef.current();
     };
 
     preloadAll();
   }, [mapReady, vectorLayers, golfCourseId]);
 
 
-  // Track if user has ever selected a health map (to avoid auto-off on initial toggle)
-  const hasEverSelectedHealthMap = useRef(false);
-  
-  // Track when health maps are selected
-  useEffect(() => {
-    if (selectedHealthMapIds.length > 0) {
-      hasEverSelectedHealthMap.current = true;
-    }
-  }, [selectedHealthMapIds]);
-  
-  // Reset the flag when toggle is manually turned OFF
-  useEffect(() => {
-    if (!showHealthMaps) {
-      hasEverSelectedHealthMap.current = false;
-    }
-  }, [showHealthMaps]);
-  
-  // Auto-toggle off health maps when all are deselected (only if user had previously selected some)
-  useEffect(() => {
-    if (showHealthMaps && selectedHealthMapIds.length === 0 && hasEverSelectedHealthMap.current) {
-      console.log('🔄 All health maps deselected, turning off health maps');
-      setShowHealthMaps(false);
-    }
-  }, [selectedHealthMapIds, showHealthMaps]);
+  // Health-map visibility (showHealthMaps) is independent of selection, mirroring
+  // the raster-layer toggle. Deselecting all health maps no longer flips the toggle
+  // off — re-selecting one renders immediately without the user re-enabling the toggle.
 
-  // When swipe is enabled, pick a default left layer if none is selected
+  // Seed swipe selections ONCE per swipe-enable transition. Defaults follow the
+  // layer-panel draw order (topmost wins). After the user picks a value,
+  // subsequent panel changes never re-overwrite it — visibility is purely a
+  // function of the dropdown.
   useEffect(() => {
     if (!swipeEnabled) return;
-    
-    // Only auto-assign if `swipeLeftLayerId` is not already manually chosen
-    if (swipeLeftLayerId && map.current?.getLayer(swipeLeftLayerId)) {
-      return; 
-    }
 
-    let targetLayerId: string | null = null;
-    
-    if (showHealthMaps && selectedHealthMapIds.length > 0) {
-      targetLayerId = `health-map-layer-${selectedHealthMapIds[selectedHealthMapIds.length - 1]}`;
-    } else if (visibleVectorLayers.size > 0) {
-      targetLayerId = `vector-layer-${Array.from(visibleVectorLayers)[0]}`;
-    } else if (rasterLayersLoaded && selectedLayers.length > 0) {
-      targetLayerId = `tileset-layer-${selectedLayers[0]}`;
-    }
+    // Find the topmost active eligible layer in draw order (any type for left).
+    const topmostAny = layerOrder.find(id => {
+      if (id.startsWith('tileset-layer-')) {
+        const rawId = id.replace('tileset-layer-', '');
+        return selectedLayers.includes(rawId);
+      }
+      if (id.startsWith('health-map-layer-')) {
+        if (!showHealthMaps) return false;
+        const rawId = id.replace('health-map-layer-', '');
+        return selectedHealthMapIds.includes(rawId);
+      }
+      return false;
+    }) || null;
 
-    if (targetLayerId) {
-      setSwipeLeftLayerId(targetLayerId);
-    }
-  }, [swipeEnabled, showHealthMaps, selectedHealthMapIds, rasterLayersLoaded, selectedLayers, visibleVectorLayers]);
+    // Topmost active RGB tileset (right pane is RGB-only).
+    const topmostRgb = layerOrder.find(id => {
+      if (!id.startsWith('tileset-layer-')) return false;
+      const rawId = id.replace('tileset-layer-', '');
+      if (!selectedLayers.includes(rawId)) return false;
+      return !isCogTilesetId(rawId);
+    }) || null;
+
+    if (!swipeLeftLayerId) setSwipeLeftLayerId(topmostAny);
+    if (!swipeRightLayerId) setSwipeRightLayerId(topmostRgb);
+    // Intentionally omit layer-panel state from deps: defaults seed once on open.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [swipeEnabled]);
+
+  // Clear swipe selections when Compare turns off so the next open re-seeds
+  // defaults from the current layer-panel state.
+  useEffect(() => {
+    if (swipeEnabled) return;
+    setSwipeLeftLayerId(null);
+    setSwipeRightLayerId(null);
+  }, [swipeEnabled]);
 
 
 
@@ -1497,35 +1610,54 @@ const MapboxGolfCourseMap = ({
 
   const canSwipe = selectedLayers.length === 2;
 
-  // Build the unified list of all available layers for the Swipe Selector
-  const getAllAvailableLayersForSwipe = () => {
-    const options = [{ id: 'null', name: t.map.baseSatellite, type: 'base' }];
-    
-    if (rasterLayersLoaded) {
-      selectedLayers.forEach(id => {
-        const metadata = getLayerMetadata(`tileset-layer-${id}`);
-        if (metadata) options.push({ id: `tileset-layer-${id}`, name: metadata.name, type: metadata.type });
-      });
-    }
+  // Left dropdown: every active raster/health/COG layer. Mirrors layer-panel
+  // draw order so the topmost layer naturally surfaces first.
+  const getLeftSwipeOptions = () => {
+    const baseOption = { id: 'null', name: t.map.baseSatellite, type: 'base' };
+    const ordered: Array<{ id: string; name: string; type: string }> = [];
 
-    if (showHealthMaps) {
-      selectedHealthMapIds.forEach(id => {
-        const metadata = getLayerMetadata(`health-map-layer-${id}`);
-        if (metadata) options.push({ id: `health-map-layer-${id}`, name: metadata.name, type: metadata.type });
-      });
-    }
+    layerOrder.forEach(layerId => {
+      if (layerId.startsWith('tileset-layer-')) {
+        const rawId = layerId.replace('tileset-layer-', '');
+        if (!selectedLayers.includes(rawId)) return;
+        const metadata = getLayerMetadata(layerId);
+        if (metadata) ordered.push({ id: layerId, name: metadata.name, type: metadata.type });
+      } else if (layerId.startsWith('health-map-layer-')) {
+        if (!showHealthMaps) return;
+        const rawId = layerId.replace('health-map-layer-', '');
+        if (!selectedHealthMapIds.includes(rawId)) return;
+        const metadata = getLayerMetadata(layerId);
+        if (metadata) ordered.push({ id: layerId, name: metadata.name, type: metadata.type });
+      }
+      // Vector layers and annotations intentionally omitted from swipe.
+    });
 
-    if (visibleVectorLayers.size > 0) {
-      Array.from(visibleVectorLayers).forEach(id => {
-         const metadata = getLayerMetadata(`vector-layer-${id}`);
-         if (metadata) options.push({ id: `vector-layer-${id}`, name: metadata.name, type: metadata.type });
-      });
-    }
-
-    return options;
+    return [...ordered, baseOption];
   };
 
-  const swipeOptions = getAllAvailableLayersForSwipe();
+  // Right dropdown: RGB orthomosaics + Base Map only. Health maps and COG-backed
+  // multispectral layers are excluded — the right map is a cloned Mapbox style
+  // with no Deck.GL overlay, so multispectral can't be drawn on it.
+  const getRightSwipeOptions = () => {
+    const baseOption = { id: 'null', name: t.map.baseSatellite, type: 'base' };
+    const ordered: Array<{ id: string; name: string; type: string }> = [];
+
+    layerOrder.forEach(layerId => {
+      if (!layerId.startsWith('tileset-layer-')) return;
+      const rawId = layerId.replace('tileset-layer-', '');
+      if (!selectedLayers.includes(rawId)) return;
+      if (isCogTilesetId(rawId)) return; // multispectral COGs not supported on right
+      const metadata = getLayerMetadata(layerId);
+      if (metadata) ordered.push({ id: layerId, name: metadata.name, type: metadata.type });
+    });
+
+    return [...ordered, baseOption];
+  };
+
+  const leftSwipeOptions = getLeftSwipeOptions();
+  const rightSwipeOptions = getRightSwipeOptions();
+  const activeLayerCount =
+    selectedLayers.length + (showHealthMaps ? selectedHealthMapIds.length : 0);
 
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
@@ -1652,13 +1784,34 @@ const MapboxGolfCourseMap = ({
 
 
   return (
-    <div className={`relative w-full ${isFullscreen ? 'fixed inset-0 z-[9999] h-screen bg-background text-foreground overflow-hidden touch-none' : 'h-[calc(100vh-140px)] min-h-[500px] border border-border rounded-lg bg-background overflow-hidden shadow-sm'}`} ref={wrapperRef}>
+    <div
+      className={`relative w-full ${isFullscreen ? 'fixed inset-0 z-[9999] h-screen bg-background text-foreground overflow-hidden touch-none' : 'h-[calc(100vh-140px)] min-h-[500px] border border-border rounded-lg bg-background overflow-hidden shadow-sm'}`}
+      ref={wrapperRef}
+      data-active-tool={isPixelInspectorActive ? 'inspect' : (drawing.activeTool ?? 'none')}
+    >
         <div className="relative w-full h-full">
           {/* Main Map Container */}
           <div
             ref={setMapContainerRef}
             className="absolute inset-0 w-full h-full"
           />
+
+          {/* Rubber-band selection rectangle */}
+          {drawing.rubberBandRect && (
+            <div
+              style={{
+                position: 'absolute',
+                left: drawing.rubberBandRect.x,
+                top: drawing.rubberBandRect.y,
+                width: drawing.rubberBandRect.width,
+                height: drawing.rubberBandRect.height,
+                border: '1.5px dashed #00d2ff',
+                backgroundColor: 'rgba(0, 210, 255, 0.08)',
+                pointerEvents: 'none',
+                zIndex: 10,
+              }}
+            />
+          )}
 
           <AnnotationDialog 
             open={!!drawing.pendingAnnotation || !!drawing.editingAnnotation} 
@@ -1709,42 +1862,60 @@ const MapboxGolfCourseMap = ({
 
           {/* === Top-Right: Nav Controls (all unified) === */}
           <div className="absolute top-4 right-4 flex flex-col items-end gap-2 z-20">
-            {/* Nav + Compare block */}
-            <div className="bg-background/95 backdrop-blur shadow-md rounded-lg overflow-hidden flex flex-col border border-border">
-              <Button variant="ghost" size="icon" onClick={zoomIn} title={t.map.zoomIn} className="h-9 w-9 shrink-0 rounded-none border-b border-border hover:bg-muted focus:ring-0">
-                <ZoomIn className="w-4 h-4" />
-              </Button>
-              <Button variant="ghost" size="icon" onClick={zoomOut} title={t.map.zoomOut} className="h-9 w-9 shrink-0 rounded-none border-b border-border hover:bg-muted focus:ring-0">
-                <ZoomOut className="w-4 h-4" />
-              </Button>
-              <Button variant="ghost" size="icon" onClick={() => setShowVectorLabels(!showVectorLabels)} title={showVectorLabels ? t.map.hideLabels : t.map.showLabels} className="h-9 w-9 shrink-0 rounded-none border-b border-border hover:bg-muted focus:ring-0">
-                <Tag className={`w-4 h-4 ${showVectorLabels ? 'text-primary' : 'text-muted-foreground'}`} />
-              </Button>
-              <Button variant="ghost" size="icon" onClick={resetView} title={t.map.resetView} className="h-9 w-9 shrink-0 rounded-none border-b border-border hover:bg-muted focus:ring-0">
-                <MapPin className="w-4 h-4" />
-              </Button>
-              <Button variant="ghost" size="icon" onClick={centerOnCurrentLocation} title={t.map.centerLocation} className="h-9 w-9 shrink-0 rounded-none border-b border-border hover:bg-muted focus:ring-0">
-                <LocateFixed className="w-4 h-4" />
-              </Button>
-              <Button variant="ghost" size="icon" onClick={toggleFullscreen} title={isFullscreen ? t.map.exitFullscreen : t.map.enterFullscreen} className="h-9 w-9 shrink-0 rounded-none border-b border-border hover:bg-muted focus:ring-0">
-                <Maximize2 className="w-4 h-4" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={() => setSwipeEnabled(!swipeEnabled)}
-                title={swipeEnabled ? t.map.exitCompare : t.map.compareMaps}
-                className={`h-9 w-9 shrink-0 rounded-none hover:bg-muted focus:ring-0 ${swipeEnabled ? 'text-primary bg-primary/10' : ''}`}
-              >
-                <MoveHorizontal className="w-4 h-4" />
-              </Button>
+            {/* Nav + Compare block — no overflow-hidden so tooltips can escape */}
+            <div className="bg-background/95 backdrop-blur shadow-md rounded-lg flex flex-col border border-border">
+              {[
+                { icon: ZoomIn, label: 'Zoom In', onClick: zoomIn },
+                { icon: ZoomOut, label: 'Zoom Out', onClick: zoomOut },
+                {
+                  icon: Tag,
+                  label: showVectorLabels ? 'Hide Feature Labels' : 'Show Feature Labels',
+                  onClick: () => setShowVectorLabels(!showVectorLabels),
+                  isActive: showVectorLabels,
+                },
+                { icon: MapPin, label: 'Reset to Course View', onClick: resetView },
+                { icon: LocateFixed, label: 'Center on My Location', onClick: centerOnCurrentLocation },
+                { icon: Maximize2, label: isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen', onClick: toggleFullscreen },
+                {
+                  icon: MoveHorizontal,
+                  label: swipeEnabled ? 'Exit Side-by-Side Comparison' : 'Compare Two Dates Side by Side',
+                  onClick: () => setSwipeEnabled(!swipeEnabled),
+                  isActive: swipeEnabled,
+                  isLast: true,
+                },
+              ].map(({ icon: Icon, label, onClick, isActive, isLast }, idx, arr) => (
+                <div key={idx} className="relative group">
+                  <button
+                    onClick={onClick}
+                    aria-label={label}
+                    aria-pressed={isActive}
+                    className={cn(
+                      'flex items-center justify-center h-9 w-9 shrink-0 transition-colors focus:outline-none focus:ring-0',
+                      idx === 0 && 'rounded-t-lg',
+                      idx === arr.length - 1 && 'rounded-b-lg',
+                      !isLast && 'border-b border-border',
+                      isActive
+                        ? 'bg-primary text-primary-foreground'
+                        : 'text-foreground hover:bg-muted'
+                    )}
+                  >
+                    <Icon className="w-5 h-5" />
+                  </button>
+                  {/* Tooltip — appears to the left since toolbar is on the right edge */}
+                  <div className="pointer-events-none absolute right-full top-1/2 -translate-y-1/2 mr-2 z-[9999] hidden group-hover:flex">
+                    <div className="bg-popover text-popover-foreground text-xs font-medium px-2.5 py-1.5 rounded-md shadow-md border border-border whitespace-nowrap">
+                      {label}
+                    </div>
+                  </div>
+                </div>
+              ))}
             </div>
 
             {/* Vectorization Tools — separate panel, same sizing */}
-            <div className="bg-background/95 backdrop-blur shadow-md rounded-lg overflow-hidden flex flex-col border border-border">
-              <VectorizationToolbar 
-                activeTool={drawing.activeTool} 
-                setActiveTool={drawing.setActiveTool} 
+            <div className="bg-background/95 backdrop-blur shadow-md rounded-lg flex flex-col border border-border">
+              <VectorizationToolbar
+                activeTool={drawing.activeTool}
+                setActiveTool={drawing.setActiveTool}
                 onImportClick={() => {
                   const input = document.createElement('input');
                   input.type = 'file';
@@ -1754,15 +1925,44 @@ const MapboxGolfCourseMap = ({
                     if (file) drawing.importFile(file);
                   };
                   input.click();
-                }} 
+                }}
                 onExportGeoJSON={drawing.exportGeoJSON}
                 onUndo={drawing.undoLastEdit}
                 canUndo={drawing.canUndo}
                 onDeleteSelected={drawing.deleteSelected}
                 canDelete={drawing.canDelete}
+                onSaveAsVectorLayers={drawing.saveAsVectorLayers}
+                isSavingVectorLayers={drawing.isSavingVectorLayers}
+                onZonalStats={() => setShowZonalStats(true)}
+                isPixelInspectorActive={isPixelInspectorActive}
+                onTogglePixelInspector={() => {
+                  if (!isPixelInspectorActive) drawing.setActiveTool(null);
+                  setIsPixelInspectorActive(v => !v);
+                }}
+                hasActiveCogLayer={!!analysisTileUrl && analysisModeMap === 'Multispectral'}
               />
             </div>
           </div>
+
+          {/* Zonal Stats Panel */}
+          {showZonalStats && (
+            <ZonalStatsPanel
+              golfCourseId={golfCourseId}
+              tilesets={tilesets}
+              annotations={drawing.annotations}
+              bandMapping={bandMapping}
+              onClose={() => setShowZonalStats(false)}
+            />
+          )}
+
+          {/* Pixel Inspector Tooltip */}
+          <PixelInspectorTooltip
+            map={map.current}
+            isActive={isPixelInspectorActive && !!analysisTileUrl && analysisModeMap === 'Multispectral'}
+            cogUrl={analysisTileUrl}
+            selectedIndex={analysisIndex}
+            bandMapping={bandMapping}
+          />
 
           {/* === Top-Left: Layers Card + Analysis Panel (stacked column) === */}
           <div className="absolute top-4 left-4 z-20 flex flex-col gap-3 w-80">
@@ -1802,8 +2002,8 @@ const MapboxGolfCourseMap = ({
                   </div>
                 </div>
 
-                {/* Scrollable layer list — capped so it never pushes Analysis panel off screen */}
-                <ScrollArea className="max-h-52">
+                {/* Scrollable layer list — fixed height so Plant Health panel is never pushed off screen */}
+                <ScrollArea className="h-52 overflow-y-auto">
                   <div className="p-3 space-y-1">
                     {/* Sub-label */}
                     <span className="block text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50 mb-2 px-1">{t.map.drawOrder}</span>
@@ -1842,8 +2042,11 @@ const MapboxGolfCourseMap = ({
                   </div>
                 </ScrollArea>
 
-                {/* Opacity slider — pinned below the scroll area, never scrolls away */}
-                {selectedLayers.length > 0 && showRasterLayers && (
+                {/* Unified opacity slider — controls raster orthomosaics and health maps.
+                    rasterOpacity is the source of truth shown in the UI; healthMapOpacity
+                    tracks it so both layer types respond to the same control. */}
+                {((selectedLayers.length > 0 && showRasterLayers) ||
+                  (selectedHealthMapIds.length > 0 && showHealthMaps)) && (
                   <div className="px-4 py-3 border-t border-border/40">
                     <div className="flex justify-between text-[11px] font-semibold text-muted-foreground mb-2 uppercase tracking-wide">
                       <span>{t.map.baseImageryOpacity}</span>
@@ -1852,7 +2055,11 @@ const MapboxGolfCourseMap = ({
                     <input
                       type="range" min="0" max="1" step="0.05"
                       value={rasterOpacity}
-                      onChange={e => setRasterOpacity(parseFloat(e.target.value))}
+                      onChange={e => {
+                        const v = parseFloat(e.target.value);
+                        setRasterOpacity(v);
+                        setHealthMapOpacity(v);
+                      }}
                       className="w-full h-1.5 mt-1 accent-primary rounded-full appearance-none cursor-pointer"
                     />
                   </div>
@@ -1860,20 +2067,32 @@ const MapboxGolfCourseMap = ({
               </div>
             )}
 
-            {/* ── Analysis / Plant Health Panel (always below layers card) ── */}
-            <AnalysisPanel
-               mapMode={analysisModeMap}
-               isEnabled={analysisModeEnabled}
-               onToggleEnable={setAnalysisModeEnabled}
-               selectedIndex={analysisIndex}
-               onSelectIndex={handleSelectIndex}
-               range={analysisRange}
-               onRangeChange={setAnalysisRange}
-               histogramData={analysisHistogramData}
-               bandMapping={bandMapping}
-               onBandMappingChange={setBandMapping}
-               isAdmin={isAdmin}
-            />
+            {/* ── Plant Health toggle button ── */}
+            <button
+              className="bg-background/95 backdrop-blur shadow-md border border-border rounded-lg px-3 py-2 flex items-center gap-2 text-sm font-semibold hover:bg-muted/60 transition-colors w-fit"
+              onClick={() => setShowAnalysisPanel(v => !v)}
+            >
+              <Activity className="w-4 h-4 text-primary" />
+              <span>Plant Health</span>
+              {showAnalysisPanel && <X className="w-3 h-3 opacity-60 ml-0.5" />}
+            </button>
+
+            {/* ── Analysis / Plant Health Panel (collapsible) ── */}
+            {showAnalysisPanel && (
+              <AnalysisPanel
+                 mapMode={analysisModeMap}
+                 isEnabled={analysisModeEnabled}
+                 onToggleEnable={setAnalysisModeEnabled}
+                 selectedIndex={analysisIndex}
+                 onSelectIndex={handleSelectIndex}
+                 range={analysisRange}
+                 onRangeChange={setAnalysisRange}
+                 histogramData={analysisHistogramData}
+                 bandMapping={bandMapping}
+                 onBandMappingChange={setBandMapping}
+                 isAdmin={isAdmin}
+              />
+            )}
           </div>
 
           {mapReady && (
@@ -1896,29 +2115,36 @@ const MapboxGolfCourseMap = ({
 
           {/* Swipe Selectors – bottom-center, only when active */}
           {swipeEnabled && (
-            <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 flex gap-4 w-auto max-w-2xl px-4 flex-row pointer-events-none">
-              <div className="flex-1 bg-white/95 backdrop-blur-md rounded-full border border-gray-200/50 py-1.5 px-4 shadow-lg flex items-center gap-3 pointer-events-auto transition-transform hover:scale-[1.02]">
-                <select
-                  className="bg-transparent text-sm cursor-pointer outline-none text-gray-800 font-medium truncate max-w-[180px]"
-                  value={swipeLeftLayerId || 'null'}
-                  onChange={(e) => setSwipeLeftLayerId(e.target.value === 'null' ? null : e.target.value)}
-                >
-                  {swipeOptions.map(opt => (
-                    <option key={'left-' + opt.id} value={opt.id}>{opt.name}</option>
-                  ))}
-                </select>
+            <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-2 w-auto max-w-2xl px-4 pointer-events-none">
+              <div className="flex gap-4 flex-row">
+                <div className="flex-1 bg-white/95 backdrop-blur-md rounded-full border border-gray-200/50 py-1.5 px-4 shadow-lg flex items-center gap-3 pointer-events-auto transition-transform hover:scale-[1.02]">
+                  <select
+                    className="bg-transparent text-sm cursor-pointer outline-none text-gray-800 font-medium truncate max-w-[180px]"
+                    value={swipeLeftLayerId || 'null'}
+                    onChange={(e) => setSwipeLeftLayerId(e.target.value === 'null' ? null : e.target.value)}
+                  >
+                    {leftSwipeOptions.map(opt => (
+                      <option key={'left-' + opt.id} value={opt.id}>{opt.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex-1 bg-white/95 backdrop-blur-md rounded-full border border-gray-200/50 py-1.5 px-4 shadow-lg flex items-center gap-3 pointer-events-auto transition-transform hover:scale-[1.02]">
+                  <select
+                    className="bg-transparent text-sm cursor-pointer outline-none text-gray-800 font-medium truncate max-w-[180px]"
+                    value={swipeRightLayerId || 'null'}
+                    onChange={(e) => setSwipeRightLayerId(e.target.value === 'null' ? null : e.target.value)}
+                  >
+                    {rightSwipeOptions.map(opt => (
+                      <option key={'right-' + opt.id} value={opt.id}>{opt.name}</option>
+                    ))}
+                  </select>
+                </div>
               </div>
-              <div className="flex-1 bg-white/95 backdrop-blur-md rounded-full border border-gray-200/50 py-1.5 px-4 shadow-lg flex items-center gap-3 pointer-events-auto transition-transform hover:scale-[1.02]">
-                <select
-                  className="bg-transparent text-sm cursor-pointer outline-none text-gray-800 font-medium truncate max-w-[180px]"
-                  value={swipeRightLayerId || 'null'}
-                  onChange={(e) => setSwipeRightLayerId(e.target.value === 'null' ? null : e.target.value)}
-                >
-                  {swipeOptions.map(opt => (
-                    <option key={'right-' + opt.id} value={opt.id}>{opt.name}</option>
-                  ))}
-                </select>
-              </div>
+              {activeLayerCount < 2 && (
+                <div className="text-xs bg-white/95 backdrop-blur-md rounded-full border border-gray-200/50 py-1 px-3 shadow text-gray-700 pointer-events-auto">
+                  Please select at least two layers to compare in the layer panel on your left.
+                </div>
+              )}
             </div>
           )}
 

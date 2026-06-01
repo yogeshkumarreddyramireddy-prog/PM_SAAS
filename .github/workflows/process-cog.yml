@@ -68,28 +68,29 @@ jobs:
           echo "center_lat=$(python3 -c 'import json; m=json.load(open("/tmp/metadata.json")); print(m["center_lat"])')" >> $GITHUB_OUTPUT
           echo "center_lon=$(python3 -c 'import json; m=json.load(open("/tmp/metadata.json")); print(m["center_lon"])')" >> $GITHUB_OUTPUT
 
-      - name: Reproject to WGS84 and Convert to Cloud Optimized GeoTIFF (COG)
+      - name: Convert to Cloud Optimized GeoTIFF (COG) — keep native CRS
         run: |
-          echo "Step 1: Reprojecting to WGS84 (EPSG:4326) via gdalwarp..."
-          # Web map renderers (Mapbox, Deck.GL) require geographic coordinates.
-          # The raw drone TIFF is in UTM (projected, meters). We must reproject first.
-          gdalwarp \
-            -t_srs EPSG:4326 \
-            -r bilinear \
-            -of GTiff \
-            -co BIGTIFF=YES \
-            /tmp/input.tif \
-            /tmp/reprojected.tif
-
-          echo "Step 2: Converting reprojected TIFF to Cloud Optimized GeoTIFF..."
-          gdal_translate /tmp/reprojected.tif /tmp/output_cog.tif \
+          # IMPORTANT: do NOT reproject to EPSG:4326. The client-side COGLoader
+          # handles UTM (and any projected CRS) via proj4. Reprojecting to
+          # geographic degrees here would:
+          #   • bilinearly resample every pixel, blurring sharp class boundaries
+          #     (sand/vegetation borders, plot edges)
+          #   • re-grid pixels onto a lat/lon grid that no longer aligns with
+          #     the sensor's native pixel grid, introducing a sub-pixel shift
+          #   • produce non-square pixels at non-equatorial latitudes
+          # Keeping the native projection preserves the original sensor data
+          # exactly and gives the inspector pixel-accurate alignment.
+          echo "Converting to COG in original CRS..."
+          gdal_translate /tmp/input.tif /tmp/output_cog.tif \
             -of COG \
             -co COMPRESS=DEFLATE \
+            -co PREDICTOR=YES \
             -co RESAMPLING=AVERAGE \
+            -co OVERVIEWS=IGNORE_EXISTING \
             -co BIGTIFF=YES
 
           echo "Size comparison:"
-          ls -lh /tmp/input.tif /tmp/reprojected.tif /tmp/output_cog.tif
+          ls -lh /tmp/input.tif /tmp/output_cog.tif
 
       - name: Upload Single COG to R2
         env:

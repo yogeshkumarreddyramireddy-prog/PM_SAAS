@@ -68,30 +68,37 @@ jobs:
           echo "center_lat=$(python3 -c 'import json; m=json.load(open("/tmp/metadata.json")); print(m["center_lat"])')" >> $GITHUB_OUTPUT
           echo "center_lon=$(python3 -c 'import json; m=json.load(open("/tmp/metadata.json")); print(m["center_lon"])')" >> $GITHUB_OUTPUT
 
-      - name: Reproject to Web Mercator (EPSG:3857) and convert to COG
+      - name: Reproject to WGS84 (EPSG:4326) and convert to COG
         run: |
-          # Reproject to EPSG:3857 — the projection Mapbox/Deck.GL use for the
-          # basemap. This makes the COG north-up, so the client can place it with
-          # an axis-aligned bounding box that lines up exactly with the basemap.
+          # Reproject to EPSG:4326 (geographic lon/lat). This makes the COG
+          # north-up so the client places it with an axis-aligned bounding box
+          # that lines up exactly with the basemap, and — crucially — its
+          # coordinates are plain lon/lat degrees that the client recognises
+          # directly as WGS84.
           #
           # Why NOT keep native UTM: a UTM grid is rotated ~1-3deg from geographic
           # north (meridian convergence). Placing such an image in a north-aligned
           # lon/lat box skews it against the basemap AND makes the low-res "base"
-          # and high-res "window" overlay layers disagree at the edges (visible as
-          # a blocky fringe next to the sharp interior).
+          # and high-res "window" overlay layers disagree at the edges (a blocky
+          # fringe next to the sharp interior).
           #
-          # Why 3857 and NOT 4326: EPSG:4326 re-grids onto a lat/lon degree grid,
-          # which at this latitude dropped ~30% of the rows and made non-square
-          # pixels. EPSG:3857 is conformal and metre-based, so reprojection from
-          # UTM barely changes scale. We force the output width to the source
-          # width (-ts W 0) so NO resolution is lost; the height is derived to
-          # keep the aspect ratio.
+          # Why NOT 3857: although 3857 is north-up, its coordinates are large
+          # metre values (e.g. easting ~690000). The client's CRS auto-detect
+          # mistook those for UTM and reprojected the image to the wrong place
+          # (the Baltic Sea). 4326's degree coordinates avoid that entirely.
+          #
+          # Resolution: EPSG:4326 re-grids onto a lon/lat grid; left to choose its
+          # own size, gdalwarp dropped ~30% of the rows last time. We pin the
+          # output to the EXACT source pixel dimensions (-ts W H) so no resolution
+          # is lost. The pixels become non-square in degrees but are square on the
+          # ground (correct), and the geographic bounds remain exact.
           SRC_W=$(gdalinfo -json /tmp/input.tif | python3 -c "import json,sys; print(json.load(sys.stdin)['size'][0])")
-          echo "Source width: ${SRC_W}px — reprojecting to EPSG:3857 at matching width..."
+          SRC_H=$(gdalinfo -json /tmp/input.tif | python3 -c "import json,sys; print(json.load(sys.stdin)['size'][1])")
+          echo "Source size: ${SRC_W}x${SRC_H}px — reprojecting to EPSG:4326 at matching size..."
           gdalwarp \
-            -t_srs EPSG:3857 \
+            -t_srs EPSG:4326 \
             -r bilinear \
-            -ts "$SRC_W" 0 \
+            -ts "$SRC_W" "$SRC_H" \
             -of GTiff \
             -co BIGTIFF=YES \
             /tmp/input.tif \

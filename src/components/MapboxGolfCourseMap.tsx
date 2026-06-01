@@ -14,6 +14,7 @@ import RasterLayerDropdown from '@/components/RasterLayerDropdown';
 import MapSwipeControl from '@/components/MapSwipeControl';
 import DualMapSwipe from '@/components/DualMapSwipe';
 import { applySwipeVisibility } from '@/lib/mapSwipeVisibility';
+import { reprojectGeoJSONToWGS84 } from '@/lib/reprojectGeoJSON';
 import HealthMapStack from '@/components/HealthMapStack';
 import HealthMapDropdown from '@/components/HealthMapDropdown';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -1106,6 +1107,13 @@ const MapboxGolfCourseMap = ({
           }
 
           if (!map.current) break;
+
+          // GeoJSON exported from projected (UTM) sources keeps metre coordinates,
+          // which Mapbox plots off the globe — the polygons render with no error
+          // but are nowhere near the map. Reproject to WGS84 if needed, using the
+          // current map centre as the UTM-zone hint when the file omits a `crs`.
+          const center = map.current.getCenter();
+          geojsonData = reprojectGeoJSONToWGS84(geojsonData, [center.lng, center.lat]);
 
           map.current.addSource(sourceId, { type: 'geojson', data: geojsonData });
 

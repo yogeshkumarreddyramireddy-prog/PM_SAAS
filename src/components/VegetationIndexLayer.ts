@@ -7,8 +7,12 @@ export interface VegetationIndexLayerProps extends BitmapLayerProps {
   bandMapping?: { r: number; g: number; b: number; nir: number; re: number };
 }
 
-// Matches COGLoader packing: R=Red(0), G=Green(1), B=NIR(2), A=RedEdge(3)
-const defaultBandMapping = { r: 0, g: 1, b: 2, nir: 2, re: 3 };
+// COGLoader packs source bands positionally into RGBA channels:
+//   R←band0, G←band1, B←band2, A←band3.
+// Our ingested multispectral COGs are Green/Red/RedEdge/NIR/Alpha, so the
+// channels hold: R=Green(0), G=Red(1), B=RedEdge(2), A=NIR(3). These mapping
+// values are channel indices (see getBand()), hence Red=1, NIR=3, RedEdge=2.
+const defaultBandMapping = { r: 1, g: 0, b: 2, nir: 3, re: 2 };
 
 const defaultProps = {
   shaderMath: '(g - r) / (g + r - b + 0.000001)',

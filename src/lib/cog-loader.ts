@@ -168,43 +168,46 @@ export class COGLoader {
       const imageCount = await this.tiff.getImageCount();
       console.log(`[COGLoader] COG has ${imageCount} IFDs (1 full-res + ${imageCount - 1} overviews)`);
 
-      let bestImage = this.image;   // fallback: full res
+      // Goal: the SMALLEST overview whose long edge is still >= targetSize, so
+      // the base layer carries at least targetSize px of detail. If every
+      // overview is below target (image smaller than target), fall back to the
+      // largest available (full-res IFD 0).
+      //
+      // The previous loop had an off-by-one: once `best` was an above-target
+      // overview, a later below-target overview still replaced it (it was merely
+      // "smaller than best"), so it overshot one pyramid level too coarse — e.g.
+      // it picked an 813px overview when 1626px was the correct ">= 1024" choice.
+      let bestImage = this.image;   // fallback: full res (IFD 0)
       let bestW = this.imgWidth;
       let bestH = this.imgHeight;
       let bestIdx = 0;
+      let chosenLong = Infinity;    // long edge of the current pick (when >= target)
+      let haveAboveTarget = false;
 
       for (let i = 0; i < imageCount; i++) {
         const img = await this.tiff.getImage(i);
         const w = img.getWidth();
         const h = img.getHeight();
+        const longEdge = Math.max(w, h);
         console.log(`[COGLoader]   IFD ${i}: ${w}×${h}`);
 
-        // Pick the smallest overview that is >= targetSize on its long edge,
-        // or the smallest available if all are smaller.
-        const longEdge = Math.max(w, h);
-        const bestLongEdge = Math.max(bestW, bestH);
-
-        if (longEdge >= targetSize && longEdge < bestLongEdge) {
+        if (longEdge >= targetSize && longEdge < chosenLong) {
           bestImage = img;
           bestW = w;
           bestH = h;
           bestIdx = i;
-        } else if (bestLongEdge > targetSize && longEdge < bestLongEdge) {
-          // Current best is too big, this one is smaller → prefer it
-          bestImage = img;
-          bestW = w;
-          bestH = h;
-          bestIdx = i;
+          chosenLong = longEdge;
+          haveAboveTarget = true;
         }
       }
 
-      // If even the smallest overview is too big, use the very last (smallest) IFD
-      if (Math.max(bestW, bestH) > targetSize * 2 && imageCount > 1) {
-        const lastImg = await this.tiff.getImage(imageCount - 1);
-        bestImage = lastImg;
-        bestW = lastImg.getWidth();
-        bestH = lastImg.getHeight();
-        bestIdx = imageCount - 1;
+      // No overview reached targetSize (image smaller than target) → keep the
+      // full-res IFD 0, which is the largest available and closest to target.
+      if (!haveAboveTarget) {
+        bestImage = this.image;
+        bestW = this.imgWidth;
+        bestH = this.imgHeight;
+        bestIdx = 0;
       }
 
       console.log(`[COGLoader] Using IFD ${bestIdx} (${bestW}×${bestH}) for rendering`);

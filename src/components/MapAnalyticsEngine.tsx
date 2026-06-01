@@ -171,6 +171,10 @@ export function MapAnalyticsEngine({
   const windowDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Ref mirrors windowImage so the fetch callback can read current value without stale closure
   const windowImageRef = useRef<CachedCOGImage | null>(null);
+  // Map zoom level at which the current window image was fetched. Used to decide
+  // whether a new viewport needs a sharper window: panning within the same zoom
+  // can reuse the existing window, but zooming IN must refetch at higher res.
+  const windowFetchZoomRef = useRef<number>(-Infinity);
 
   // Bump this when an `idle` fires while we were waiting on a non-loaded style
   // so the layer-construction effect re-runs and actually adds the layers.
@@ -337,12 +341,21 @@ export function MapAnalyticsEngine({
           mb.getWest(), mb.getSouth(), mb.getEast(), mb.getNorth(),
         ];
 
-        // Skip the network round-trip if the existing window already covers the viewport.
-        // This fires on every moveend/zoomend but most zooms-in don't need a new fetch.
+        // Skip the network round-trip only when the existing window already
+        // covers the viewport AND we have NOT zoomed in since it was fetched.
+        // The previous version skipped purely on spatial coverage, so zooming in
+        // (viewport always shrinks inside the prior window) was always skipped —
+        // the window was fetched once at low zoom and then just magnified, which
+        // is exactly the "never gets sharper when I zoom in" symptom. Zooming in
+        // needs a fresh, higher-resolution window; panning at the same zoom does
+        // not.
+        const zoom = map.getZoom();
         const cur = windowImageRef.current;
         if (cur) {
           const [ww, ws, we, wn] = cur.bounds;
-          if (bbox[0] >= ww && bbox[1] >= ws && bbox[2] <= we && bbox[3] <= wn) return;
+          const covered = bbox[0] >= ww && bbox[1] >= ws && bbox[2] <= we && bbox[3] <= wn;
+          const zoomedIn = zoom > windowFetchZoomRef.current + 0.01;
+          if (covered && !zoomedIn) return;
         }
 
         const canvas = map.getCanvas();
@@ -354,6 +367,7 @@ export function MapAnalyticsEngine({
           const result = await loader.getWindowImage(bbox, targetDim);
           if (reqId !== windowReqIdRef.current) return;
           if (result) {
+            windowFetchZoomRef.current = zoom;
             windowImageRef.current = result;
             setWindowImage(result);
           }
@@ -544,6 +558,7 @@ export function MapAnalyticsEngine({
       setHasFlownTo(null);
       setCogImageData(null);
       windowImageRef.current = null;
+      windowFetchZoomRef.current = -Infinity;
       setWindowImage(null);
       setIsWindowLoading(false);
     }

@@ -117,7 +117,12 @@ const MapboxGolfCourseMap = ({
   const [analysisTileBounds, setAnalysisTileBounds] = useState<[number, number, number, number] | undefined>(undefined);
   const [analysisTileMinZoom, setAnalysisTileMinZoom] = useState<number>(14);
   const [analysisHistogramData, setAnalysisHistogramData] = useState<Array<{ value: number; count: number }>>([]);
-  const [bandMapping, setBandMapping] = useState({ r: 0, g: 1, b: 2, nir: 2, re: 3 }); // NIR=Band 3, RedEdge=Band 4
+  // Default band order for the multispectral COGs we ingest (Solvi exports):
+  // Band 1=Green(560), 2=Red(650), 3=RedEdge(730), 4=NIR(860), 5=Alpha. Indices
+  // are 0-based, so Red=1, NIR=3, RedEdge=2. Getting NIR/Red right is what makes
+  // NDVI = (NIR-Red)/(NIR+Red) correct; the prior default used RedEdge as NIR.
+  // Sensors with a different band order can be corrected in Sensor Calibration.
+  const [bandMapping, setBandMapping] = useState({ r: 1, g: 0, b: 2, nir: 3, re: 2 });
 
   // Zonal Stats + Pixel Inspector state
   const [showZonalStats, setShowZonalStats] = useState(false);
@@ -764,7 +769,8 @@ const MapboxGolfCourseMap = ({
         setAnalysisTileBounds(undefined);
         setAnalysisIndex('MS_NDVI');
         setAnalysisRange([-1, 1]);
-        setBandMapping({ r: 0, g: 1, b: 2, nir: 2, re: 3 });
+        // Green/Red/RedEdge/NIR/Alpha band order (see useState default above).
+        setBandMapping({ r: 1, g: 0, b: 2, nir: 3, re: 2 });
         import('@/lib/r2Service').then(({ R2Service }) => {
           R2Service.getGetUrl(cogKey, 4 * 3600)
             .then(({ url }) => {

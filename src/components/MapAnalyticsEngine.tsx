@@ -29,6 +29,10 @@ const cogLoaders: Record<string, COGLoader> = {};
 interface CachedCOGImage {
   imageData: ImageData;
   bounds: [number, number, number, number];
+  // Four WGS84 corners [BL, BR, TR, TL] for BitmapLayer's quad bounds. Preserves
+  // the UTM grid rotation so the overlay lines up with the basemap; `bounds`
+  // (axis-aligned bbox) is still used for fly-to and viewport coverage checks.
+  corners?: [number, number][];
 }
 const cogImageCache: Record<string, CachedCOGImage> = {};
 
@@ -501,7 +505,11 @@ export function MapAnalyticsEngine({
           id: `deck-cog-base-${shaderKey}`,
           beforeId: 'cog-deck-insert-point',
           image: cogImageData.imageData,
-          bounds: [cogImageData.bounds[0], cogImageData.bounds[1], cogImageData.bounds[2], cogImageData.bounds[3]] as [number, number, number, number],
+          // Prefer the quad corners (correct for rotated UTM grids); fall back to
+          // the axis-aligned bbox for already-geographic COGs.
+          bounds: (cogImageData.corners ?? [
+            cogImageData.bounds[0], cogImageData.bounds[1], cogImageData.bounds[2], cogImageData.bounds[3],
+          ]) as any,
         }),
       ];
 
@@ -512,7 +520,9 @@ export function MapAnalyticsEngine({
           id: `deck-cog-window-${shaderKey}`,
           beforeId: 'cog-deck-insert-point',
           image: windowImage.imageData,
-          bounds: [windowImage.bounds[0], windowImage.bounds[1], windowImage.bounds[2], windowImage.bounds[3]] as [number, number, number, number],
+          bounds: (windowImage.corners ?? [
+            windowImage.bounds[0], windowImage.bounds[1], windowImage.bounds[2], windowImage.bounds[3],
+          ]) as any,
         }));
       }
     } else if (mode === 'Multispectral' && !cogImageData) {

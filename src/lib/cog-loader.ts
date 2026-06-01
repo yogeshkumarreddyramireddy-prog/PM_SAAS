@@ -151,7 +151,7 @@ export class COGLoader {
    * We pick a small overview (~256-1024px) that can be fetched in a single
    * byte-range request, rather than reading the full 218 MB raster.
    */
-  async getFullImage(targetSize = 1024): Promise<{ imageData: ImageData; bounds: [number, number, number, number] } | null> {
+  async getFullImage(targetSize = 1024): Promise<{ imageData: ImageData; bounds: [number, number, number, number]; corners: [number, number][] } | null> {
     await this.init();
     if (!this.tiff || !this.image) return null;
 
@@ -235,7 +235,10 @@ export class COGLoader {
       const imageData = new ImageData(rgba, bestW, bestH);
       console.log(`[COGLoader] ✅ Full image ready: ${bestW}×${bestH}, bounds=[${bounds.map(b => b.toFixed(6)).join(', ')}]`);
 
-      return { imageData, bounds };
+      // Quad corners (handles UTM grid rotation vs geographic north).
+      const corners = this.fullCornersWGS84();
+
+      return { imageData, bounds, corners };
     } catch (err) {
       console.error('[COGLoader] ❌ getFullImage error:', err);
       return null;
@@ -259,7 +262,7 @@ export class COGLoader {
   async getWindowImage(
     bboxWGS84: [number, number, number, number],
     targetMaxDim: number
-  ): Promise<{ imageData: ImageData; bounds: [number, number, number, number] } | null> {
+  ): Promise<{ imageData: ImageData; bounds: [number, number, number, number]; corners: [number, number][] } | null> {
     await this.init();
     if (!this.tiff || !this.image) return null;
 
@@ -396,7 +399,11 @@ export class COGLoader {
       bounds = [winMinX, winMinY, winMaxX, winMaxY];
     }
 
-    return { imageData, bounds };
+    // Quad corners of the snapped window (winNX0/winNY0 is the top-left native
+    // coord, winNX1/winNY1 the bottom-right) — preserves UTM grid rotation.
+    const corners = this.cornersWGS84(winNX0, winNY0, winNX1, winNY1);
+
+    return { imageData, bounds, corners };
   }
 
   // ─── RGBA packing (static — works with any image, not just this.image) ────
@@ -685,5 +692,43 @@ export class COGLoader {
       console.log(`[COGLoader] Bounds (native/WGS84): [${minX.toFixed(6)}, ${minY.toFixed(6)}, ${maxX.toFixed(6)}, ${maxY.toFixed(6)}]`);
       return [minX, minY, maxX, maxY];
     }
+  }
+
+  /** Reproject a single native-CRS point to WGS84 lon/lat (identity if already geographic). */
+  private toWGS84(x: number, y: number): [number, number] {
+    if (this.project && this.epsgCode) {
+      const r = proj4(`EPSG:${this.epsgCode}`, 'WGS84', [x, y]) as [number, number];
+      return [r[0], r[1]];
+    }
+    return [x, y];
+  }
+
+  /**
+   * The four corners of a native-CRS rectangle, reprojected to WGS84 and ordered
+   * for deck.gl BitmapLayer's quad `bounds`: [bottom-left, bottom-right,
+   * top-right, top-left]. Inputs use the GeoTIFF convention where (x0,y0) is the
+   * top-left native coordinate and (x1,y1) the bottom-right.
+   *
+   * Unlike the axis-aligned min/max bbox, the quad preserves the rotation a
+   * projected (UTM) grid has relative to geographic north (meridian
+   * convergence). Feeding the bbox to BitmapLayer skews the overlay by a couple
+   * of degrees against the basemap; the quad makes it line up exactly.
+   */
+  cornersWGS84(x0: number, y0: number, x1: number, y1: number): [number, number][] {
+    return [
+      this.toWGS84(x0, y1), // bottom-left
+      this.toWGS84(x1, y1), // bottom-right
+      this.toWGS84(x1, y0), // top-right
+      this.toWGS84(x0, y0), // top-left
+    ];
+  }
+
+  /** Full-extent corner quad (WGS84) for the whole COG. */
+  fullCornersWGS84(): [number, number][] {
+    const x0 = this.originX;
+    const y0 = this.originY;
+    const x1 = this.originX + this.pixelWidth  * this.imgWidth;
+    const y1 = this.originY + this.pixelHeight * this.imgHeight;
+    return this.cornersWGS84(x0, y0, x1, y1);
   }
 }

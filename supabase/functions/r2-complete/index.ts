@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { getCorsHeaders } from '../_shared/cors.ts'
+import { authenticate, AuthError } from '../_shared/auth.ts'
 
 interface CompleteUploadRequest {
   fileId: string
@@ -15,6 +16,22 @@ serve(async (req) => {
   }
 
   try {
+    // verify_jwt=false: authenticate in-code. Finalizing an upload mutates
+    // content_files, so require an approved admin.
+    try {
+      const ctx = await authenticate(req, { requireApproved: true })
+      if (ctx.user && ctx.user.role !== 'admin') {
+        return new Response(JSON.stringify({ error: 'Forbidden - admin only' }), {
+          status: 403, headers: { ...getCorsHeaders(origin), 'Content-Type': 'application/json' },
+        })
+      }
+    } catch (authErr) {
+      const status = authErr instanceof AuthError ? authErr.status : 401
+      return new Response(JSON.stringify({ error: (authErr as Error).message }), {
+        status, headers: { ...getCorsHeaders(origin), 'Content-Type': 'application/json' },
+      })
+    }
+
     const { fileId, success, fileHash, isZipFile }: CompleteUploadRequest = await req.json()
 
     const { createClient } = await import('https://esm.sh/@supabase/supabase-js@2')

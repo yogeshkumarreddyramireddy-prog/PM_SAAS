@@ -11,7 +11,6 @@ import { TilesetService } from '@/lib/tilesetService';
 import { supabase } from '@/integrations/supabase/client';
 import DateLayerDropdown from '@/components/DateLayerDropdown';
 import RasterLayerDropdown from '@/components/RasterLayerDropdown';
-import MapSwipeControl from '@/components/MapSwipeControl';
 import DualMapSwipe from '@/components/DualMapSwipe';
 import { applySwipeVisibility } from '@/lib/mapSwipeVisibility';
 import { reprojectGeoJSONToWGS84 } from '@/lib/reprojectGeoJSON';

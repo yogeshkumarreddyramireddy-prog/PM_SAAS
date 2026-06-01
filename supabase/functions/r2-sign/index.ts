@@ -212,9 +212,12 @@ serve(async (req) => {
       auth: { persistSession: false, autoRefreshToken: false }
     });
 
-    const { data: me, error: meErr } = await supabase.from('user_profiles').select('id, role, golf_course_id, approved').eq('id', user.id).single();
+    const { data: me, error: meErr } = await supabase.from('user_profiles').select('id, role, golf_course_id, approved, access_suspended').eq('id', user.id).single();
     if (meErr || !me) return new Response(JSON.stringify({ error: 'User not found' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 403 });
-    if (!me.approved && me.role !== 'admin') return new Response(JSON.stringify({ error: 'User not approved' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 403 });
+    if (me.role !== 'admin') {
+      if (!me.approved) return new Response(JSON.stringify({ error: 'User not approved' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 403 });
+      if (me.access_suspended) return new Response(JSON.stringify({ error: 'User access suspended' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 403 });
+    }
 
     const body: SignedUrlRequest = await req.json();
     // FIX: Raised cap from 3600s (1h) to 14400s (4h) to support long COG streaming sessions
@@ -235,8 +238,14 @@ serve(async (req) => {
         if (body.action === 'getPutUrl') requireAdmin();
         if (!body.key) return new Response(JSON.stringify({ error: 'Missing key' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 });
 
-        // Admin can access any path, clients can only access their course's path
-        if (me.role !== 'admin' && me.golf_course_id) {
+        // Admin can access any path, clients can only access their course's path.
+        // NOTE: the gate must run for EVERY non-admin, including multi-course
+        // clients whose legacy user_profiles.golf_course_id is NULL (they are
+        // assigned only via client_golf_courses). Previously this was gated on
+        // `me.golf_course_id` being truthy, which skipped the entire check for
+        // those clients and signed a URL for ANY key. The per-branch checks below
+        // already fall back to client_golf_courses, so NULL golf_course_id is fine.
+        if (me.role !== 'admin') {
           // Check if it's a COG file path (CourseName/cogs/file-id.tif)
           if (body.key.includes('/cogs/')) {
             const { data: cogTileset, error: cogErr } = await supabase

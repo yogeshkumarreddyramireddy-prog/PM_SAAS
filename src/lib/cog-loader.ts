@@ -420,11 +420,17 @@ export class COGLoader {
     const bands = Array.isArray(rasters) ? rasters : [rasters];
     const n     = bands.length;
 
-    // Band packing into RGBA texture for the vegetation index shader:
-    //   R channel → band 0 (Red)
-    //   G channel → band 1 (Green)
-    //   B channel → band 2 (NIR for 5-band / Blue for 3-4 band)
-    //   A channel → band 3 (RedEdge for 5-band / NIR for 4-band)
+    // Band packing into RGBA texture is POSITIONAL — source band N → channel N:
+    //   R channel ← band 0
+    //   G channel ← band 1
+    //   B channel ← band 2
+    //   A channel ← band 3
+    // The channels do NOT correspond to fixed spectral bands; the source band
+    // ORDER decides that. Our ingested multispectral COGs are Solvi exports in
+    // Green(0)/Red(1)/RedEdge(2)/NIR(3) order, so the channels actually hold
+    // R=Green, G=Red, B=RedEdge, A=NIR. Consumers never assume this — they go
+    // through `bandMapping` ({ r:1, g:0, b:2, nir:3, re:2 }) to address the right
+    // channel per logical band. Do NOT "simplify" by assuming R=Red here.
     //
     // CRITICAL: Alpha is ALWAYS 255 for visibility. The shader reads the
     // spectral data from R/G/B/A channels; we cannot use alpha for opacity

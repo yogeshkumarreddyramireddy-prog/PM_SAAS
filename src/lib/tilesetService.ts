@@ -59,7 +59,7 @@ export interface TilesetMetadata {
     r2FolderPath?: string
     tileUrlPattern?: string
     tileSize?: number
-    format?: 'png' | 'jpg' | 'webp'
+    format?: 'png' | 'jpg' | 'webp' | 'cog'
     attribution?: string
     // Date/time fields for multi-temporal datasets
     flightDate?: string // YYYY-MM-DD

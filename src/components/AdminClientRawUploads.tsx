@@ -47,12 +47,13 @@ export const AdminClientRawUploads = ({ golfCourseId, golfCourseName }: AdminCli
         setLoading(true)
         try {
             // Fetch ALL images — admin sees everything
-            let query = (supabase as any).from('images').select('id, filename, original_filename, path, file_size, content_type, created_at, user_id').order('created_at', { ascending: false })
+            let query = (supabase as any).from('images').select('id, filename, original_filename, path, file_size, content_type, created_at, user_id, golf_course_id').order('created_at', { ascending: false })
 
-            // If golfCourseName is provided, filter by path prefix
-            if (golfCourseName) {
-                const sanitizedName = golfCourseName.replace(/[^a-zA-Z0-9_\- ]/g, '').replace(/\s+/g, '_')
-                query = query.like('path', `${sanitizedName}/%`)
+            // Filter by the reliable FK, not a sanitized-name path prefix (which
+            // breaks whenever the course is renamed or the name was sanitized
+            // differently at upload time).
+            if (golfCourseId != null) {
+                query = query.eq('golf_course_id', golfCourseId)
             }
 
             const { data, error } = await query

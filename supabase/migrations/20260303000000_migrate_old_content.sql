@@ -28,9 +28,13 @@ SELECT setval(
 -- Add content files
 
 -- Ensure client@123.com is approved and assigned a course
-UPDATE public.user_profiles 
+UPDATE public.user_profiles
 SET approved = true, golf_course_id = 6
 WHERE email = 'client@123.com';
 
--- Ensure all users created get backfilled properly and approved (for ease of dev context)
-UPDATE public.user_profiles SET approved = true WHERE role = 'client';
+-- NOTE: A blanket `UPDATE user_profiles SET approved = true WHERE role = 'client'`
+-- previously lived here "for ease of dev context". It silently defeats the entire
+-- approval flow (the handle_new_user trigger inserts approved=false on purpose) and
+-- would approve every existing client if this migration ran against production.
+-- It has been removed. Approve individual dev accounts explicitly when needed, e.g.:
+--   UPDATE public.user_profiles SET approved = true WHERE email = '<dev-account>';

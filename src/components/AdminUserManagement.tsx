@@ -264,7 +264,18 @@ export const AdminUserManagement = () => {
                   variant="teal"
                   size="sm"
                   className="h-8 text-xs"
-                  onClick={() => pendingUsers.forEach(u => approveUserMutation.mutate(u.id))}
+                  onClick={async () => {
+                    // Sequence the approvals instead of firing N parallel mutations
+                    // on one shared mutation object (which made isPending and the
+                    // per-row approving flag unreliable and hammered the function).
+                    for (const u of pendingUsers) {
+                      try {
+                        await approveUserMutation.mutateAsync(u.id)
+                      } catch {
+                        // onError toast already fired; continue with the rest
+                      }
+                    }
+                  }}
                   disabled={approveUserMutation.isPending}
                 >
                   <CheckCircle className="h-3.5 w-3.5 mr-1" />

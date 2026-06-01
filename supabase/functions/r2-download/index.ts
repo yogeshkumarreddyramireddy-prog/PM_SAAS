@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { getCorsHeaders } from '../_shared/cors.ts'
+import { authenticate, AuthError } from '../_shared/auth.ts'
 import { S3Client, GetObjectCommand } from "npm:@aws-sdk/client-s3";
 import { getSignedUrl } from "npm:@aws-sdk/s3-request-presigner";
 
@@ -16,6 +17,17 @@ serve(async (req) => {
   }
 
   try {
+    // This function runs with verify_jwt=false, so it must authenticate itself.
+    // Require an approved user before handing out a presigned URL to any object.
+    try {
+      await authenticate(req, { requireApproved: true })
+    } catch (authErr) {
+      const status = authErr instanceof AuthError ? authErr.status : 401
+      return new Response(JSON.stringify({ error: (authErr as Error).message }), {
+        status, headers: { ...getCorsHeaders(origin), 'Content-Type': 'application/json' },
+      })
+    }
+
     const { objectKey, bucketName, fileName }: DownloadRequest = await req.json()
 
     console.log('Download request:', { objectKey, bucketName, fileName })

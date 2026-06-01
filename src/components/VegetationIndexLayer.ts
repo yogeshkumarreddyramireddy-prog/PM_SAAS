@@ -32,11 +32,13 @@ const defaultProps = {
  * GLSL source string at compile time. When any prop changes, the layer key
  * changes and Deck.GL rebuilds the shader automatically.
  *
- * ─── RGBA Texture Layout ─────────────────────────────────────────────────────
- *   R → Band 0 (Red)
- *   G → Band 1 (Green)
- *   B → Band 2 (Blue  | NIR for 5-band sensors)
- *   A → Band 3 (Alpha | NIR for 4-band RGB+alpha | RedEdge for 5-band)
+ * ─── RGBA Texture Layout (POSITIONAL: source band N → channel N) ──────────────
+ *   R ← Band 0,  G ← Band 1,  B ← Band 2,  A ← Band 3
+ * Channels are NOT fixed spectral bands; the source band ORDER decides that.
+ * Our Solvi multispectral COGs are Green(0)/Red(1)/RedEdge(2)/NIR(3), so the
+ * channels hold R=Green, G=Red, B=RedEdge, A=NIR. The shader addresses logical
+ * bands via `bandMapping` (defaultBandMapping = { r:1, g:0, b:2, nir:3, re:2 }),
+ * so never assume R=Red. Alpha carries NIR data, never opacity.
  */
 export class VegetationIndexLayer extends BitmapLayer<VegetationIndexLayerProps> {
   static layerName = 'VegetationIndexLayer';

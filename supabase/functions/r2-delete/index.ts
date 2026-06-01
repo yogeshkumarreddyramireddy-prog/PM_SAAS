@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { getCorsHeaders } from '../_shared/cors.ts'
+import { authenticate, AuthError } from '../_shared/auth.ts'
 import { S3Client, DeleteObjectCommand, ListObjectsV2Command } from "npm:@aws-sdk/client-s3";
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
@@ -52,11 +53,17 @@ serve(async (req) => {
     console.log('Request headers:', Object.fromEntries(req.headers.entries()))
     console.log('Function deployment test: WORKING')
     
-    // Validate authentication
-    const authHeader = req.headers.get('Authorization')
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      console.error('No valid authorization header found')
-      return jsonResponse({ error: 'Authentication required', success: false }, 401)
+    // Validate authentication. This function runs with verify_jwt=false, so the
+    // previous "any Bearer string" check was not real auth — verify the token and
+    // require an admin (deletion of content/tilesets is an admin-only operation).
+    try {
+      const ctx = await authenticate(req, { requireApproved: true })
+      if (ctx.user && ctx.user.role !== 'admin') {
+        return jsonResponse({ error: 'Forbidden - admin only', success: false }, 403)
+      }
+    } catch (authErr) {
+      const status = authErr instanceof AuthError ? authErr.status : 401
+      return jsonResponse({ error: (authErr as Error).message, success: false }, status)
     }
     
     let requestBody

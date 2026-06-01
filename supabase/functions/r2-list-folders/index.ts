@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { S3Client, ListObjectsV2Command } from "npm:@aws-sdk/client-s3"
+import { authenticate, AuthError } from '../_shared/auth.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -13,6 +14,22 @@ serve(async (req) => {
   }
 
   try {
+    // verify_jwt=false: authenticate in-code. Scanning/auto-assigning the whole
+    // bucket is an admin operation.
+    try {
+      const ctx = await authenticate(req, { requireApproved: true })
+      if (ctx.user && ctx.user.role !== 'admin') {
+        return new Response(JSON.stringify({ success: false, error: 'Forbidden - admin only' }), {
+          status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        })
+      }
+    } catch (authErr) {
+      const status = authErr instanceof AuthError ? authErr.status : 401
+      return new Response(JSON.stringify({ success: false, error: (authErr as Error).message }), {
+        status, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
+    }
+
     // Get R2 credentials
     const r2AccountId = Deno.env.get('R2_ACCOUNT_ID')
     const r2AccessKey = Deno.env.get('R2_ACCESS_KEY_ID')
@@ -82,13 +99,15 @@ serve(async (req) => {
       type: 'folder'
     }))
 
-    const files = response.Contents?.map(obj => ({
+    // Use the fully-paginated accumulator, not the last loop iteration's `response`
+    // (which is block-scoped to the while loop and would be empty/undefined here).
+    const files = allContents.map(obj => ({
       name: obj.Key?.split('/').pop() || '',
       fullPath: obj.Key || '',
       size: obj.Size || 0,
       lastModified: obj.LastModified?.toISOString() || '',
       type: 'file'
-    })) || []
+    }))
 
     // Look for tile map patterns and auto-assign to golf courses
     const tileMaps: any[] = []

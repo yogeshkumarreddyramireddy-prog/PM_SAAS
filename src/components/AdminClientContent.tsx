@@ -24,8 +24,27 @@ export const AdminClientContent = ({ client, onBack }: AdminClientContentProps) 
   const { data: categories = [] } = useContentCategories()
   const deleteFileMutation = useDeleteContentFile()
 
-  const getCategoryFiles = (categoryId: number) => {
-    return contentFiles.filter(file => file.category_id === categoryId)
+  // Map a content_categories.name to the file_category enum that uploads actually
+  // write (r2-presign sets file_category, NOT the numeric category_id — which is
+  // usually null). AdminContentManagement keys off file_category too, so this
+  // keeps the two content screens consistent.
+  const categoryNameToFileCategory = (categoryName: string): string | null => {
+    switch (categoryName) {
+      case 'Live Maps': return 'live_maps'
+      case 'Reports': return 'reports'
+      case 'HD Maps': return 'hd_maps'
+      case '3D Models': return '3d_models'
+      default: return null
+    }
+  }
+
+  const getCategoryFiles = (category: { id: number; name: string }) => {
+    const fileCategory = categoryNameToFileCategory(category.name)
+    return contentFiles.filter(file =>
+      // Prefer the enum the uploader writes; fall back to legacy category_id.
+      (fileCategory && (file as any).file_category === fileCategory) ||
+      file.category_id === category.id
+    )
   }
 
   const getCategoryIcon = (categoryName: string) => {
@@ -99,7 +118,7 @@ export const AdminClientContent = ({ client, onBack }: AdminClientContentProps) 
               </TabsTrigger>
               {categories.map((category) => {
                 const Icon = getCategoryIcon(category.name)
-                const count = getCategoryFiles(category.id).length
+                const count = getCategoryFiles(category).length
                 return (
                   <TabsTrigger key={category.id} value={category.id.toString()} className="flex items-center gap-2">
                     <Icon className="h-4 w-4" />
@@ -116,7 +135,7 @@ export const AdminClientContent = ({ client, onBack }: AdminClientContentProps) 
 
             {categories.map((category) => {
               const Icon = getCategoryIcon(category.name)
-              const categoryFiles = getCategoryFiles(category.id)
+              const categoryFiles = getCategoryFiles(category)
 
               return (
                 <TabsContent key={category.id} value={category.id.toString()} className="mt-6">

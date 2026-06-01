@@ -1,6 +1,7 @@
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { S3Client, GetObjectCommand, PutObjectCommand } from "npm:@aws-sdk/client-s3"
+import { authenticate, AuthError } from '../_shared/auth.ts'
 
 // Inline CORS utility to avoid deployment issues
 const allowedOrigins = [
@@ -39,6 +40,22 @@ serve(async (req) => {
   }
 
   try {
+    // verify_jwt=false: authenticate in-code. Invoked server-to-server by
+    // r2-complete (service-role key) or directly by an admin.
+    try {
+      const ctx = await authenticate(req, { requireApproved: true })
+      if (!ctx.isInternal && ctx.user && ctx.user.role !== 'admin') {
+        return new Response(JSON.stringify({ success: false, error: 'Forbidden - admin only' }), {
+          status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        })
+      }
+    } catch (authErr) {
+      const status = authErr instanceof AuthError ? authErr.status : 401
+      return new Response(JSON.stringify({ success: false, error: (authErr as Error).message }), {
+        status, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
+    }
+
     const { fileId }: ExtractZipRequest = await req.json()
 
     console.log('Starting ZIP tile extraction for fileId:', fileId)

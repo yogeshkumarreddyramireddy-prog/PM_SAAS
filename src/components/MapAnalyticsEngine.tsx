@@ -191,9 +191,10 @@ export function MapAnalyticsEngine({
     const key = `s${opts.smooth ? opts.strength : 'off'}|${opts.polysKey}`;
     const hit = prepCacheRef.current.get(img);
     if (hit && hit.key === key) return hit.out;
-    let out = opts.smooth ? smoothImageData(img, opts.strength) : img;
+    const b: [number, number, number, number] = [bounds[0], bounds[1], bounds[2], bounds[3]];
+    let out = opts.smooth ? smoothImageData(img, opts.strength, b) : img;
     if (opts.polys) {
-      out = applyZoneMask(out, [bounds[0], bounds[1], bounds[2], bounds[3]], opts.polys, opts.polysKey);
+      out = applyZoneMask(out, b, opts.polys, opts.polysKey);
     }
     prepCacheRef.current.set(img, { key, out });
     return out;

@@ -91,12 +91,15 @@ export function AnalysisPanel({
           </div>
 
           {(() => {
-            // ── Data range (histogram) vs colour range (the ramp) ────────────
-            // The histogram is FIT TO THE DATA so it shows a real distribution.
-            // The colours are ABSOLUTE (range = the index's colorRange), so a
-            // given index value always maps to the same colour and high values
-            // never render red. We colour the histogram by that ABSOLUTE mapping
-            // so the chart matches the map: green data → green bars.
+            // The histogram is fit to the DATA (so it shows a real distribution),
+            // while the colours are ABSOLUTE (range = the index's colorRange) so a
+            // given value always maps to the same colour and high values never go
+            // red. The slider track spans the UNION of the data range and the
+            // colour range — that way the colour handles always sit inside the
+            // track (no clamping), so dragging is smooth instead of snapping the
+            // value when a handle was off the end (the cause of the "tiny move →
+            // whole map flips" jump). The histogram is positioned by VALUE inside
+            // that track and coloured by the absolute ramp, so chart = map.
             let dMin = activeConfig.colorRange[0];
             let dMax = activeConfig.colorRange[1];
             if (histogramData.length > 0) {
@@ -104,7 +107,11 @@ export function AnalysisPanel({
               const maxV = Math.max(...histogramData.map(d => d.value));
               if (isFinite(minV) && isFinite(maxV) && maxV > minV) { dMin = minV; dMax = maxV; }
             }
-            const span = dMax - dMin || 1e-6;
+            // Base the track on the index's FIXED colorRange (not the live `range`)
+            // so it doesn't shift while the user drags a handle.
+            const trackMin = Math.min(dMin, activeConfig.colorRange[0], range[0]);
+            const trackMax = Math.max(dMax, activeConfig.colorRange[1], range[1]);
+            const tSpan = trackMax - trackMin || 1e-6;
             const cSpan = (range[1] - range[0]) || 1e-6;
 
             // Interpolate the red→yellow→green ramp at t∈[0,1].
@@ -115,23 +122,21 @@ export function AnalysisPanel({
               t = Math.max(0, Math.min(1, t));
               return t < 0.5 ? mix(RED, YEL, t / 0.5) : mix(YEL, GRN, (t - 0.5) / 0.5);
             };
-            // 6 gradient stops across the histogram width, each coloured by the
-            // ABSOLUTE value at that position.
-            const gradientStops = [0, 0.2, 0.4, 0.6, 0.8, 1].map(p => {
-              const val = dMin + p * span;
+            // Gradient stops across the track, each coloured by the ABSOLUTE value.
+            const gradientStops = [0, 0.15, 0.3, 0.45, 0.6, 0.75, 0.9, 1].map(p => {
+              const val = trackMin + p * tSpan;
               return { offset: `${p * 100}%`, color: rampColor((val - range[0]) / cSpan) };
             });
 
-            // Slider spans the data range; clamp the (absolute) colour handles to
-            // it so Radix never crashes. Labels show the true colour-range values.
+            // range ⊆ track, so this never actually clamps — just a safety net.
             const sval: [number, number] = [
-              Math.max(dMin, Math.min(dMax, range[0])),
-              Math.max(dMin, Math.min(dMax, range[1])),
+              Math.max(trackMin, Math.min(trackMax, range[0])),
+              Math.max(trackMin, Math.min(trackMax, range[1])),
             ];
 
             return (
               <>
-                {/* Histogram (fit to data, coloured by absolute ramp) */}
+                {/* Histogram (data distribution, positioned by value, coloured by absolute ramp) */}
                 <div className="h-24 w-full relative mb-1">
                   <ResponsiveContainer width="100%" height="100%">
                     <AreaChart data={histogramData} margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
@@ -142,6 +147,7 @@ export function AnalysisPanel({
                           ))}
                         </linearGradient>
                       </defs>
+                      <XAxis dataKey="value" type="number" domain={[trackMin, trackMax]} hide />
                       <Area
                         type="monotone"
                         dataKey="count"
@@ -157,9 +163,9 @@ export function AnalysisPanel({
                 {/* Slider Controls */}
                 <div className="px-1 mt-4 relative">
                   <Slider
-                    min={dMin}
-                    max={dMax}
-                    step={span / 100}
+                    min={trackMin}
+                    max={trackMax}
+                    step={tSpan / 100}
                     value={sval}
                     onValueChange={(val: number[]) => onRangeChange(val as [number, number])}
                     className="my-4"

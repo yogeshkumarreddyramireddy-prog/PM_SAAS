@@ -19,9 +19,11 @@
 
 export function smoothImageData(src: ImageData, strength: number): ImageData {
   const s = Math.max(0, Math.min(100, strength));
-  // Higher strength → coarser grid + larger blur radius = smoother.
-  const factor = Math.max(2, Math.min(6, Math.round(2 + s / 25)));   // 2..6 px
-  const radius = Math.max(1, Math.min(6, Math.round(s / 14)));        // 1..6 coarse cells
+  // Smoothness comes mostly from the blur RADIUS (which no longer grows the shape,
+  // since the output is clipped to the footprint), so keep the downsample factor
+  // small to preserve detail and minimise edge erosion, and let the radius scale.
+  const factor = Math.max(2, Math.min(4, 2 + Math.floor(s / 40)));   // 2..4 px
+  const radius = Math.max(1, Math.min(10, Math.round(s / 9)));        // 1..10 coarse cells
 
   const W = src.width, H = src.height, data = src.data;
   const cw = Math.max(1, Math.ceil(W / factor));
@@ -42,10 +44,14 @@ export function smoothImageData(src: ImageData, strength: number): ImageData {
       cnt[ci]++;
     }
   }
-  let buf = new Float32Array(n * 4);
-  let valid = new Uint8Array(n);
+  // A coarse cell counts as "field" only if it's at least ~1/3 covered by data.
+  // This keeps the footprint from growing outward at the boundary (a cell that
+  // barely clips the field edge is dropped, not promoted to a full data cell).
+  const minCov = Math.max(1, Math.round(factor * factor * 0.34));
+  const buf = new Float32Array(n * 4);
+  const valid = new Uint8Array(n);
   for (let ci = 0; ci < n; ci++) {
-    if (cnt[ci] > 0) {
+    if (cnt[ci] >= minCov) {
       valid[ci] = 1;
       buf[ci * 4] = acc[ci * 4] / cnt[ci];
       buf[ci * 4 + 1] = acc[ci * 4 + 1] / cnt[ci];
@@ -85,10 +91,15 @@ export function smoothImageData(src: ImageData, strength: number): ImageData {
   let cur = blurPass(buf, valid);
   cur = blurPass(cur.buf, cur.valid);
 
-  // ── Pack to ImageData; nodata cells stay 0 (transparent in the shader) ──
+  // ── Pack to ImageData ──
+  // CRITICAL: gate on the ORIGINAL footprint (`valid`), not the post-blur
+  // validity. The nodata-aware blur deliberately spreads values into neighbours,
+  // which would otherwise grow the field outward by ~2×radius cells (the "fills
+  // the whole map at high smoothing" bug). Smoothing the values is fine; growing
+  // the shape is not — so we keep blurred values only where there was real data.
   const out = new Uint8ClampedArray(n * 4);
   for (let ci = 0; ci < n; ci++) {
-    if (cur.valid[ci]) {
+    if (valid[ci]) {
       out[ci * 4] = cur.buf[ci * 4];
       out[ci * 4 + 1] = cur.buf[ci * 4 + 1];
       out[ci * 4 + 2] = cur.buf[ci * 4 + 2];

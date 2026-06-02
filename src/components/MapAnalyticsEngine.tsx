@@ -2,7 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import mapboxgl from 'mapbox-gl';
 import { MapboxOverlay } from '@deck.gl/mapbox';
 import { TileLayer } from '@deck.gl/geo-layers';
-import { BitmapLayer } from '@deck.gl/layers';
+import { BitmapLayer, GeoJsonLayer } from '@deck.gl/layers';
+import { MaskExtension } from '@deck.gl/extensions';
 import { VegetationIndexLayer } from './VegetationIndexLayer';
 import { COGLoader } from '../lib/cog-loader';
 import { VEGETATION_INDEX_CONFIG, VegetationIndex } from '../lib/vegetation-indices';
@@ -25,6 +26,9 @@ interface MapAnalyticsEngineProps {
   smoothEnabled?: boolean;
   /** Smoothing strength 0–100. */
   smoothStrength?: number;
+  /** GeoJSON FeatureCollection of vector-zone polygons; when present, the
+      smoothed view is clipped to them so nothing renders outside the zones. */
+  clipFeatures?: any;
 }
 
 // Keep a persistent loader reference to avoid re-init on every render
@@ -168,6 +172,7 @@ export function MapAnalyticsEngine({
   onDataRange,
   smoothEnabled = false,
   smoothStrength = 50,
+  clipFeatures,
 }: MapAnalyticsEngineProps) {
   const [overlay, setOverlay] = useState<MapboxOverlay | null>(null);
 
@@ -542,6 +547,11 @@ export function MapAnalyticsEngine({
         // surface. Fixed to NDVI regardless of the selected index. Removing this
         // block restores the crisp view exactly.
         const ndvi = VEGETATION_INDEX_CONFIG['MS_NDVI'];
+        // Clip the smoothed surface to the vector-zone polygons (GPU mask) so it
+        // never renders outside the zones and gets clean vector edges instead of
+        // the COG's jagged footprint. Only when zones are available.
+        const hasClip = !!(clipFeatures && Array.isArray(clipFeatures.features) && clipFeatures.features.length > 0);
+        const maskId = 'cog-smooth-zone-mask';
         const smProps = {
           shaderMath: ndvi.shaderMath,
           range: ndvi.colorRange,
@@ -553,17 +563,28 @@ export function MapAnalyticsEngine({
             magFilter: 'linear' as const,
             mipmapFilter: 'linear' as const,
           },
+          ...(hasClip ? { extensions: [new MaskExtension()], maskId } : {}),
         };
-        const smKey = `smooth-ndvi-${smoothStrength}-${ndvi.colorRange.join('_')}-${bandMapping.r}${bandMapping.nir}`;
-        layers = [
-          new VegetationIndexLayer({
-            ...smProps,
-            id: `deck-cog-smooth-base-${smKey}`,
-            beforeId: 'cog-deck-insert-point',
-            image: getSmoothed(cogImageData.imageData, smoothStrength),
-            bounds: [cogImageData.bounds[0], cogImageData.bounds[1], cogImageData.bounds[2], cogImageData.bounds[3]] as [number, number, number, number],
-          }),
-        ];
+        const smKey = `smooth-ndvi-${smoothStrength}-${ndvi.colorRange.join('_')}-${bandMapping.r}${bandMapping.nir}-clip${hasClip ? 1 : 0}`;
+        layers = [];
+        if (hasClip) {
+          // Mask layer — rendered to an offscreen mask buffer, not to the map.
+          layers.push(new GeoJsonLayer({
+            id: maskId,
+            data: clipFeatures,
+            operation: 'mask',
+            stroked: false,
+            filled: true,
+            getFillColor: [255, 255, 255],
+          }) as any);
+        }
+        layers.push(new VegetationIndexLayer({
+          ...smProps,
+          id: `deck-cog-smooth-base-${smKey}`,
+          beforeId: 'cog-deck-insert-point',
+          image: getSmoothed(cogImageData.imageData, smoothStrength),
+          bounds: [cogImageData.bounds[0], cogImageData.bounds[1], cogImageData.bounds[2], cogImageData.bounds[3]] as [number, number, number, number],
+        }));
         if (windowImage) {
           layers.push(new VegetationIndexLayer({
             ...smProps,
@@ -601,7 +622,7 @@ export function MapAnalyticsEngine({
 
     overlay.setProps({ layers });
 
-  }, [map, isEnabled, mode, tileUrl, selectedIndex, range, bandMapping, overlay, config, cogImageData, windowImage, styleTick, smoothEnabled, smoothStrength]);
+  }, [map, isEnabled, mode, tileUrl, selectedIndex, range, bandMapping, overlay, config, cogImageData, windowImage, styleTick, smoothEnabled, smoothStrength, clipFeatures]);
 
   // ─── Auto-Fly Logic ────────────────────────────────────────────────────────
   // When COG image is loaded, fly the map to its bounds.

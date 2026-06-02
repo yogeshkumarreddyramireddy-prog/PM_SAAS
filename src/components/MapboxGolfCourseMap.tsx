@@ -160,6 +160,22 @@ const MapboxGolfCourseMap = ({
     }
     return out;
   }, [vectorLayers, vectorGeojson, golfCourseId]);
+
+  // Union of all loaded vector-layer polygons (WGS84) used to clip the smoothed
+  // "prescription" view to the zones. Empty → no clipping (full footprint shown).
+  const clipFeatures = useMemo(() => {
+    const features: any[] = [];
+    for (const vl of vectorLayers) {
+      const gj = vectorGeojson[vl.id];
+      if (!gj?.features) continue;
+      for (const f of gj.features) {
+        const t = f?.geometry?.type;
+        if (t === 'Polygon' || t === 'MultiPolygon') features.push(f);
+      }
+    }
+    return { type: 'FeatureCollection', features };
+  }, [vectorLayers, vectorGeojson]);
+
   const [showAnalysisPanel, setShowAnalysisPanel] = useState(false);
   const [vectorLayersAboveHealth, setVectorLayersAboveHealth] = useState(true);
 
@@ -2221,6 +2237,7 @@ const MapboxGolfCourseMap = ({
               onDataRange={setAnalysisRange}
               smoothEnabled={smoothEnabled}
               smoothStrength={smoothStrength}
+              clipFeatures={clipFeatures}
             />
           )}
 

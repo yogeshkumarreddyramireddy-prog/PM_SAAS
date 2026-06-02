@@ -184,12 +184,13 @@ const MapboxGolfCourseMap = ({
   const [showZonalStats, setShowZonalStats] = useState(false);
   const [isPixelInspectorActive, setIsPixelInspectorActive] = useState(false);
 
-  // When the user picks a new index, reset the range to that index's theoretical domain
-  // so stale values from the previous index don't persist in the slider labels.
+  // When the user picks a new index, reset the colour range to that index's
+  // absolute colorRange (healthy = green) so colours are consistent across images
+  // rather than stretched to each image's own min/max.
   const handleSelectIndex = useCallback((index: VegetationIndex) => {
     setAnalysisIndex(index);
     const cfg = VEGETATION_INDEX_CONFIG[index];
-    if (cfg) setAnalysisRange([cfg.domain[0], cfg.domain[1]]);
+    if (cfg) setAnalysisRange([cfg.colorRange[0], cfg.colorRange[1]]);
   }, []);
 
   // Map of content_files.id → original_filename for raster display names
@@ -824,7 +825,7 @@ const MapboxGolfCourseMap = ({
         setAnalysisTileUrl(null);
         setAnalysisTileBounds(undefined);
         setAnalysisIndex('MS_NDVI');
-        setAnalysisRange([-1, 1]);
+        setAnalysisRange([...VEGETATION_INDEX_CONFIG['MS_NDVI'].colorRange]);
         // Green/Red/RedEdge/NIR/Alpha band order (see useState default above).
         setBandMapping({ r: 1, g: 0, b: 2, nir: 3, re: 2 });
         import('@/lib/r2Service').then(({ R2Service }) => {
@@ -857,7 +858,7 @@ const MapboxGolfCourseMap = ({
         activeRgbTilesetIdRef.current = topmostTileset.id;
         setAnalysisModeMap('RGB');
         setAnalysisIndex('RGB_VARI');
-        setAnalysisRange([-0.5, 0.5]);
+        setAnalysisRange([...VEGETATION_INDEX_CONFIG['RGB_VARI'].colorRange]);
         setBandMapping({ r: 0, g: 1, b: 2, nir: 0, re: 0 }); // RGB: R(B1), G(B2), B(B3)
       }
     }

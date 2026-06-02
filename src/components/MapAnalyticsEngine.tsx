@@ -125,26 +125,26 @@ async function computeRGBHistogram(
     return { histData: [], dataRange: domain };
   }
 
-  values.sort((a, b) => a - b);
-  const minVal = values[Math.floor(values.length * 0.01)];
-  const maxVal = values[Math.floor(values.length * 0.99)];
-  const rangeSize = maxVal > minVal ? maxVal - minVal : 0.01;
-
+  // Bin over the absolute range passed in (the index's colorRange), so the
+  // histogram lines up with the fixed red→green colour ramp instead of being
+  // stretched to this image's own min/max.
+  const [rMin, rMax] = domain;
+  const rangeSize = (rMax - rMin) || 0.01;
   const buckets = 50;
   const counts = new Array(buckets).fill(0);
   for (const v of values) {
-    if (v < minVal || v > maxVal) continue;
-    let idx = Math.floor(((v - minVal) / rangeSize) * buckets);
+    let idx = Math.floor(((v - rMin) / rangeSize) * buckets);
+    if (idx < 0) idx = 0;
     if (idx >= buckets) idx = buckets - 1;
     counts[idx]++;
   }
 
   const histData = counts.map((count, i) => ({
-    value: minVal + (i / (buckets - 1)) * rangeSize,
+    value: rMin + (i / (buckets - 1)) * rangeSize,
     count,
   }));
 
-  return { histData, dataRange: [minVal, maxVal] };
+  return { histData, dataRange: [rMin, rMax] };
 }
 
 export function MapAnalyticsEngine({
@@ -227,25 +227,24 @@ export function MapAnalyticsEngine({
 
     if (values.length === 0) { onHistogramData([]); return; }
 
-    values.sort((a, b) => a - b);
-    const minVal = values[Math.floor(values.length * 0.01)];
-    const maxVal = values[Math.floor(values.length * 0.99)];
-    const safeMax = maxVal > minVal ? maxVal : minVal + 0.01;
-
-    if (onDataRange) onDataRange([minVal, safeMax]);
-
+    // Bin over the index's ABSOLUTE colorRange (the same range the colour ramp
+    // uses by default), NOT the per-image 1st–99th percentile. We deliberately do
+    // NOT call onDataRange here: auto-stretching to the image min/max is what made
+    // healthy values (e.g. NDVI 0.72) show red just for being the lowest pixel in
+    // that image. The histogram bars now line up with the fixed red→green scale.
+    const [rMin, rMax] = config.colorRange;
     const buckets = 50;
     const counts = new Array(buckets).fill(0);
-    const rangeSize = safeMax - minVal;
+    const rangeSize = (rMax - rMin) || 0.01;
     for (const v of values) {
-      if (v < minVal || v > safeMax) continue;
-      let idx = Math.floor(((v - minVal) / rangeSize) * buckets);
+      let idx = Math.floor(((v - rMin) / rangeSize) * buckets);
+      if (idx < 0) idx = 0;
       if (idx >= buckets) idx = buckets - 1;
       counts[idx]++;
     }
 
     onHistogramData(counts.map((count, i) => ({
-      value: minVal + (i / (buckets - 1)) * rangeSize,
+      value: rMin + (i / (buckets - 1)) * rangeSize,
       count,
     })));
   }, [isEnabled, mode, cogImageData, config, bandMapping, onHistogramData, onDataRange]);
@@ -263,11 +262,12 @@ export function MapAnalyticsEngine({
 
     onHistogramData([]); // clear while loading
 
-    computeRGBHistogram(tileUrl, tileBounds, tileMinZoom, config.calculate, config.domain)
-      .then(({ histData, dataRange }) => {
+    // Bin over the absolute colorRange (same as the colour ramp); do NOT call
+    // onDataRange — keep colours fixed rather than stretched to this image.
+    computeRGBHistogram(tileUrl, tileBounds, tileMinZoom, config.calculate, config.colorRange)
+      .then(({ histData }) => {
         if (rgbHistLoadingRef.current !== key) return; // stale
         if (histData.length > 0) {
-          if (onDataRange) onDataRange(dataRange);
           onHistogramData(histData);
         }
         rgbHistLoadingRef.current = null;

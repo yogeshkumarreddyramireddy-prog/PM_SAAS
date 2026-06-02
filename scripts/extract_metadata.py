@@ -39,10 +39,18 @@ def main():
 
     info = json.loads(stdout)
 
-    # Determine if the CRS is already geographic (degrees)
+    # Determine if the CRS is already geographic (degrees) or projected (meters).
+    # NOTE: a *projected* CRS WKT embeds the base geographic CRS, e.g.
+    #   PROJCRS["WGS 84 / UTM zone 32N", BASEGEOGCRS["WGS 84", ... ID["EPSG",4326]]]
+    # so naive substring checks for "GEOGCRS"/"4326" wrongly classify UTM as
+    # geographic — which skips reprojection AND makes a 0.07 m/px resolution be
+    # read as 0.07 DEGREES/px, collapsing the zoom to the floor. Detect the
+    # projected wrapper (PROJCRS/PROJCS) instead.
     crs = info.get("coordinateSystem", {}).get("wkt", "")
-    is_geographic = "GEOGCS" in crs or "GEOGCRS" in crs or "4326" in crs
-    needs_reproject = not is_geographic
+    crs_upper = crs.upper()
+    is_projected = "PROJCRS[" in crs_upper or "PROJCS[" in crs_upper
+    is_geographic = not is_projected
+    needs_reproject = is_projected
 
     # ALWAYS get WGS84 bounds using gdalinfo -projwin_srs EPSG:4326
     # This is the safest approach to get lon/lat regardless of source CRS.
@@ -111,10 +119,13 @@ def main():
     max_zoom = min(get_zoom_for_resolution(resolution_deg), 22)
     min_zoom = max(0, max_zoom - 6)
 
-    # Clamp to reasonable range for aerial/drone imagery of golf courses
+    # Clamp to reasonable range for aerial/drone imagery of golf courses.
+    # Cap at z20: at typical course latitudes z20 (~9 cm/px) already matches
+    # ~5-8 cm drone resolution; z21+ mostly upsamples and quadruples the tile
+    # count (the cause of the runaway 30-min tiling runs).
     min_zoom = max(min_zoom, 12)
     max_zoom = max(max_zoom, 16)
-    max_zoom = min(max_zoom, 21)
+    max_zoom = min(max_zoom, 20)
 
     metadata = {
         "bounds": [min_lon, min_lat, max_lon, max_lat],

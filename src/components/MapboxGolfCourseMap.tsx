@@ -109,6 +109,40 @@ const MapboxGolfCourseMap = ({
   // zones, not just hand-drawn annotations.
   const [vectorGeojson, setVectorGeojson] = useState<Record<string, any>>({});
   const [showVectorLayerPanel, setShowVectorLayerPanel] = useState(false);
+
+  // Expose uploaded vector-layer polygons as Zonal Statistics zones. The panel
+  // treats any `area`/`plot_grid` annotation as a zone, so we wrap each polygon
+  // feature of every loaded vector layer in an Annotation-shaped object (WGS84
+  // geometry, like drawn annotations). Declared here, with the other hooks and
+  // before any early return, so the hook order stays stable (React error #310).
+  const vectorZoneAnnotations = useMemo<Annotation[]>(() => {
+    const out: Annotation[] = [];
+    for (const vl of vectorLayers) {
+      const gj = vectorGeojson[vl.id];
+      const features = gj?.features;
+      if (!Array.isArray(features)) continue;
+      features.forEach((f: any, i: number) => {
+        const gtype = f?.geometry?.type;
+        if (gtype !== 'Polygon' && gtype !== 'MultiPolygon') return;
+        const props = f.properties || {};
+        const label = props.name ?? props.Name ?? props.label ?? props.zone ?? props.id ?? `${vl.name} #${i + 1}`;
+        out.push({
+          id: `veczone-${vl.id}-${f.id ?? i}`,
+          golf_course_id: golfCourseId,
+          plot_id: String(label),
+          external_code: String(label),
+          comment: vl.name,
+          annotation_type: 'area',
+          geometry: f.geometry,
+          properties: props,
+          created_by: null,
+          created_at: '',
+          updated_at: '',
+        });
+      });
+    }
+    return out;
+  }, [vectorLayers, vectorGeojson, golfCourseId]);
   const [showAnalysisPanel, setShowAnalysisPanel] = useState(false);
   const [vectorLayersAboveHealth, setVectorLayersAboveHealth] = useState(true);
 
@@ -1828,41 +1862,6 @@ const MapboxGolfCourseMap = ({
       });
     }
   };
-
-  // Expose uploaded vector-layer polygons as Zonal Statistics zones. The panel
-  // treats any `area`/`plot_grid` annotation as a zone, so we wrap each polygon
-  // feature of every loaded vector layer in an Annotation-shaped object (WGS84
-  // geometry, like drawn annotations). This is what makes "zones" usable for
-  // zonal stats instead of only hand-drawn areas.
-  const vectorZoneAnnotations = useMemo<Annotation[]>(() => {
-    const out: Annotation[] = [];
-    for (const vl of vectorLayers) {
-      const gj = vectorGeojson[vl.id];
-      const features = gj?.features;
-      if (!Array.isArray(features)) continue;
-      features.forEach((f: any, i: number) => {
-        const gtype = f?.geometry?.type;
-        if (gtype !== 'Polygon' && gtype !== 'MultiPolygon') return;
-        const props = f.properties || {};
-        const label = props.name ?? props.Name ?? props.label ?? props.zone ?? props.id ?? `${vl.name} #${i + 1}`;
-        out.push({
-          id: `veczone-${vl.id}-${f.id ?? i}`,
-          golf_course_id: golfCourseId,
-          plot_id: String(label),
-          external_code: String(label),
-          comment: vl.name,
-          annotation_type: 'area',
-          geometry: f.geometry,
-          properties: props,
-          created_by: null,
-          created_at: '',
-          updated_at: '',
-        });
-      });
-    }
-    return out;
-  }, [vectorLayers, vectorGeojson, golfCourseId]);
-
 
   return (
     <div

@@ -338,6 +338,8 @@ export class COGLoader {
       chosenH = smallest.getHeight();
     }
 
+    console.log(`[COGLoader] window read: IFD ${chosenIdx} (${chosenW}×${chosenH}) for targetMaxDim=${Math.round(targetMaxDim)} — IFD 0 = native/sharpest`);
+
     // Pixel grid math in the chosen IFD. Every IFD shares (cogX0, cogY0) as
     // its top-left corner; only the pixel size scales.
     const ifdPxWidthSigned  = (cogX1 - cogX0) / chosenW;

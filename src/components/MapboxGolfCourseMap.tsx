@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import type { Annotation } from '@/types/annotation';
 import { useT } from '@/translations';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
@@ -103,6 +104,10 @@ const MapboxGolfCourseMap = ({
   // Vector layer states
   const [vectorLayers, setVectorLayers] = useState<VectorLayer[]>([]);
   const [visibleVectorLayers, setVisibleVectorLayers] = useState<Set<string>>(new Set());
+  // Parsed WGS84 GeoJSON for each loaded vector layer (id -> FeatureCollection),
+  // captured during preload. Used to offer uploaded polygons as Zonal Statistics
+  // zones, not just hand-drawn annotations.
+  const [vectorGeojson, setVectorGeojson] = useState<Record<string, any>>({});
   const [showVectorLayerPanel, setShowVectorLayerPanel] = useState(false);
   const [showAnalysisPanel, setShowAnalysisPanel] = useState(false);
   const [vectorLayersAboveHealth, setVectorLayersAboveHealth] = useState(true);
@@ -1134,6 +1139,11 @@ const MapboxGolfCourseMap = ({
           const center = map.current.getCenter();
           geojsonData = reprojectGeoJSONToWGS84(geojsonData, [center.lng, center.lat]);
 
+          // Keep the parsed WGS84 GeoJSON so its polygons can be offered as
+          // Zonal Statistics zones (see vectorZoneAnnotations).
+          const capturedGeojson = geojsonData;
+          setVectorGeojson(prev => (prev[layer.id] === capturedGeojson ? prev : { ...prev, [layer.id]: capturedGeojson }));
+
           if (!map.current.getSource(sourceId)) {
             map.current.addSource(sourceId, { type: 'geojson', data: geojsonData });
           }
@@ -1819,6 +1829,40 @@ const MapboxGolfCourseMap = ({
     }
   };
 
+  // Expose uploaded vector-layer polygons as Zonal Statistics zones. The panel
+  // treats any `area`/`plot_grid` annotation as a zone, so we wrap each polygon
+  // feature of every loaded vector layer in an Annotation-shaped object (WGS84
+  // geometry, like drawn annotations). This is what makes "zones" usable for
+  // zonal stats instead of only hand-drawn areas.
+  const vectorZoneAnnotations = useMemo<Annotation[]>(() => {
+    const out: Annotation[] = [];
+    for (const vl of vectorLayers) {
+      const gj = vectorGeojson[vl.id];
+      const features = gj?.features;
+      if (!Array.isArray(features)) continue;
+      features.forEach((f: any, i: number) => {
+        const gtype = f?.geometry?.type;
+        if (gtype !== 'Polygon' && gtype !== 'MultiPolygon') return;
+        const props = f.properties || {};
+        const label = props.name ?? props.Name ?? props.label ?? props.zone ?? props.id ?? `${vl.name} #${i + 1}`;
+        out.push({
+          id: `veczone-${vl.id}-${f.id ?? i}`,
+          golf_course_id: golfCourseId,
+          plot_id: String(label),
+          external_code: String(label),
+          comment: vl.name,
+          annotation_type: 'area',
+          geometry: f.geometry,
+          properties: props,
+          created_by: null,
+          created_at: '',
+          updated_at: '',
+        });
+      });
+    }
+    return out;
+  }, [vectorLayers, vectorGeojson, golfCourseId]);
+
 
   return (
     <div
@@ -1986,7 +2030,7 @@ const MapboxGolfCourseMap = ({
             <ZonalStatsPanel
               golfCourseId={golfCourseId}
               tilesets={tilesets}
-              annotations={drawing.annotations}
+              annotations={[...drawing.annotations, ...vectorZoneAnnotations]}
               bandMapping={bandMapping}
               onClose={() => setShowZonalStats(false)}
             />

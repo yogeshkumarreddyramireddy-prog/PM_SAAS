@@ -90,72 +90,88 @@ export function AnalysisPanel({
             </Select>
           </div>
 
-          {/* Histogram */}
-          <div className="h-24 w-full relative mb-1">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={histogramData} margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="colorGradient" x1="0" y1="0" x2="1" y2="0">
-                    <stop offset="0%" stopColor="#ef4444" stopOpacity={1}/>  {/* Red */}
-                    <stop offset="50%" stopColor="#eab308" stopOpacity={1}/> {/* Yellow */}
-                    <stop offset="100%" stopColor="#22c55e" stopOpacity={1}/> {/* Green */}
-                  </linearGradient>
-                </defs>
-                <Area 
-                  type="monotone" 
-                  dataKey="count" 
-                  stroke="none" 
-                  fillOpacity={1} 
-                  fill="url(#colorGradient)" 
-                  isAnimationActive={false}
-                />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
+          {(() => {
+            // ── Data range (histogram) vs colour range (the ramp) ────────────
+            // The histogram is FIT TO THE DATA so it shows a real distribution.
+            // The colours are ABSOLUTE (range = the index's colorRange), so a
+            // given index value always maps to the same colour and high values
+            // never render red. We colour the histogram by that ABSOLUTE mapping
+            // so the chart matches the map: green data → green bars.
+            let dMin = activeConfig.colorRange[0];
+            let dMax = activeConfig.colorRange[1];
+            if (histogramData.length > 0) {
+              const minV = Math.min(...histogramData.map(d => d.value));
+              const maxV = Math.max(...histogramData.map(d => d.value));
+              if (isFinite(minV) && isFinite(maxV) && maxV > minV) { dMin = minV; dMax = maxV; }
+            }
+            const span = dMax - dMin || 1e-6;
+            const cSpan = (range[1] - range[0]) || 1e-6;
 
-          {/* Slider Controls */}
-          <div className="px-1 mt-4 relative">
-             {(() => {
-               // Compute dynamic boundaries from true data
-               let dMin = activeConfig.domain[0];
-               let dMax = activeConfig.domain[1];
-               if (histogramData.length > 0) {
-                 const minV = Math.min(...histogramData.map(d => d.value));
-                 const maxV = Math.max(...histogramData.map(d => d.value));
-                 // Only use dynamic if valid numbers
-                 if (isFinite(minV) && isFinite(maxV) && maxV > minV) {
-                   dMin = minV;
-                   dMax = maxV;
-                 }
-               }
-               // Ensure current range is clamped to new dynamic slider domains to avoid Radix UI crashes
-               const safeRange = [
-                 Math.max(dMin, Math.min(dMax, range[0])),
-                 Math.max(dMin, Math.min(dMax, range[1]))
-               ];
+            // Interpolate the red→yellow→green ramp at t∈[0,1].
+            const RED = [239, 68, 68], YEL = [234, 179, 8], GRN = [34, 197, 94];
+            const mix = (a: number[], b: number[], u: number) =>
+              `rgb(${Math.round(a[0] + (b[0] - a[0]) * u)},${Math.round(a[1] + (b[1] - a[1]) * u)},${Math.round(a[2] + (b[2] - a[2]) * u)})`;
+            const rampColor = (t: number) => {
+              t = Math.max(0, Math.min(1, t));
+              return t < 0.5 ? mix(RED, YEL, t / 0.5) : mix(YEL, GRN, (t - 0.5) / 0.5);
+            };
+            // 6 gradient stops across the histogram width, each coloured by the
+            // ABSOLUTE value at that position.
+            const gradientStops = [0, 0.2, 0.4, 0.6, 0.8, 1].map(p => {
+              const val = dMin + p * span;
+              return { offset: `${p * 100}%`, color: rampColor((val - range[0]) / cSpan) };
+            });
 
-               return (
-                 <Slider
-                   min={dMin}
-                   max={dMax}
-                   step={(dMax - dMin) / 100}
-                   value={safeRange}
-                   onValueChange={(val: number[]) => onRangeChange(val as [number, number])}
-                   className="my-4"
-                 />
-               );
-             })()}
-             
-             {/* Slider Labels */}
-             <div className="flex justify-between items-center text-xs text-white">
-                <div className="bg-sky-500 px-1.5 py-0.5 rounded">
-                  {range[0].toFixed(2)}
+            // Slider spans the data range; clamp the (absolute) colour handles to
+            // it so Radix never crashes. Labels show the true colour-range values.
+            const sval: [number, number] = [
+              Math.max(dMin, Math.min(dMax, range[0])),
+              Math.max(dMin, Math.min(dMax, range[1])),
+            ];
+
+            return (
+              <>
+                {/* Histogram (fit to data, coloured by absolute ramp) */}
+                <div className="h-24 w-full relative mb-1">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={histogramData} margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
+                      <defs>
+                        <linearGradient id="colorGradient" x1="0" y1="0" x2="1" y2="0">
+                          {gradientStops.map((s, i) => (
+                            <stop key={i} offset={s.offset} stopColor={s.color} stopOpacity={1} />
+                          ))}
+                        </linearGradient>
+                      </defs>
+                      <Area
+                        type="monotone"
+                        dataKey="count"
+                        stroke="none"
+                        fillOpacity={1}
+                        fill="url(#colorGradient)"
+                        isAnimationActive={false}
+                      />
+                    </AreaChart>
+                  </ResponsiveContainer>
                 </div>
-                <div className="bg-sky-500 px-1.5 py-0.5 rounded">
-                  {range[1].toFixed(2)}
+
+                {/* Slider Controls */}
+                <div className="px-1 mt-4 relative">
+                  <Slider
+                    min={dMin}
+                    max={dMax}
+                    step={span / 100}
+                    value={sval}
+                    onValueChange={(val: number[]) => onRangeChange(val as [number, number])}
+                    className="my-4"
+                  />
+                  <div className="flex justify-between items-center text-xs text-white">
+                    <div className="bg-sky-500 px-1.5 py-0.5 rounded">{range[0].toFixed(2)}</div>
+                    <div className="bg-sky-500 px-1.5 py-0.5 rounded">{range[1].toFixed(2)}</div>
+                  </div>
                 </div>
-             </div>
-          </div>
+              </>
+            );
+          })()}
 
           {/* Advanced Band Mapping */}
           {isAdmin && (

@@ -125,16 +125,18 @@ async function computeRGBHistogram(
     return { histData: [], dataRange: domain };
   }
 
-  // Bin over the absolute range passed in (the index's colorRange), so the
-  // histogram lines up with the fixed red→green colour ramp instead of being
-  // stretched to this image's own min/max.
-  const [rMin, rMax] = domain;
-  const rangeSize = (rMax - rMin) || 0.01;
+  // Fit the histogram to the actual data (1st–99th percentile) so it shows a
+  // real distribution; the colour range stays absolute (handled in the panel).
+  values.sort((a, b) => a - b);
+  const rMin = values[Math.floor(values.length * 0.01)];
+  const hi = values[Math.floor(values.length * 0.99)];
+  const rMax = hi > rMin ? hi : rMin + 0.01;
+  const rangeSize = rMax - rMin;
   const buckets = 50;
   const counts = new Array(buckets).fill(0);
   for (const v of values) {
+    if (v < rMin || v > rMax) continue;
     let idx = Math.floor(((v - rMin) / rangeSize) * buckets);
-    if (idx < 0) idx = 0;
     if (idx >= buckets) idx = buckets - 1;
     counts[idx]++;
   }
@@ -227,18 +229,22 @@ export function MapAnalyticsEngine({
 
     if (values.length === 0) { onHistogramData([]); return; }
 
-    // Bin over the index's ABSOLUTE colorRange (the same range the colour ramp
-    // uses by default), NOT the per-image 1st–99th percentile. We deliberately do
-    // NOT call onDataRange here: auto-stretching to the image min/max is what made
-    // healthy values (e.g. NDVI 0.72) show red just for being the lowest pixel in
-    // that image. The histogram bars now line up with the fixed red→green scale.
-    const [rMin, rMax] = config.colorRange;
+    // The HISTOGRAM is fit to the actual data (1st–99th percentile) so it shows a
+    // proper distribution. We deliberately do NOT call onDataRange: the COLOUR
+    // range stays at the index's absolute colorRange (set on index select), so
+    // colours are consistent and high values never render red. The panel overlays
+    // the colour ramp onto this data-fit histogram.
+    values.sort((a, b) => a - b);
+    const lo = values[Math.floor(values.length * 0.01)];
+    const hi = values[Math.floor(values.length * 0.99)];
+    const rMin = lo;
+    const rMax = hi > lo ? hi : lo + 0.01;
     const buckets = 50;
     const counts = new Array(buckets).fill(0);
-    const rangeSize = (rMax - rMin) || 0.01;
+    const rangeSize = rMax - rMin;
     for (const v of values) {
+      if (v < rMin || v > rMax) continue;
       let idx = Math.floor(((v - rMin) / rangeSize) * buckets);
-      if (idx < 0) idx = 0;
       if (idx >= buckets) idx = buckets - 1;
       counts[idx]++;
     }

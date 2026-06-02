@@ -111,7 +111,9 @@ export const VEGETATION_INDEX_CONFIG: Record<VegetationIndex, VegetationIndexInf
     shaderMath: '(g - n) / (g + n + 0.000001)',
     calculate: (r, g, b, n) => (g - n) / (g + n + 0.000001),
     domain: [-1, 1],
-    colorRange: [-0.3, 0.3]
+    // NDWI for turf is negative (NIR > Green); ~-0.6 (dense) … -0.1 (sparse/moist).
+    // Bracket that so it isn't uniformly red; higher (moister) → green.
+    colorRange: [-0.6, -0.1]
   },
   'MS_CLRE': {
     id: 'MS_CLRE',

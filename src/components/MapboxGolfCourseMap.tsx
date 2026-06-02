@@ -59,6 +59,22 @@ interface MapboxGolfCourseMapProps {
   isAdmin?: boolean; // enables inline layer name/date editing
 }
 
+// Human-readable label for a vector feature, used on the map and in Zonal Stats.
+// Prefers `display_label` (e.g. "green_1"), then a non-null `label`/name-ish
+// field, and turns underscores into spaces -> "green 1". `label` is often
+// present but null in our zone exports, so a plain `has 'label'` check would
+// otherwise blank the map labels.
+function zoneFeatureLabel(props: any, fallback: string): string {
+  const raw =
+    props?.display_label ??
+    props?.label ??
+    props?.name ?? props?.Name ??
+    props?.title ?? props?.Title ??
+    props?.zone;
+  if (raw === null || raw === undefined || raw === '') return fallback;
+  return String(raw).replace(/_/g, ' ');
+}
+
 const MapboxGolfCourseMap = ({
   golfCourseId,
   mapboxAccessToken,
@@ -125,7 +141,8 @@ const MapboxGolfCourseMap = ({
         const gtype = f?.geometry?.type;
         if (gtype !== 'Polygon' && gtype !== 'MultiPolygon') return;
         const props = f.properties || {};
-        const label = props.name ?? props.Name ?? props.label ?? props.zone ?? props.id ?? `${vl.name} #${i + 1}`;
+        // Prefer the baked __label (set in preloadAll); recompute as a safety net.
+        const label = props.__label ?? zoneFeatureLabel(props, `${vl.name} ${i + 1}`);
         out.push({
           id: `veczone-${vl.id}-${f.id ?? i}`,
           golf_course_id: golfCourseId,
@@ -1173,6 +1190,16 @@ const MapboxGolfCourseMap = ({
           const center = map.current.getCenter();
           geojsonData = reprojectGeoJSONToWGS84(geojsonData, [center.lng, center.lat]);
 
+          // Bake a clean display label (`__label`, e.g. "green 1") onto every
+          // feature so the map symbol layer and Zonal Stats both show readable
+          // names instead of UUIDs / blank text.
+          if (Array.isArray(geojsonData?.features)) {
+            geojsonData.features.forEach((f: any, i: number) => {
+              if (!f.properties) f.properties = {};
+              f.properties.__label = zoneFeatureLabel(f.properties, `${layer.name} ${i + 1}`);
+            });
+          }
+
           // Keep the parsed WGS84 GeoJSON so its polygons can be offered as
           // Zonal Statistics zones (see vectorZoneAnnotations).
           const capturedGeojson = geojsonData;
@@ -1222,24 +1249,18 @@ const MapboxGolfCourseMap = ({
             source: sourceId,
             layout: {
               'visibility': 'none',
+              // `__label` is baked onto every feature in preloadAll (clean,
+              // underscore-stripped display name). Fall back to other fields only
+              // if it's somehow absent. Note `label` is often present-but-null in
+              // our exports, so it is deliberately NOT first.
               'text-field': [
-                'case',
-                ['has', 'label'],
-                ['get', 'label'],
-                ['has', 'name'],
+                'coalesce',
+                ['get', '__label'],
+                ['get', 'display_label'],
                 ['get', 'name'],
-                ['has', 'Name'],
                 ['get', 'Name'],
-                ['has', 'title'],
                 ['get', 'title'],
-                ['has', 'Title'],
                 ['get', 'Title'],
-                ['has', 'description'],
-                ['get', 'description'],
-                ['has', 'id'],
-                ['to-string', ['get', 'id']],
-                ['has', 'type'],
-                ['get', 'type'],
                 ''
               ],
               'text-font': ['Open Sans Bold', 'Arial Unicode MS Bold'],

@@ -367,12 +367,17 @@ export const ZonalStatsPanel: React.FC<ZonalStatsPanelProps> = ({
 
     const metaLabels = ['Plot ID', 'External Code', 'Comment', 'Type'];
 
-    // Row 1: descriptive header (layer + index name per column)
-    const header1: string[] = [...metaLabels, ...dataCols.map(
-      c => `${formatDate(layerConfigs.get(c.tsId)!.tileset)} — ${VEGETATION_INDEX_CONFIG[c.indexKey].id.replace(/^(RGB_|MS_)/, '')}`
-    )];
-    // Row 2: metric label per column
-    const header2: string[] = [...metaLabels, ...dataCols.map(c => METRIC_LABELS[c.metric])];
+    // Single self-describing header per column: "<layer> <index> <metric>", e.g.
+    // "2026-05-29 NDVI Mean". A previous two-row header (layer/index on row 1,
+    // metric on row 2) was ambiguous once parsed: generic viewers read only row 1,
+    // so every metric of an index collapsed to NDVI / NDVI_1 / NDVI_2… (you could
+    // not tell Mean from Min/Max), and row 2 leaked in as a spurious "Plot ID"
+    // chart point. One unique, fully-qualified header per column fixes both.
+    const header: string[] = [...metaLabels, ...dataCols.map(c => {
+      const layer = formatDate(layerConfigs.get(c.tsId)!.tileset);
+      const idx = VEGETATION_INDEX_CONFIG[c.indexKey].id.replace(/^(RGB_|MS_)/, '');
+      return `${layer} ${idx} ${METRIC_LABELS[c.metric]}`;
+    })];
 
     const dataRows = results.map(row => [
       row.plot_id as string,
@@ -386,8 +391,8 @@ export const ZonalStatsPanel: React.FC<ZonalStatsPanelProps> = ({
     ]);
 
     const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.aoa_to_sheet([header1, header2, ...dataRows]);
-    ws['!freeze'] = { xSplit: 4, ySplit: 2 };
+    const ws = XLSX.utils.aoa_to_sheet([header, ...dataRows]);
+    ws['!freeze'] = { xSplit: 4, ySplit: 1 };
     ws['!cols'] = [
       { wch: 14 }, { wch: 16 }, { wch: 22 }, { wch: 14 },
       ...dataCols.map(() => ({ wch: 12 })),

@@ -6,6 +6,7 @@ import { BitmapLayer } from '@deck.gl/layers';
 import { VegetationIndexLayer } from './VegetationIndexLayer';
 import { COGLoader } from '../lib/cog-loader';
 import { VEGETATION_INDEX_CONFIG, VegetationIndex } from '../lib/vegetation-indices';
+import { smoothImageData } from '../lib/cogSmooth';
 
 interface MapAnalyticsEngineProps {
   map: mapboxgl.Map | null;
@@ -20,6 +21,10 @@ interface MapAnalyticsEngineProps {
   bandMapping: { r: number, g: number, b: number, nir: number, re: number };
   onHistogramData?: (data: Array<{ value: number; count: number }>) => void;
   onDataRange?: (range: [number, number]) => void;
+  /** Optional smoothed "prescription" view (always NDVI). Off by default. */
+  smoothEnabled?: boolean;
+  /** Smoothing strength 0–100. */
+  smoothStrength?: number;
 }
 
 // Keep a persistent loader reference to avoid re-init on every render
@@ -160,9 +165,22 @@ export function MapAnalyticsEngine({
   range,
   bandMapping,
   onHistogramData,
-  onDataRange
+  onDataRange,
+  smoothEnabled = false,
+  smoothStrength = 50,
 }: MapAnalyticsEngineProps) {
   const [overlay, setOverlay] = useState<MapboxOverlay | null>(null);
+
+  // Cache of smoothed ImageData, keyed by the source ImageData object + strength,
+  // so we only re-blur when the source window or strength actually changes.
+  const smoothCacheRef = useRef(new WeakMap<ImageData, { strength: number; out: ImageData }>());
+  const getSmoothed = (img: ImageData, strength: number): ImageData => {
+    const hit = smoothCacheRef.current.get(img);
+    if (hit && hit.strength === strength) return hit.out;
+    const out = smoothImageData(img, strength);
+    smoothCacheRef.current.set(img, { strength, out });
+    return out;
+  };
 
   // Track if we've loaded COG image data for the current URL.
   // cogImageData is a low-res whole-image snapshot used for the histogram and
@@ -517,6 +535,45 @@ export function MapAnalyticsEngine({
       // "drifting" while zooming. The base pins it. (The coarse base's averaged
       // boundary fringe is addressed at the source — nodata in the COG pipeline —
       // not by removing the base.)
+      if (smoothEnabled) {
+        // ── Smoothed "prescription" view (always NDVI) ──────────────────────
+        // Isolated, opt-in path: blur the packed bands (nodata-aware) and render
+        // with LINEAR filtering so the GPU upscales into a smooth de-noised
+        // surface. Fixed to NDVI regardless of the selected index. Removing this
+        // block restores the crisp view exactly.
+        const ndvi = VEGETATION_INDEX_CONFIG['MS_NDVI'];
+        const smProps = {
+          shaderMath: ndvi.shaderMath,
+          range: ndvi.colorRange,
+          bandMapping: bandMapping,
+          opacity: 1,
+          pickable: false,
+          textureParameters: {
+            minFilter: 'linear' as const,
+            magFilter: 'linear' as const,
+            mipmapFilter: 'linear' as const,
+          },
+        };
+        const smKey = `smooth-ndvi-${smoothStrength}-${ndvi.colorRange.join('_')}-${bandMapping.r}${bandMapping.nir}`;
+        layers = [
+          new VegetationIndexLayer({
+            ...smProps,
+            id: `deck-cog-smooth-base-${smKey}`,
+            beforeId: 'cog-deck-insert-point',
+            image: getSmoothed(cogImageData.imageData, smoothStrength),
+            bounds: [cogImageData.bounds[0], cogImageData.bounds[1], cogImageData.bounds[2], cogImageData.bounds[3]] as [number, number, number, number],
+          }),
+        ];
+        if (windowImage) {
+          layers.push(new VegetationIndexLayer({
+            ...smProps,
+            id: `deck-cog-smooth-window-${smKey}`,
+            beforeId: 'cog-deck-insert-point',
+            image: getSmoothed(windowImage.imageData, smoothStrength),
+            bounds: [windowImage.bounds[0], windowImage.bounds[1], windowImage.bounds[2], windowImage.bounds[3]] as [number, number, number, number],
+          }));
+        }
+      } else {
       layers = [
         new VegetationIndexLayer({
           ...sharedLayerProps,
@@ -536,6 +593,7 @@ export function MapAnalyticsEngine({
           bounds: [windowImage.bounds[0], windowImage.bounds[1], windowImage.bounds[2], windowImage.bounds[3]] as [number, number, number, number],
         }));
       }
+      }
     } else if (mode === 'Multispectral' && !cogImageData) {
       // Still loading initial overview — keep existing layers to avoid flicker
       return;
@@ -543,7 +601,7 @@ export function MapAnalyticsEngine({
 
     overlay.setProps({ layers });
 
-  }, [map, isEnabled, mode, tileUrl, selectedIndex, range, bandMapping, overlay, config, cogImageData, windowImage, styleTick]);
+  }, [map, isEnabled, mode, tileUrl, selectedIndex, range, bandMapping, overlay, config, cogImageData, windowImage, styleTick, smoothEnabled, smoothStrength]);
 
   // ─── Auto-Fly Logic ────────────────────────────────────────────────────────
   // When COG image is loaded, fly the map to its bounds.

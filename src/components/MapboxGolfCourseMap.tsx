@@ -1080,9 +1080,8 @@ const MapboxGolfCourseMap = ({
   // PRELOAD: Load ALL vector layers onto the map once, all hidden.
   // Visibility toggling is then handled separately and synchronously.
   useEffect(() => {
-    if (!map.current || !mapReady || !map.current.isStyleLoaded()) return;
+    if (!map.current || !mapReady) return;
     if (vectorLayers.length === 0) return;
-    if (vectorPreloadRunningRef.current) return; // prevent re-entrant runs
 
     const r2PublicUrl = import.meta.env.VITE_R2_PUBLIC_URL;
 
@@ -1095,8 +1094,11 @@ const MapboxGolfCourseMap = ({
         const sourceId = `vector-source-${layer.id}`;
         const vectorLayerId = `vector-layer-${layer.id}`;
 
-        // Already loaded — skip
-        if (map.current.getSource(sourceId)) continue;
+        // Already fully loaded (source AND layers present) — skip. If the source
+        // exists but the layers are gone (a prior run was interrupted, or a style
+        // change dropped the layers but not the source), fall through and re-add
+        // the layers below (addSource is guarded so it won't throw).
+        if (map.current.getSource(sourceId) && map.current.getLayer(vectorLayerId)) continue;
 
         try {
           let geojsonData;
@@ -1132,7 +1134,9 @@ const MapboxGolfCourseMap = ({
           const center = map.current.getCenter();
           geojsonData = reprojectGeoJSONToWGS84(geojsonData, [center.lng, center.lat]);
 
-          map.current.addSource(sourceId, { type: 'geojson', data: geojsonData });
+          if (!map.current.getSource(sourceId)) {
+            map.current.addSource(sourceId, { type: 'geojson', data: geojsonData });
+          }
 
           const layerColor = getLayerColor(layer.name);
 
@@ -1242,7 +1246,20 @@ const MapboxGolfCourseMap = ({
       syncVectorVisibilityRef.current();
     };
 
-    preloadAll();
+    // The map style transiently reports not-loaded while Mapbox processes pending
+    // work (the Deck.GL COG overlay mounting, raster/health sources, dark-mode
+    // restyle). Adding sources/layers during that window makes Mapbox silently
+    // drop them — the exact symptom seen: "[vector] visible — layers on map: []"
+    // with no preload log. So wait for the style to settle, then load, retrying
+    // on every `idle` until it's ready.
+    const tryPreload = () => {
+      if (!map.current) return;
+      if (!map.current.isStyleLoaded()) { map.current.once('idle', tryPreload); return; }
+      if (vectorPreloadRunningRef.current) return; // a run is already in flight
+      preloadAll();
+    };
+    tryPreload();
+    return () => { map.current?.off('idle', tryPreload); };
   }, [mapReady, vectorLayers, golfCourseId]);
 
 

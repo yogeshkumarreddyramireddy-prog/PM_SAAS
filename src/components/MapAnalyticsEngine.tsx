@@ -6,7 +6,8 @@ import { BitmapLayer } from '@deck.gl/layers';
 import { VegetationIndexLayer } from './VegetationIndexLayer';
 import { COGLoader } from '../lib/cog-loader';
 import { VEGETATION_INDEX_CONFIG, VegetationIndex } from '../lib/vegetation-indices';
-import { smoothImageData, buildClipPolys, SmoothClip } from '../lib/cogSmooth';
+import { smoothImageData } from '../lib/cogSmooth';
+import { buildClipPolys, applyZoneMask, clipPolysKey, ClipPoly } from '../lib/zoneMask';
 
 interface MapAnalyticsEngineProps {
   map: mapboxgl.Map | null;
@@ -177,13 +178,24 @@ export function MapAnalyticsEngine({
 
   // Cache of smoothed ImageData, keyed by the source ImageData object + strength,
   // so we only re-blur when the source window or strength actually changes.
-  const smoothCacheRef = useRef(new WeakMap<ImageData, { key: string; out: ImageData }>());
-  const getSmoothed = (img: ImageData, strength: number, clip?: SmoothClip, clipKey = ''): ImageData => {
-    const key = `${strength}|${clipKey}`;
-    const hit = smoothCacheRef.current.get(img);
+  // Prepare a multispectral source image for rendering: optionally smooth the
+  // colours, then HARD-clip to the vector zone polygons so nothing renders
+  // outside them (the COG's overview-averaged fringe is removed). Cached per
+  // source ImageData by a key capturing every input that affects the output.
+  const prepCacheRef = useRef(new WeakMap<ImageData, { key: string; out: ImageData }>());
+  const prepareImage = (
+    img: ImageData,
+    bounds: number[],
+    opts: { smooth: boolean; strength: number; polys: ClipPoly[] | null; polysKey: string },
+  ): ImageData => {
+    const key = `s${opts.smooth ? opts.strength : 'off'}|${opts.polysKey}`;
+    const hit = prepCacheRef.current.get(img);
     if (hit && hit.key === key) return hit.out;
-    const out = smoothImageData(img, strength, clip);
-    smoothCacheRef.current.set(img, { key, out });
+    let out = opts.smooth ? smoothImageData(img, opts.strength) : img;
+    if (opts.polys) {
+      out = applyZoneMask(out, [bounds[0], bounds[1], bounds[2], bounds[3]], opts.polys, opts.polysKey);
+    }
+    prepCacheRef.current.set(img, { key, out });
     return out;
   };
 
@@ -513,14 +525,24 @@ export function MapAnalyticsEngine({
       //   2. Window layer — high-res viewport-scoped image (windowImage). Renders on top
       //      of the base and sharpens whatever is currently on-screen.
       // When the window layer is loading, the base layer stays visible — no gray flashes.
+      // Smoothed "prescription" view is always NDVI; the crisp view uses the
+      // selected index. Either way the rendered image is HARD-clipped to the
+      // vector zones (prepareImage → applyZoneMask) so the COG's overview-averaged
+      // boundary fringe never shows — the overlay matches the QGIS clip exactly.
+      const activeConfig = smoothEnabled ? VEGETATION_INDEX_CONFIG['MS_NDVI'] : config;
+      const activeRange = smoothEnabled ? VEGETATION_INDEX_CONFIG['MS_NDVI'].colorRange : range;
+      const clipPolys = buildClipPolys(clipFeatures);
+      const polysKey = clipPolys ? clipPolysKey(clipPolys) : '';
+
       const sharedLayerProps = {
-        shaderMath: config.shaderMath,
-        range: range,
+        shaderMath: activeConfig.shaderMath,
+        range: activeRange,
         bandMapping: bandMapping,
         opacity: 1,
         pickable: false,
-        // NEAREST texture filtering: keeps source pixels crisp instead of GPU-blurring
-        // across boundaries, which would cause the pixel inspector to appear "offset".
+        // NEAREST texture filtering: keeps the hard clip edge crisp (LINEAR would
+        // blend the zeroed boundary pixels with neighbours and soften/darken the
+        // edge) and keeps source pixels aligned with the pixel inspector.
         textureParameters: {
           minFilter: 'nearest' as const,
           magFilter: 'nearest' as const,
@@ -528,72 +550,21 @@ export function MapAnalyticsEngine({
         },
       };
 
+      const prepOpts = { smooth: smoothEnabled, strength: smoothStrength, polys: clipPolys, polysKey };
+      const renderKey = `${smoothEnabled ? `sm${smoothStrength}` : shaderKey}-${polysKey}`;
+
       // Two stacked layers:
       //   1. Base — low-res full-extent image (cogImageData). Always present, at
       //      FIXED full-extent bounds, so it anchors the COG's position on the map.
       //   2. Window — high-res, viewport-scoped image (windowImage) on top.
-      //
-      // The base is intentionally kept (not dropped): it is the only layer whose
-      // bounds never change between frames. The window's snapped bounds shift by
-      // up to ~1 IFD-pixel as the chosen overview changes with zoom; with the base
-      // gone, that shift was the only thing on screen and read as the overlay
-      // "drifting" while zooming. The base pins it. (The coarse base's averaged
-      // boundary fringe is addressed at the source — nodata in the COG pipeline —
-      // not by removing the base.)
-      if (smoothEnabled) {
-        // ── Smoothed "prescription" view (always NDVI) ──────────────────────
-        // Isolated, opt-in path: blur the packed bands (nodata-aware) and render
-        // with LINEAR filtering so the GPU upscales into a smooth de-noised
-        // surface. Fixed to NDVI regardless of the selected index. Removing this
-        // block restores the crisp view exactly.
-        const ndvi = VEGETATION_INDEX_CONFIG['MS_NDVI'];
-        // Clip the smoothed surface to the vector-zone polygons so it never
-        // renders outside the zones and gets clean vector edges instead of the
-        // COG's jagged footprint. Done in JS at the (coarse) smoothed grid via
-        // point-in-polygon (see cogSmooth.ts) — a GPU MaskExtension did not render
-        // in Mapbox's interleaved overlay mode and blanked the whole surface.
-        const clipPolys = buildClipPolys(clipFeatures);
-        const hasClip = !!clipPolys;
-        const clipKey = hasClip ? `clip-${clipPolys!.length}` : '';
-        const mkClip = (b: number[]): SmoothClip | undefined =>
-          clipPolys ? { bounds: [b[0], b[1], b[2], b[3]], polys: clipPolys } : undefined;
-        const smProps = {
-          shaderMath: ndvi.shaderMath,
-          range: ndvi.colorRange,
-          bandMapping: bandMapping,
-          opacity: 1,
-          pickable: false,
-          textureParameters: {
-            minFilter: 'linear' as const,
-            magFilter: 'linear' as const,
-            mipmapFilter: 'linear' as const,
-          },
-        };
-        const smKey = `smooth-ndvi-${smoothStrength}-${ndvi.colorRange.join('_')}-${bandMapping.r}${bandMapping.nir}-${clipKey}`;
-        layers = [];
-        layers.push(new VegetationIndexLayer({
-          ...smProps,
-          id: `deck-cog-smooth-base-${smKey}`,
-          beforeId: 'cog-deck-insert-point',
-          image: getSmoothed(cogImageData.imageData, smoothStrength, mkClip(cogImageData.bounds), clipKey),
-          bounds: [cogImageData.bounds[0], cogImageData.bounds[1], cogImageData.bounds[2], cogImageData.bounds[3]] as [number, number, number, number],
-        }));
-        if (windowImage) {
-          layers.push(new VegetationIndexLayer({
-            ...smProps,
-            id: `deck-cog-smooth-window-${smKey}`,
-            beforeId: 'cog-deck-insert-point',
-            image: getSmoothed(windowImage.imageData, smoothStrength, mkClip(windowImage.bounds), clipKey),
-            bounds: [windowImage.bounds[0], windowImage.bounds[1], windowImage.bounds[2], windowImage.bounds[3]] as [number, number, number, number],
-          }));
-        }
-      } else {
+      // The base is kept (not dropped): it's the only layer whose bounds never
+      // change between frames, so it pins the overlay and prevents zoom "drift".
       layers = [
         new VegetationIndexLayer({
           ...sharedLayerProps,
-          id: `deck-cog-base-${shaderKey}`,
+          id: `deck-cog-base-${renderKey}`,
           beforeId: 'cog-deck-insert-point',
-          image: cogImageData.imageData,
+          image: prepareImage(cogImageData.imageData, cogImageData.bounds, prepOpts),
           bounds: [cogImageData.bounds[0], cogImageData.bounds[1], cogImageData.bounds[2], cogImageData.bounds[3]] as [number, number, number, number],
         }),
       ];
@@ -601,12 +572,11 @@ export function MapAnalyticsEngine({
       if (windowImage) {
         layers.push(new VegetationIndexLayer({
           ...sharedLayerProps,
-          id: `deck-cog-window-${shaderKey}`,
+          id: `deck-cog-window-${renderKey}`,
           beforeId: 'cog-deck-insert-point',
-          image: windowImage.imageData,
+          image: prepareImage(windowImage.imageData, windowImage.bounds, prepOpts),
           bounds: [windowImage.bounds[0], windowImage.bounds[1], windowImage.bounds[2], windowImage.bounds[3]] as [number, number, number, number],
         }));
-      }
       }
     } else if (mode === 'Multispectral' && !cogImageData) {
       // Still loading initial overview — keep existing layers to avoid flicker

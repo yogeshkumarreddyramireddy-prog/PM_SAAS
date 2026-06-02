@@ -180,6 +180,11 @@ const MapboxGolfCourseMap = ({
   // Sensors with a different band order can be corrected in Sensor Calibration.
   const [bandMapping, setBandMapping] = useState({ r: 1, g: 0, b: 2, nir: 3, re: 2 });
 
+  // Smoothed "prescription" view (always NDVI). Off by default — when off, the
+  // multispectral overlay behaves exactly as before.
+  const [smoothEnabled, setSmoothEnabled] = useState(false);
+  const [smoothStrength, setSmoothStrength] = useState(50);
+
   // Zonal Stats + Pixel Inspector state
   const [showZonalStats, setShowZonalStats] = useState(false);
   const [isPixelInspectorActive, setIsPixelInspectorActive] = useState(false);
@@ -2193,6 +2198,10 @@ const MapboxGolfCourseMap = ({
                  bandMapping={bandMapping}
                  onBandMappingChange={setBandMapping}
                  isAdmin={isAdmin}
+                 smoothEnabled={smoothEnabled}
+                 onSmoothToggle={setSmoothEnabled}
+                 smoothStrength={smoothStrength}
+                 onSmoothStrengthChange={setSmoothStrength}
               />
             )}
           </div>
@@ -2210,6 +2219,8 @@ const MapboxGolfCourseMap = ({
               onHistogramData={setAnalysisHistogramData}
               bandMapping={bandMapping}
               onDataRange={setAnalysisRange}
+              smoothEnabled={smoothEnabled}
+              smoothStrength={smoothStrength}
             />
           )}
 

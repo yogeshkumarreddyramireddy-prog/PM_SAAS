@@ -18,6 +18,11 @@ interface AnalysisPanelProps {
   bandMapping: { r: number, g: number, b: number, nir: number, re: number };
   onBandMappingChange: (mapping: { r: number, g: number, b: number, nir: number, re: number }) => void;
   isAdmin?: boolean;
+  // Smoothed "prescription" view (always NDVI). Optional — off by default.
+  smoothEnabled?: boolean;
+  onSmoothToggle?: (v: boolean) => void;
+  smoothStrength?: number;
+  onSmoothStrengthChange?: (v: number) => void;
 }
 
 export function AnalysisPanel({
@@ -31,7 +36,11 @@ export function AnalysisPanel({
   histogramData,
   bandMapping,
   onBandMappingChange,
-  isAdmin = false
+  isAdmin = false,
+  smoothEnabled = false,
+  onSmoothToggle,
+  smoothStrength = 50,
+  onSmoothStrengthChange,
 }: AnalysisPanelProps) {
   
   // Filter available indices based on the active map mode
@@ -70,6 +79,36 @@ export function AnalysisPanel({
       
       {isEnabled && (
         <CardContent className="p-4 pt-2">
+          {/* Smoothed "prescription" view toggle (multispectral only). Off by
+              default → the crisp per-index controls below behave as before. */}
+          {mapMode === 'Multispectral' && onSmoothToggle && (
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex flex-col">
+                <span className="text-sm font-medium">Smoothed map</span>
+                <span className="text-[10px] text-muted-foreground">Prescription view · NDVI</span>
+              </div>
+              <Switch checked={smoothEnabled} onCheckedChange={onSmoothToggle} />
+            </div>
+          )}
+
+          {smoothEnabled && (
+            <div className="mb-2">
+              <div className="flex items-center justify-between text-xs text-muted-foreground mb-2">
+                <span className="uppercase tracking-wide">Smoothing strength</span>
+                <span>{smoothStrength}%</span>
+              </div>
+              <Slider
+                min={0}
+                max={100}
+                step={1}
+                value={[smoothStrength]}
+                onValueChange={(v: number[]) => onSmoothStrengthChange?.(v[0])}
+                className="my-2"
+              />
+            </div>
+          )}
+
+          {!smoothEnabled && (<>
           {/* Index Selector */}
           <div className="flex items-center gap-2 mb-6 text-sm">
             <span className="text-muted-foreground uppercase text-xs">Based On</span>
@@ -178,6 +217,7 @@ export function AnalysisPanel({
               </>
             );
           })()}
+          </>)}
 
           {/* Advanced Band Mapping */}
           {isAdmin && (

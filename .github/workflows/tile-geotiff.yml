@@ -88,10 +88,15 @@ jobs:
 
       - name: Generate tiles with gdal2tiles
         run: |
-          MIN_ZOOM=12
-          MAX_ZOOM=22
+          # Use the zoom range derived from the image's NATIVE resolution
+          # (extract_metadata.py), NOT a hardcoded 12-22. Tiling beyond native
+          # resolution just upsamples with no added detail and explodes the tile
+          # count (~4x per extra zoom level) — that is what made large/high-res
+          # orthos run past the 30-minute timeout and "never finish".
+          MIN_ZOOM=${{ steps.metadata.outputs.min_zoom }}
+          MAX_ZOOM=${{ steps.metadata.outputs.max_zoom }}
 
-          echo "Tiling from zoom $MIN_ZOOM to $MAX_ZOOM..."
+          echo "Tiling from zoom $MIN_ZOOM to $MAX_ZOOM (native-resolution capped)..."
 
           gdal2tiles.py \
             --zoom="${MIN_ZOOM}-${MAX_ZOOM}" \
@@ -116,6 +121,11 @@ jobs:
 
           echo "Uploading tiles to R2: ${R2_FOLDER}/"
 
+          # Tile pyramids are thousands of tiny PNGs; the default 10 concurrent
+          # requests makes the sync the second bottleneck. Raise concurrency.
+          aws configure set default.s3.max_concurrent_requests 32
+          aws configure set default.s3.max_queue_size 10000
+
           aws s3 sync \
             /tmp/tiles/ \
             "s3://$R2_BUCKET/${R2_FOLDER}/" \
@@ -136,8 +146,10 @@ jobs:
           BOUNDS='${{ steps.metadata.outputs.bounds }}'
           CENTER_LAT=${{ steps.metadata.outputs.center_lat }}
           CENTER_LON=${{ steps.metadata.outputs.center_lon }}
-          MIN_ZOOM=12
-          MAX_ZOOM=22
+          # Record the SAME zoom range that was actually tiled, so the frontend
+          # doesn't request z21/z22 tiles that were never generated.
+          MIN_ZOOM=${{ steps.metadata.outputs.min_zoom }}
+          MAX_ZOOM=${{ steps.metadata.outputs.max_zoom }}
           COURSE_NAME="${{ inputs.golf_course_name }}"
           GOLF_COURSE_ID="${{ inputs.golf_course_id }}"
           FILE_ID="${{ inputs.file_id }}"

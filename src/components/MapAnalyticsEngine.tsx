@@ -2,12 +2,11 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import mapboxgl from 'mapbox-gl';
 import { MapboxOverlay } from '@deck.gl/mapbox';
 import { TileLayer } from '@deck.gl/geo-layers';
-import { BitmapLayer, GeoJsonLayer } from '@deck.gl/layers';
-import { MaskExtension } from '@deck.gl/extensions';
+import { BitmapLayer } from '@deck.gl/layers';
 import { VegetationIndexLayer } from './VegetationIndexLayer';
 import { COGLoader } from '../lib/cog-loader';
 import { VEGETATION_INDEX_CONFIG, VegetationIndex } from '../lib/vegetation-indices';
-import { smoothImageData } from '../lib/cogSmooth';
+import { smoothImageData, buildClipPolys, SmoothClip } from '../lib/cogSmooth';
 
 interface MapAnalyticsEngineProps {
   map: mapboxgl.Map | null;
@@ -178,12 +177,13 @@ export function MapAnalyticsEngine({
 
   // Cache of smoothed ImageData, keyed by the source ImageData object + strength,
   // so we only re-blur when the source window or strength actually changes.
-  const smoothCacheRef = useRef(new WeakMap<ImageData, { strength: number; out: ImageData }>());
-  const getSmoothed = (img: ImageData, strength: number): ImageData => {
+  const smoothCacheRef = useRef(new WeakMap<ImageData, { key: string; out: ImageData }>());
+  const getSmoothed = (img: ImageData, strength: number, clip?: SmoothClip, clipKey = ''): ImageData => {
+    const key = `${strength}|${clipKey}`;
     const hit = smoothCacheRef.current.get(img);
-    if (hit && hit.strength === strength) return hit.out;
-    const out = smoothImageData(img, strength);
-    smoothCacheRef.current.set(img, { strength, out });
+    if (hit && hit.key === key) return hit.out;
+    const out = smoothImageData(img, strength, clip);
+    smoothCacheRef.current.set(img, { key, out });
     return out;
   };
 
@@ -547,11 +547,16 @@ export function MapAnalyticsEngine({
         // surface. Fixed to NDVI regardless of the selected index. Removing this
         // block restores the crisp view exactly.
         const ndvi = VEGETATION_INDEX_CONFIG['MS_NDVI'];
-        // Clip the smoothed surface to the vector-zone polygons (GPU mask) so it
-        // never renders outside the zones and gets clean vector edges instead of
-        // the COG's jagged footprint. Only when zones are available.
-        const hasClip = !!(clipFeatures && Array.isArray(clipFeatures.features) && clipFeatures.features.length > 0);
-        const maskId = 'cog-smooth-zone-mask';
+        // Clip the smoothed surface to the vector-zone polygons so it never
+        // renders outside the zones and gets clean vector edges instead of the
+        // COG's jagged footprint. Done in JS at the (coarse) smoothed grid via
+        // point-in-polygon (see cogSmooth.ts) — a GPU MaskExtension did not render
+        // in Mapbox's interleaved overlay mode and blanked the whole surface.
+        const clipPolys = buildClipPolys(clipFeatures);
+        const hasClip = !!clipPolys;
+        const clipKey = hasClip ? `clip-${clipPolys!.length}` : '';
+        const mkClip = (b: number[]): SmoothClip | undefined =>
+          clipPolys ? { bounds: [b[0], b[1], b[2], b[3]], polys: clipPolys } : undefined;
         const smProps = {
           shaderMath: ndvi.shaderMath,
           range: ndvi.colorRange,
@@ -563,26 +568,14 @@ export function MapAnalyticsEngine({
             magFilter: 'linear' as const,
             mipmapFilter: 'linear' as const,
           },
-          ...(hasClip ? { extensions: [new MaskExtension()], maskId } : {}),
         };
-        const smKey = `smooth-ndvi-${smoothStrength}-${ndvi.colorRange.join('_')}-${bandMapping.r}${bandMapping.nir}-clip${hasClip ? 1 : 0}`;
+        const smKey = `smooth-ndvi-${smoothStrength}-${ndvi.colorRange.join('_')}-${bandMapping.r}${bandMapping.nir}-${clipKey}`;
         layers = [];
-        if (hasClip) {
-          // Mask layer — rendered to an offscreen mask buffer, not to the map.
-          layers.push(new GeoJsonLayer({
-            id: maskId,
-            data: clipFeatures,
-            operation: 'mask',
-            stroked: false,
-            filled: true,
-            getFillColor: [255, 255, 255],
-          }) as any);
-        }
         layers.push(new VegetationIndexLayer({
           ...smProps,
           id: `deck-cog-smooth-base-${smKey}`,
           beforeId: 'cog-deck-insert-point',
-          image: getSmoothed(cogImageData.imageData, smoothStrength),
+          image: getSmoothed(cogImageData.imageData, smoothStrength, mkClip(cogImageData.bounds), clipKey),
           bounds: [cogImageData.bounds[0], cogImageData.bounds[1], cogImageData.bounds[2], cogImageData.bounds[3]] as [number, number, number, number],
         }));
         if (windowImage) {
@@ -590,7 +583,7 @@ export function MapAnalyticsEngine({
             ...smProps,
             id: `deck-cog-smooth-window-${smKey}`,
             beforeId: 'cog-deck-insert-point',
-            image: getSmoothed(windowImage.imageData, smoothStrength),
+            image: getSmoothed(windowImage.imageData, smoothStrength, mkClip(windowImage.bounds), clipKey),
             bounds: [windowImage.bounds[0], windowImage.bounds[1], windowImage.bounds[2], windowImage.bounds[3]] as [number, number, number, number],
           }));
         }

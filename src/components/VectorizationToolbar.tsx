@@ -73,8 +73,10 @@ const ToolButton = ({
     >
       {children}
     </button>
-    {/* Tooltip — no portal needed; escapes overflow since parent has no overflow-hidden */}
-    <div className="pointer-events-none absolute left-full top-1/2 -translate-y-1/2 ml-2 z-[9999] hidden group-hover:flex">
+    {/* Tooltip — appears to the LEFT of the button. The toolbar sits on the
+        right edge of the screen, so `left-full` would push it off-screen; use
+        `right-full` so it renders inward (matches the top toolbar). */}
+    <div className="pointer-events-none absolute right-full top-1/2 -translate-y-1/2 mr-2 z-[9999] hidden group-hover:flex">
       <div className="bg-popover text-popover-foreground text-xs font-medium px-2.5 py-1.5 rounded-md shadow-md border border-border whitespace-nowrap">
         {label}
       </div>

@@ -499,38 +499,36 @@ export function MapAnalyticsEngine({
         },
       };
 
-      // Render ONLY the sharp viewport window once it's available; fall back to
-      // the low-res full-extent base only until that first window arrives.
+      // Two stacked layers:
+      //   1. Base — low-res full-extent image (cogImageData). Always present, at
+      //      FIXED full-extent bounds, so it anchors the COG's position on the map.
+      //   2. Window — high-res, viewport-scoped image (windowImage) on top.
       //
-      // Previously the coarse base was always drawn underneath the window. The
-      // base's overviews are built with AVERAGE, so its boundary pixels blend
-      // real data with the masked-out (nodata) surroundings into large, opaque,
-      // ~1m blocks. Those blocks stick out past the window's clean, full-res
-      // clipped edge as the jagged green/orange fringe around the imagery. The
-      // window already covers the whole viewport (clipped to the COG extent), so
-      // the base adds nothing on-screen except that fringe — drop it.
+      // The base is intentionally kept (not dropped): it is the only layer whose
+      // bounds never change between frames. The window's snapped bounds shift by
+      // up to ~1 IFD-pixel as the chosen overview changes with zoom; with the base
+      // gone, that shift was the only thing on screen and read as the overlay
+      // "drifting" while zooming. The base pins it. (The coarse base's averaged
+      // boundary fringe is addressed at the source — nodata in the COG pipeline —
+      // not by removing the base.)
+      layers = [
+        new VegetationIndexLayer({
+          ...sharedLayerProps,
+          id: `deck-cog-base-${shaderKey}`,
+          beforeId: 'cog-deck-insert-point',
+          image: cogImageData.imageData,
+          bounds: [cogImageData.bounds[0], cogImageData.bounds[1], cogImageData.bounds[2], cogImageData.bounds[3]] as [number, number, number, number],
+        }),
+      ];
+
       if (windowImage) {
-        layers = [
-          new VegetationIndexLayer({
-            ...sharedLayerProps,
-            id: `deck-cog-window-${shaderKey}`,
-            beforeId: 'cog-deck-insert-point',
-            image: windowImage.imageData,
-            bounds: [windowImage.bounds[0], windowImage.bounds[1], windowImage.bounds[2], windowImage.bounds[3]] as [number, number, number, number],
-          }),
-        ];
-      } else {
-        // Initial load only — coarse base for instant coverage while the first
-        // window read is in flight.
-        layers = [
-          new VegetationIndexLayer({
-            ...sharedLayerProps,
-            id: `deck-cog-base-${shaderKey}`,
-            beforeId: 'cog-deck-insert-point',
-            image: cogImageData.imageData,
-            bounds: [cogImageData.bounds[0], cogImageData.bounds[1], cogImageData.bounds[2], cogImageData.bounds[3]] as [number, number, number, number],
-          }),
-        ];
+        layers.push(new VegetationIndexLayer({
+          ...sharedLayerProps,
+          id: `deck-cog-window-${shaderKey}`,
+          beforeId: 'cog-deck-insert-point',
+          image: windowImage.imageData,
+          bounds: [windowImage.bounds[0], windowImage.bounds[1], windowImage.bounds[2], windowImage.bounds[3]] as [number, number, number, number],
+        }));
       }
     } else if (mode === 'Multispectral' && !cogImageData) {
       // Still loading initial overview — keep existing layers to avoid flicker

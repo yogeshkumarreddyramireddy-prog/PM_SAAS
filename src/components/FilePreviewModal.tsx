@@ -453,8 +453,17 @@ export const FilePreviewModal = ({
                             {(() => {
                               const data = excelSheets[activeSheetIndex].data;
                               if (!data || data.length === 0) return null;
-                              const firstRow = data[0];
-                              const keys = Object.keys(firstRow).filter(k => typeof firstRow[k] === 'number' && k !== 'id');
+                              // A column is a numeric metric if ANY row has a numeric
+                              // value for it — checking only the first row missed every
+                              // metric when the first zone was 'N/A' (no COG overlap),
+                              // leaving the dropdown empty. Also accept numeric strings.
+                              const isNum = (v: any) =>
+                                typeof v === 'number'
+                                  ? isFinite(v)
+                                  : (v != null && v !== '' && v !== 'N/A' && !isNaN(Number(v)));
+                              const keys = Object.keys(data[0]).filter(
+                                k => k !== 'id' && data.some(row => isNum(row[k]))
+                              );
                               return keys.map(k => (
                                 <SelectItem key={k} value={k}>Y: {k}</SelectItem>
                               ));

@@ -121,6 +121,16 @@ serve(async (req) => {
       }
     }
 
+    // Always target the bucket the upload/read functions (e.g. r2-sign) actually
+    // use. The DB `r2_bucket_name` and the request `bucketName` can be stale or
+    // wrong (here: "pmv-files", which no longer exists → R2 "bucket does not
+    // exist"). Resolve from the same env vars as those functions and prefer it.
+    const envBucket =
+      Deno.env.get('CLOUDFLARE_R2_BUCKET_NAME') ||
+      Deno.env.get('R2_BUCKET_NAME') ||
+      Deno.env.get('R2_BUCKET')
+    if (envBucket) finalBucketName = envBucket
+
     if (!finalObjectKey || !finalBucketName) {
       throw new Error('Missing required fields: objectKey, bucketName')
     }

@@ -57,6 +57,41 @@ serve(async (req) => {
       throw new Error(`Missing required fields. Got: fileName=${fileName}, fileSize=${fileSize}, golfCourseId=${golfCourseId}, category=${category}`)
     }
 
+    // Category allowlist (it becomes a path segment in the object key).
+    const ALLOWED_CATEGORIES = new Set(['live_maps', 'reports', 'hd_maps', '3d_models'])
+    if (!ALLOWED_CATEGORIES.has(category)) {
+      return new Response(JSON.stringify({ error: 'Invalid category' }), {
+        status: 400, headers: { ...getCorsHeaders(origin), 'Content-Type': 'application/json' },
+      })
+    }
+
+    // Content-type allowlist — reject octet-stream / unknown so the signed PUT
+    // can't be used to stash arbitrary blobs.
+    const ALLOWED_TYPES = new Set([
+      'image/tiff', 'image/jpeg', 'image/png', 'image/webp',
+      'application/pdf', 'application/zip', 'model/gltf-binary', 'model/gltf+json',
+    ])
+    if (!ALLOWED_TYPES.has(resolvedFileType)) {
+      return new Response(JSON.stringify({ error: `Unsupported file type: ${resolvedFileType}` }), {
+        status: 400, headers: { ...getCorsHeaders(origin), 'Content-Type': 'application/json' },
+      })
+    }
+
+    // Size ceiling per category (single-PUT R2 max is 5 GiB; reports/models are
+    // far smaller). Prevents decompression-bomb / cost-abuse uploads.
+    const MAX_BYTES: Record<string, number> = {
+      live_maps: 5 * 1024 ** 3,
+      hd_maps: 5 * 1024 ** 3,
+      reports: 200 * 1024 ** 2,
+      '3d_models': 1 * 1024 ** 3,
+    }
+    const cap = MAX_BYTES[category] ?? 500 * 1024 ** 2
+    if (typeof fileSize !== 'number' || fileSize <= 0 || fileSize > cap) {
+      return new Response(JSON.stringify({ error: 'Invalid or too-large fileSize for category' }), {
+        status: 400, headers: { ...getCorsHeaders(origin), 'Content-Type': 'application/json' },
+      })
+    }
+
     // Get R2 credentials from environment
     const r2AccountId = Deno.env.get('R2_ACCOUNT_ID')
     const r2AccessKey = Deno.env.get('R2_ACCESS_KEY_ID')

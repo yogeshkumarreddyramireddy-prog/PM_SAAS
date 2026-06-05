@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.50.3'
+import { authenticate, AuthError } from '../_shared/auth.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -13,6 +14,16 @@ serve(async (req) => {
   }
 
   try {
+    // Require an admin or internal (service-role) caller — this registers a
+    // tile-map content_files row for a course. Previously it had no in-code
+    // auth, so anyone with the public anon key could insert cross-course rows.
+    const ctx = await authenticate(req, { requireApproved: true })
+    if (!ctx.isInternal && ctx.user?.role !== 'admin') {
+      return new Response(JSON.stringify({ success: false, error: 'Forbidden - admin only' }), {
+        status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
+    }
+
     const { tileMapPath, golfCourseId, tileMapName, minZoom, maxZoom, metadata } = await req.json()
 
     if (!tileMapPath || !golfCourseId || !tileMapName) {
@@ -62,6 +73,11 @@ serve(async (req) => {
     })
 
   } catch (error) {
+    if (error instanceof AuthError) {
+      return new Response(JSON.stringify({ success: false, error: error.message }), {
+        status: error.status, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
+    }
     console.error('Error assigning tile map:', error)
     return new Response(JSON.stringify({
       success: false,

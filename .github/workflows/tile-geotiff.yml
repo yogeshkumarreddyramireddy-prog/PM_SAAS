@@ -20,6 +20,10 @@ on:
         required: true
         type: string
 
+# Least-privilege token: this workflow only reads the repo checkout.
+permissions:
+  contents: read
+
 jobs:
   tile:
     runs-on: ubuntu-latest
@@ -28,6 +32,21 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Validate workflow inputs
+        env:
+          FILE_ID: ${{ inputs.file_id }}
+          GOLF_COURSE_ID: ${{ inputs.golf_course_id }}
+          COURSE_NAME: ${{ inputs.golf_course_name }}
+          R2_KEY: ${{ inputs.r2_key }}
+        run: |
+          # Fail fast on malformed/hostile inputs before any work or secret use.
+          # Every untrusted value is consumed via env below (never interpolated
+          # into a run: script), so these checks are defence-in-depth.
+          echo "$FILE_ID" | grep -Eq '^[0-9a-fA-F-]{36}$' || { echo "Invalid file_id"; exit 1; }
+          echo "$GOLF_COURSE_ID" | grep -Eq '^[0-9]+$'    || { echo "Invalid golf_course_id"; exit 1; }
+          case "$COURSE_NAME" in ''|*/*|*..*) echo "Invalid golf_course_name"; exit 1;; esac
+          case "$R2_KEY"      in ''|*..*)     echo "Invalid r2_key"; exit 1;; esac
 
       - name: Install GDAL and Python dependencies
         run: |
@@ -52,10 +71,11 @@ jobs:
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_KEY: ${{ inputs.r2_key }}
         run: |
-          echo "Downloading: ${{ inputs.r2_key }}"
+          echo "Downloading: $R2_KEY"
           aws s3 cp \
-            "s3://$R2_BUCKET/${{ inputs.r2_key }}" \
+            "s3://$R2_BUCKET/$R2_KEY" \
             /tmp/input.tif \
             --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 
@@ -67,11 +87,25 @@ jobs:
           cat /tmp/metadata.json
 
           # Parse metadata into outputs
-          echo "bounds=$(python3 -c 'import json; m=json.load(open("/tmp/metadata.json")); print(json.dumps(m["bounds"]))')" >> $GITHUB_OUTPUT
-          echo "center_lat=$(python3 -c 'import json; m=json.load(open("/tmp/metadata.json")); print(m["center_lat"])')" >> $GITHUB_OUTPUT
-          echo "center_lon=$(python3 -c 'import json; m=json.load(open("/tmp/metadata.json")); print(m["center_lon"])')" >> $GITHUB_OUTPUT
-          echo "min_zoom=$(python3 -c 'import json; m=json.load(open("/tmp/metadata.json")); print(m["min_zoom"])')" >> $GITHUB_OUTPUT
-          echo "max_zoom=$(python3 -c 'import json; m=json.load(open("/tmp/metadata.json")); print(m["max_zoom"])')" >> $GITHUB_OUTPUT
+          BOUNDS=$(python3 -c 'import json; m=json.load(open("/tmp/metadata.json")); print(json.dumps(m["bounds"]))')
+          CENTER_LAT=$(python3 -c 'import json; m=json.load(open("/tmp/metadata.json")); print(m["center_lat"])')
+          CENTER_LON=$(python3 -c 'import json; m=json.load(open("/tmp/metadata.json")); print(m["center_lon"])')
+          MIN_ZOOM=$(python3 -c 'import json; m=json.load(open("/tmp/metadata.json")); print(int(m["min_zoom"]))')
+          MAX_ZOOM=$(python3 -c 'import json; m=json.load(open("/tmp/metadata.json")); print(int(m["max_zoom"]))')
+          # Validate as single-line numeric / JSON-array before writing to
+          # GITHUB_OUTPUT, so a hostile TIFF cannot inject extra output lines.
+          echo "$BOUNDS" | python3 -c 'import json,sys; a=json.load(sys.stdin); assert isinstance(a,list) and all(isinstance(x,(int,float)) for x in a)' || { echo "Invalid bounds"; exit 1; }
+          case "$CENTER_LAT" in ''|*[!0-9.eE+-]*) echo "Invalid center_lat"; exit 1;; esac
+          case "$CENTER_LON" in ''|*[!0-9.eE+-]*) echo "Invalid center_lon"; exit 1;; esac
+          case "$MIN_ZOOM"   in ''|*[!0-9]*)      echo "Invalid min_zoom"; exit 1;; esac
+          case "$MAX_ZOOM"   in ''|*[!0-9]*)      echo "Invalid max_zoom"; exit 1;; esac
+          {
+            echo "bounds=$BOUNDS"
+            echo "center_lat=$CENTER_LAT"
+            echo "center_lon=$CENTER_LON"
+            echo "min_zoom=$MIN_ZOOM"
+            echo "max_zoom=$MAX_ZOOM"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Reproject to EPSG:4326 if needed
         run: |
@@ -87,15 +121,15 @@ jobs:
           fi
 
       - name: Generate tiles with gdal2tiles
+        env:
+          MIN_ZOOM: ${{ steps.metadata.outputs.min_zoom }}
+          MAX_ZOOM: ${{ steps.metadata.outputs.max_zoom }}
         run: |
           # Use the zoom range derived from the image's NATIVE resolution
           # (extract_metadata.py), NOT a hardcoded 12-22. Tiling beyond native
           # resolution just upsamples with no added detail and explodes the tile
           # count (~4x per extra zoom level) — that is what made large/high-res
           # orthos run past the 30-minute timeout and "never finish".
-          MIN_ZOOM=${{ steps.metadata.outputs.min_zoom }}
-          MAX_ZOOM=${{ steps.metadata.outputs.max_zoom }}
-
           echo "Tiling from zoom $MIN_ZOOM to $MAX_ZOOM (native-resolution capped)..."
 
           gdal2tiles.py \
@@ -114,9 +148,9 @@ jobs:
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          COURSE_NAME: ${{ inputs.golf_course_name }}
+          FILE_ID: ${{ inputs.file_id }}
         run: |
-          COURSE_NAME="${{ inputs.golf_course_name }}"
-          FILE_ID="${{ inputs.file_id }}"
           R2_FOLDER="${COURSE_NAME}/tiles/${FILE_ID}"
 
           echo "Uploading tiles to R2: ${R2_FOLDER}/"
@@ -140,19 +174,15 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          COURSE_NAME: ${{ inputs.golf_course_name }}
+          GOLF_COURSE_ID: ${{ inputs.golf_course_id }}
+          FILE_ID: ${{ inputs.file_id }}
+          BOUNDS: ${{ steps.metadata.outputs.bounds }}
+          CENTER_LAT: ${{ steps.metadata.outputs.center_lat }}
+          CENTER_LON: ${{ steps.metadata.outputs.center_lon }}
+          MIN_ZOOM: ${{ steps.metadata.outputs.min_zoom }}
+          MAX_ZOOM: ${{ steps.metadata.outputs.max_zoom }}
         run: |
-          BOUNDS='${{ steps.metadata.outputs.bounds }}'
-          CENTER_LAT=${{ steps.metadata.outputs.center_lat }}
-          CENTER_LON=${{ steps.metadata.outputs.center_lon }}
-          # Record the SAME zoom range that was actually tiled, so the frontend
-          # doesn't request z21/z22 tiles that were never generated.
-          MIN_ZOOM=${{ steps.metadata.outputs.min_zoom }}
-          MAX_ZOOM=${{ steps.metadata.outputs.max_zoom }}
-          COURSE_NAME="${{ inputs.golf_course_name }}"
-          GOLF_COURSE_ID="${{ inputs.golf_course_id }}"
-          FILE_ID="${{ inputs.file_id }}"
           TODAY=$(date +%Y-%m-%d)
           NOW_TIME=$(date +%H:%M)
 
@@ -163,34 +193,26 @@ jobs:
 
           echo "Registering tileset in Supabase..."
 
-          # Insert into golf_course_tilesets (using golf_course_id INTEGER to match the app's active_golf_courses table)
+          # Build the body with jq so every value is data, never spliced into the
+          # request text (e.g. a course name containing a quote can't break out).
+          PAYLOAD=$(jq -n \
+            --argjson golf_course_id "$GOLF_COURSE_ID" \
+            --arg     name           "$COURSE_NAME - $TODAY" \
+            --arg     source_file_id  "$FILE_ID" \
+            --arg     r2_folder_path  "$COURSE_NAME/tiles/$FILE_ID" \
+            --argjson min_lat "$MIN_LAT" --argjson max_lat "$MAX_LAT" \
+            --argjson min_lon "$MIN_LON" --argjson max_lon "$MAX_LON" \
+            --argjson center_lat "$CENTER_LAT" --argjson center_lon "$CENTER_LON" \
+            --argjson min_zoom "$MIN_ZOOM" --argjson max_zoom "$MAX_ZOOM" \
+            --arg     flight_date "$TODAY" --arg flight_time "$NOW_TIME" \
+            '{golf_course_id:$golf_course_id, name:$name, description:"Auto-tiled from uploaded TIFF", source_file_id:$source_file_id, r2_folder_path:$r2_folder_path, tile_url_pattern:"{z}/{x}/{y}.png", min_lat:$min_lat, max_lat:$max_lat, min_lon:$min_lon, max_lon:$max_lon, center_lat:$center_lat, center_lon:$center_lon, min_zoom:$min_zoom, max_zoom:$max_zoom, default_zoom:16, format:"png", tile_size:256, is_active:true, flight_date:$flight_date, flight_time:$flight_time}')
+
           REGISTER_RESULT=$(curl -s -w "\n%{http_code}" -X POST "${SUPABASE_URL}/rest/v1/golf_course_tilesets" \
             -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
             -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
             -H "Content-Type: application/json" \
             -H "Prefer: return=representation" \
-            -d "{
-              \"golf_course_id\": ${GOLF_COURSE_ID},
-              \"name\": \"${COURSE_NAME} - ${TODAY}\",
-              \"description\": \"Auto-tiled from uploaded TIFF\",
-              \"source_file_id\": \"${FILE_ID}\",
-              \"r2_folder_path\": \"${COURSE_NAME}/tiles/${FILE_ID}\",
-              \"tile_url_pattern\": \"{z}/{x}/{y}.png\",
-              \"min_lat\": ${MIN_LAT},
-              \"max_lat\": ${MAX_LAT},
-              \"min_lon\": ${MIN_LON},
-              \"max_lon\": ${MAX_LON},
-              \"center_lat\": ${CENTER_LAT},
-              \"center_lon\": ${CENTER_LON},
-              \"min_zoom\": ${MIN_ZOOM},
-              \"max_zoom\": ${MAX_ZOOM},
-              \"default_zoom\": 16,
-              \"format\": \"png\",
-              \"tile_size\": 256,
-              \"is_active\": true,
-              \"flight_date\": \"${TODAY}\",
-              \"flight_time\": \"${NOW_TIME}\"
-            }")
+            -d "$PAYLOAD")
 
           HTTP_STATUS=$(echo "$REGISTER_RESULT" | tail -1)
           BODY=$(echo "$REGISTER_RESULT" | head -n -1)
@@ -207,23 +229,26 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          FILE_ID: ${{ inputs.file_id }}
+          COURSE_NAME: ${{ inputs.golf_course_name }}
+          MIN_ZOOM: ${{ steps.metadata.outputs.min_zoom }}
+          MAX_ZOOM: ${{ steps.metadata.outputs.max_zoom }}
         run: |
-          FILE_ID="${{ inputs.file_id }}"
-          COURSE_NAME="${{ inputs.golf_course_name }}"
           TILED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-          # Update content_files: set status back to 'published' so the frontend shows it
+          PAYLOAD=$(jq -n \
+            --argjson min_zoom "$MIN_ZOOM" \
+            --argjson max_zoom "$MAX_ZOOM" \
+            --arg     tiled_at "$TILED_AT" \
+            --arg     tile_folder "$COURSE_NAME/tiles/$FILE_ID" \
+            '{status:"published", is_tile_map:true, tile_min_zoom:$min_zoom, tile_max_zoom:$max_zoom, metadata:{tiling_complete:true, tiled_at:$tiled_at, tile_folder:$tile_folder}}')
+
+          # FILE_ID is validated as a UUID up front, so it is safe in the URL filter.
           UPDATE_RESULT=$(curl -s -w "\n%{http_code}" -X PATCH "${SUPABASE_URL}/rest/v1/content_files?id=eq.${FILE_ID}" \
             -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
             -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
             -H "Content-Type: application/json" \
-            -d "{
-              \"status\": \"published\",
-              \"is_tile_map\": true,
-              \"tile_min_zoom\": ${{ steps.metadata.outputs.min_zoom }},
-              \"tile_max_zoom\": ${{ steps.metadata.outputs.max_zoom }},
-              \"metadata\": {\"tiling_complete\": true, \"tiled_at\": \"${TILED_AT}\", \"tile_folder\": \"${COURSE_NAME}/tiles/${FILE_ID}\"}
-            }")
+            -d "$PAYLOAD")
 
           HTTP_STATUS=$(echo "$UPDATE_RESULT" | tail -1)
           BODY=$(echo "$UPDATE_RESULT" | head -n -1)

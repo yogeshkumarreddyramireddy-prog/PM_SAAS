@@ -2,6 +2,7 @@ import { serve } from 'https://deno.land/std@0.203.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.38.4'
 import { S3Client, GetObjectCommand } from "npm:@aws-sdk/client-s3"
 import { getSignedUrl } from "npm:@aws-sdk/s3-request-presigner"
+import { authenticate, getAccessibleCourseIds, AuthError } from '../_shared/auth.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -25,15 +26,23 @@ serve(async (req) => {
       )
     }
 
-    const authHeader = req.headers.get('Authorization')
-    const supabaseClient = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_ANON_KEY') ?? '',
-      authHeader ? { global: { headers: { Authorization: authHeader } } } : {}
-    )
+    // Authenticate and authorize: an approved caller may only read vector layers
+    // for a course they are entitled to. Previously this ran an anon/RLS query
+    // and minted signed URLs from whatever it returned — safe only as long as
+    // RLS never regressed.
+    const ctx = await authenticate(req, { requireApproved: true })
+    if (!ctx.isInternal && ctx.user?.role !== 'admin') {
+      const courseIds = await getAccessibleCourseIds(ctx)
+      if (!courseIds.includes(Number(golfCourseId))) {
+        return new Response(
+          JSON.stringify({ error: 'Not authorized for this golf course' }),
+          { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        )
+      }
+    }
 
-    // Get layers for this golf club
-    const { data: layers, error } = await supabaseClient
+    // Get layers for this golf club (service client; entitlement already checked).
+    const { data: layers, error } = await ctx.service
       .from('vector_layers')
       .select('*')
       .eq('golf_course_id', golfCourseId)
@@ -91,6 +100,12 @@ serve(async (req) => {
     )
 
   } catch (error) {
+    if (error instanceof AuthError) {
+      return new Response(
+        JSON.stringify({ error: error.message }),
+        { status: error.status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      )
+    }
     console.error('Error:', error)
     return new Response(
       JSON.stringify({ error: error.message || 'Internal server error' }),

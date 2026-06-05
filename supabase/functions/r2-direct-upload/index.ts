@@ -2,6 +2,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { S3Client, PutObjectCommand } from "npm:@aws-sdk/client-s3"
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { getCorsHeaders } from "../_shared/cors.ts"
+import { authenticate, getAccessibleCourseIds, AuthError } from "../_shared/auth.ts"
 
 serve(async (req) => {
   const corsHeaders = getCorsHeaders(req.headers.get('origin'), req.method)
@@ -11,8 +12,13 @@ serve(async (req) => {
   }
 
   try {
-    const { 
-      golfCourseName, 
+    // Require an approved, authenticated caller. Previously this endpoint had
+    // NO auth at all, so anyone could write tiles into any course's live_maps
+    // (poisoning maps + inflating R2 cost). Auth + course-entitlement closes it.
+    const ctx = await authenticate(req, { requireApproved: true })
+
+    const {
+      golfCourseName,
       files,
       golfCourseId,
       batchInfo
@@ -20,6 +26,15 @@ serve(async (req) => {
 
     if (!golfCourseName || !files || !Array.isArray(files) || !golfCourseId) {
       throw new Error('Golf course name, golf course ID, and files array are required')
+    }
+
+    // Admins / internal callers may write any course; everyone else is limited
+    // to the courses they are assigned to.
+    if (!ctx.isInternal && ctx.user?.role !== 'admin') {
+      const allowed = await getAccessibleCourseIds(ctx)
+      if (!allowed.includes(Number(golfCourseId))) {
+        throw new AuthError('Not authorized to upload to this golf course', 403)
+      }
     }
 
     console.log(`Processing batch ${batchInfo?.batchNumber || 1} with ${files.length} files`)
@@ -239,6 +254,12 @@ serve(async (req) => {
     })
 
   } catch (error) {
+    if (error instanceof AuthError) {
+      return new Response(JSON.stringify({ success: false, error: error.message }), {
+        status: error.status,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      })
+    }
     console.error('R2 direct upload error:', error)
     return new Response(JSON.stringify({
       success: false,

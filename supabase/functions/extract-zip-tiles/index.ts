@@ -150,6 +150,17 @@ serve(async (req) => {
     console.log('ZIP loaded successfully. Files found:', fileNames.length)
     console.log('First few file names:', fileNames.slice(0, 10))
 
+    // Decompression-bomb guards: cap entry count up front, and per-tile / total
+    // uncompressed bytes during extraction (below) so a small ZIP can't exhaust
+    // the worker's memory.
+    const MAX_ENTRIES = 500_000
+    const MAX_TILE_BYTES = 20 * 1024 * 1024          // 20 MB per tile (PNG/JPG are KBs)
+    const MAX_TOTAL_BYTES = 12 * 1024 * 1024 * 1024  // 12 GB total uncompressed
+    if (fileNames.length > MAX_ENTRIES) {
+      throw new Error(`ZIP has too many entries (${fileNames.length} > ${MAX_ENTRIES})`)
+    }
+    let totalUncompressedBytes = 0
+
     // Get golf course name for folder structure
     const golfCourseName = fileRecord.active_golf_courses?.name
     if (!golfCourseName) {
@@ -226,7 +237,16 @@ serve(async (req) => {
         
         // Extract file content
         const tileData = await file.async('uint8array')
-        
+
+        // Decompression-bomb guards (per-tile + running total).
+        if (tileData.length > MAX_TILE_BYTES) {
+          throw new Error(`Tile too large (${tileData.length} bytes) — possible decompression bomb`)
+        }
+        totalUncompressedBytes += tileData.length
+        if (totalUncompressedBytes > MAX_TOTAL_BYTES) {
+          throw new Error('ZIP uncompressed size exceeds limit — possible decompression bomb')
+        }
+
         // Upload tile to R2 in the golf course's live_maps folder
         const tileKey = `${tileBasePath}/${z}/${x}/${y}.${ext}`
         
@@ -258,11 +278,15 @@ serve(async (req) => {
     
     // Calculate map bounds from tile coordinates
     // Convert tile coordinates to geographic bounds
+    const tileXs = tileFiles.map(tile => parseInt(tile.x))
+    const tileYs = tileFiles.map(tile => parseInt(tile.y))
     const tileBounds = {
-      minX: Math.min(...tileFiles.map(tile => parseInt(tile.x))),
-      maxX: Math.max(...tileFiles.map(tile => parseInt(tile.x))),
-      minY: Math.min(...tileFiles.map(tile => parseInt(tile.y))),
-      maxY: Math.max(...tileFiles.map(tile => parseInt(tile.y))),
+      // reduce() instead of Math.min(...spread): a large tile array spread as
+      // function arguments would overflow the call stack.
+      minX: tileXs.reduce((a, b) => Math.min(a, b), Infinity),
+      maxX: tileXs.reduce((a, b) => Math.max(a, b), -Infinity),
+      minY: tileYs.reduce((a, b) => Math.min(a, b), Infinity),
+      maxY: tileYs.reduce((a, b) => Math.max(a, b), -Infinity),
       minZ: minZoom,
       maxZ: maxZoom
     }

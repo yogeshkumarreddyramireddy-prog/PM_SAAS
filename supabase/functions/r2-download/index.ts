@@ -1,6 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { getCorsHeaders } from '../_shared/cors.ts'
-import { authenticate, AuthError } from '../_shared/auth.ts'
+import { authenticate, getAccessibleCourseIds, AuthError } from '../_shared/auth.ts'
 import { S3Client, GetObjectCommand } from "npm:@aws-sdk/client-s3";
 import { getSignedUrl } from "npm:@aws-sdk/s3-request-presigner";
 
@@ -19,18 +19,42 @@ serve(async (req) => {
   try {
     // This function runs with verify_jwt=false, so it must authenticate itself.
     // Require an approved user before handing out a presigned URL to any object.
-    try {
-      await authenticate(req, { requireApproved: true })
-    } catch (authErr) {
-      const status = authErr instanceof AuthError ? authErr.status : 401
-      return new Response(JSON.stringify({ error: (authErr as Error).message }), {
-        status, headers: { ...getCorsHeaders(origin), 'Content-Type': 'application/json' },
+    const ctx = await authenticate(req, { requireApproved: true })
+
+    const { objectKey, fileName }: DownloadRequest = await req.json()
+
+    // Never trust a client-supplied bucket — resolve it from the environment.
+    const bucketName = Deno.env.get('R2_BUCKET')
+    if (!bucketName) throw new Error('R2 bucket not configured')
+
+    // Validate the key shape (no traversal / leading slash / control chars).
+    if (typeof objectKey !== 'string' || !objectKey || objectKey.startsWith('/') ||
+        objectKey.includes('..') || /[\x00-\x1f]/.test(objectKey)) {
+      return new Response(JSON.stringify({ error: 'Invalid objectKey' }), {
+        status: 400, headers: { ...getCorsHeaders(origin), 'Content-Type': 'application/json' },
       })
     }
 
-    const { objectKey, bucketName, fileName }: DownloadRequest = await req.json()
+    // Authorize the object: admins/internal may read any key; everyone else is
+    // limited to keys under one of their own courses' folders. Object keys are
+    // `<sanitizedCourseName>/...`, so the first path segment identifies the course.
+    // This closes the IDOR where any approved user could read any course's files.
+    if (!ctx.isInternal && ctx.user?.role !== 'admin') {
+      const courseIds = await getAccessibleCourseIds(ctx)
+      const { data: courses } = courseIds.length
+        ? await ctx.service.from('active_golf_courses').select('name').in('id', courseIds)
+        : { data: [] }
+      const sanitize = (s: string) => s.replace(/[^a-zA-Z0-9._-]/g, '_')
+      const firstSegment = objectKey.split('/')[0]
+      const allowed = (courses ?? []).some((c: { name: string }) => sanitize(c.name) === firstSegment)
+      if (!allowed) {
+        return new Response(JSON.stringify({ error: 'Not authorized for this object' }), {
+          status: 403, headers: { ...getCorsHeaders(origin), 'Content-Type': 'application/json' },
+        })
+      }
+    }
 
-    console.log('Download request:', { objectKey, bucketName, fileName })
+    console.log('Download request:', { objectKey, fileName })
 
     // Get R2 credentials from environment
     const r2AccountId = Deno.env.get('R2_ACCOUNT_ID')
@@ -72,6 +96,12 @@ serve(async (req) => {
     )
 
   } catch (error) {
+    if (error instanceof AuthError) {
+      return new Response(JSON.stringify({ error: error.message }), {
+        status: error.status,
+        headers: { ...getCorsHeaders(origin), 'Content-Type': 'application/json' }
+      })
+    }
     console.error('Download URL generation error:', error)
     return new Response(
       JSON.stringify({ error: error.message }),

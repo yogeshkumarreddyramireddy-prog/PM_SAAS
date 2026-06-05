@@ -135,6 +135,14 @@ serve(async (req) => {
       throw new Error('Missing required fields: objectKey, bucketName')
     }
 
+    // Guard against over-broad / unsafe delete prefixes. Empty is handled above;
+    // also reject root, dot, whitespace-only, and path traversal so a stray
+    // request can't wipe large swaths of the bucket.
+    const keyTrim = finalObjectKey.trim()
+    if (keyTrim === '' || keyTrim === '/' || keyTrim === '.' || finalObjectKey.includes('..')) {
+      throw new Error('Refusing to delete an unsafe / over-broad object key')
+    }
+
     // Get R2 credentials from environment
     const r2AccountId = Deno.env.get('R2_ACCOUNT_ID')
     const r2AccessKey = Deno.env.get('R2_ACCESS_KEY_ID')

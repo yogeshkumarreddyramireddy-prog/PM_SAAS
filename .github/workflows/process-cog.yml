@@ -20,6 +20,10 @@ on:
         required: true
         type: string
 
+# Least-privilege token: this workflow only reads the repo checkout.
+permissions:
+  contents: read
+
 jobs:
   process-cog:
     runs-on: ubuntu-latest
@@ -28,6 +32,21 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Validate workflow inputs
+        env:
+          FILE_ID: ${{ inputs.file_id }}
+          GOLF_COURSE_ID: ${{ inputs.golf_course_id }}
+          COURSE_NAME: ${{ inputs.golf_course_name }}
+          R2_KEY: ${{ inputs.r2_key }}
+        run: |
+          # Fail fast on malformed/hostile inputs before any work or secret use.
+          # Every untrusted value is consumed via env below (never interpolated
+          # into a run: script), so these checks are defence-in-depth.
+          echo "$FILE_ID" | grep -Eq '^[0-9a-fA-F-]{36}$' || { echo "Invalid file_id"; exit 1; }
+          echo "$GOLF_COURSE_ID" | grep -Eq '^[0-9]+$'    || { echo "Invalid golf_course_id"; exit 1; }
+          case "$COURSE_NAME" in ''|*/*|*..*) echo "Invalid golf_course_name"; exit 1;; esac
+          case "$R2_KEY"      in ''|*..*)     echo "Invalid r2_key"; exit 1;; esac
 
       - name: Install GDAL and Python dependencies
         run: |
@@ -52,10 +71,11 @@ jobs:
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_KEY: ${{ inputs.r2_key }}
         run: |
-          echo "Downloading: ${{ inputs.r2_key }}"
+          echo "Downloading: $R2_KEY"
           aws s3 cp \
-            "s3://$R2_BUCKET/${{ inputs.r2_key }}" \
+            "s3://$R2_BUCKET/$R2_KEY" \
             /tmp/input.tif \
             --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 
@@ -64,9 +84,19 @@ jobs:
         run: |
           # Reusing your existing awesome python extraction script
           python3 scripts/extract_metadata.py /tmp/input.tif > /tmp/metadata.json
-          echo "bounds=$(python3 -c 'import json; m=json.load(open("/tmp/metadata.json")); print(json.dumps(m["bounds"]))')" >> $GITHUB_OUTPUT
-          echo "center_lat=$(python3 -c 'import json; m=json.load(open("/tmp/metadata.json")); print(m["center_lat"])')" >> $GITHUB_OUTPUT
-          echo "center_lon=$(python3 -c 'import json; m=json.load(open("/tmp/metadata.json")); print(m["center_lon"])')" >> $GITHUB_OUTPUT
+          BOUNDS=$(python3 -c 'import json; m=json.load(open("/tmp/metadata.json")); print(json.dumps(m["bounds"]))')
+          CENTER_LAT=$(python3 -c 'import json; m=json.load(open("/tmp/metadata.json")); print(m["center_lat"])')
+          CENTER_LON=$(python3 -c 'import json; m=json.load(open("/tmp/metadata.json")); print(m["center_lon"])')
+          # Validate as single-line numeric / JSON-array before writing to
+          # GITHUB_OUTPUT, so a hostile TIFF cannot inject extra output lines.
+          echo "$BOUNDS" | python3 -c 'import json,sys; a=json.load(sys.stdin); assert isinstance(a,list) and all(isinstance(x,(int,float)) for x in a)' || { echo "Invalid bounds"; exit 1; }
+          case "$CENTER_LAT" in ''|*[!0-9.eE+-]*) echo "Invalid center_lat"; exit 1;; esac
+          case "$CENTER_LON" in ''|*[!0-9.eE+-]*) echo "Invalid center_lon"; exit 1;; esac
+          {
+            echo "bounds=$BOUNDS"
+            echo "center_lat=$CENTER_LAT"
+            echo "center_lon=$CENTER_LON"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Reproject to WGS84 (EPSG:4326) and convert to COG
         run: |
@@ -120,9 +150,9 @@ jobs:
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          COURSE_NAME: ${{ inputs.golf_course_name }}
+          FILE_ID: ${{ inputs.file_id }}
         run: |
-          COURSE_NAME="${{ inputs.golf_course_name }}"
-          FILE_ID="${{ inputs.file_id }}"
           # Note: We save it strictly as a single file instead of a folder array
           R2_DESTINATION="${COURSE_NAME}/cogs/${FILE_ID}.tif"
 
@@ -141,24 +171,29 @@ jobs:
           COURSE_NAME: ${{ inputs.golf_course_name }}
           FILE_ID: ${{ inputs.file_id }}
           GOLF_COURSE_ID: ${{ inputs.golf_course_id }}
+          BOUNDS: ${{ steps.metadata.outputs.bounds }}
+          CENTER_LAT: ${{ steps.metadata.outputs.center_lat }}
+          CENTER_LON: ${{ steps.metadata.outputs.center_lon }}
         run: |
           R2_DESTINATION="${COURSE_NAME}/cogs/${FILE_ID}.tif"
           echo "Registering COG: ${R2_DESTINATION}"
-          
+
+          # Build the request body with jq so every value is passed as data,
+          # never spliced into the request text (no command / JSON injection).
+          PAYLOAD=$(jq -n \
+            --arg     fileId       "$FILE_ID" \
+            --arg     golfCourseId "$GOLF_COURSE_ID" \
+            --arg     r2Key        "$R2_DESTINATION" \
+            --arg     courseName   "$COURSE_NAME" \
+            --argjson bounds       "$BOUNDS" \
+            --argjson centerLat    "$CENTER_LAT" \
+            --argjson centerLon    "$CENTER_LON" \
+            '{fileId:$fileId, golfCourseId:$golfCourseId, r2Key:$r2Key, courseName:$courseName, bounds:$bounds, centerLat:$centerLat, centerLon:$centerLon, minZoom:14, maxZoom:20}')
+
           REGISTER_RESULT=$(curl -s -w "\n%{http_code}" -X POST "${SUPABASE_URL}/functions/v1/r2-complete-cog" \
             -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
             -H "Content-Type: application/json" \
-            -d "{
-              \"fileId\": \"${FILE_ID}\",
-              \"golfCourseId\": \"${GOLF_COURSE_ID}\",
-              \"r2Key\": \"${R2_DESTINATION}\",
-              \"courseName\": \"${COURSE_NAME}\",
-              \"bounds\": ${{ steps.metadata.outputs.bounds }},
-              \"centerLat\": ${{ steps.metadata.outputs.center_lat }},
-              \"centerLon\": ${{ steps.metadata.outputs.center_lon }},
-              \"minZoom\": 14,
-              \"maxZoom\": 20
-            }")
+            -d "$PAYLOAD")
 
           HTTP_STATUS=$(echo "$REGISTER_RESULT" | tail -1)
           BODY=$(echo "$REGISTER_RESULT" | head -n -1)

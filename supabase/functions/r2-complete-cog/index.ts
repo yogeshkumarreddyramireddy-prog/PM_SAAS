@@ -1,5 +1,5 @@
 import { serve } from 'https://deno.land/std@0.224.0/http/server.ts';
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { authenticate, AuthError } from '../_shared/auth.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -32,19 +32,19 @@ serve(async (req) => {
   }
 
   try {
-    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-    const serviceKey  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-    const supabase    = createClient(supabaseUrl, serviceKey);
-
-    // Validate bearer token is present
-    const authHeader = req.headers.get('Authorization') || '';
-    const jwt = authHeader.replace('Bearer ', '').trim();
-    if (!jwt) {
+    // This endpoint is ONLY invoked by the process-cog GitHub Actions workflow,
+    // which presents the service-role key. Require that trusted internal caller.
+    // Previously it accepted ANY non-empty Bearer string — a forged tileset row
+    // (with an attacker-chosen cog_source_key) then became a read-authorization
+    // grant via r2-sign's cog_source_key lookup. Internal-only closes that.
+    const ctx = await authenticate(req);
+    if (!ctx.isInternal) {
       return new Response(
-        JSON.stringify({ error: 'Missing Authorization header' }),
-        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        JSON.stringify({ error: 'Forbidden: internal service callers only' }),
+        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
+    const supabase = ctx.service;
 
     const body = await req.json();
     const {
@@ -63,6 +63,14 @@ serve(async (req) => {
     if (!fileId || !golfCourseId || !r2Key || !bounds || centerLat == null || centerLon == null) {
       return new Response(
         JSON.stringify({ error: 'Missing required fields: fileId, golfCourseId, r2Key, bounds, centerLat, centerLon' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Reject malformed keys (no traversal, no leading slash, no control chars).
+    if (typeof r2Key !== 'string' || r2Key.startsWith('/') || r2Key.includes('..') || /[\x00-\x1f]/.test(r2Key)) {
+      return new Response(
+        JSON.stringify({ error: 'Invalid r2Key' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -146,6 +154,12 @@ serve(async (req) => {
     );
 
   } catch (err: any) {
+    if (err instanceof AuthError) {
+      return new Response(
+        JSON.stringify({ error: err.message }),
+        { status: err.status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
     console.error('[r2-complete-cog] Unhandled error:', err);
     return new Response(
       JSON.stringify({ error: err.message || 'Internal server error' }),

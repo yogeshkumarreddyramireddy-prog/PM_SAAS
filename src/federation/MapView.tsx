@@ -83,22 +83,31 @@ export default function MapView() {
     if (map.isStyleLoaded()) fit(); else map.once('load', fit)
   }, [scene])
 
-  // 4. Render the active VI heatmap; swap on switch.
+  // 4. Render the active VI heatmap. Each VI gets its OWN source/layer (unique
+  //    id), added lazily the first time it's viewed; switching just toggles
+  //    visibility. (Reusing one shared source id and swapping its URL made
+  //    MapLibre serve the cached NDVI tiles for every other VI — they never
+  //    appeared to change.)
   useEffect(() => {
     const map = mapRef.current
     if (!map || !scene) return
-    const layer = scene.layers.find((l) => l.vi_code === activeVi)
     const apply = () => {
-      if (map.getLayer('drone-vi')) map.removeLayer('drone-vi')
-      if (map.getSource('drone-vi')) map.removeSource('drone-vi')
-      if (!layer?.url) return
-      map.addSource('drone-vi', { type: 'raster', url: `pmtiles://${layer.url}`, tileSize: 256 })
-      map.addLayer({
-        id: 'drone-vi',
-        type: 'raster',
-        source: 'drone-vi',
-        paint: { 'raster-opacity': 1, 'raster-resampling': 'nearest' },
-      })
+      for (const l of scene.layers) {
+        const id = `drone-vi-${l.vi_code}`
+        const want = l.vi_code === activeVi
+        if (want && l.url && !map.getSource(id)) {
+          map.addSource(id, { type: 'raster', url: `pmtiles://${l.url}`, tileSize: 256 })
+          map.addLayer({
+            id,
+            type: 'raster',
+            source: id,
+            paint: { 'raster-opacity': 1, 'raster-resampling': 'nearest' },
+          })
+        }
+        if (map.getLayer(id)) {
+          map.setLayoutProperty(id, 'visibility', want ? 'visible' : 'none')
+        }
+      }
     }
     if (map.isStyleLoaded()) apply(); else map.once('load', apply)
   }, [scene, activeVi])

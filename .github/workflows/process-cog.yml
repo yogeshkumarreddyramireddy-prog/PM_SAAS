@@ -125,20 +125,28 @@ jobs:
           SRC_W=$(gdalinfo -json /tmp/input.tif | python3 -c "import json,sys; print(json.load(sys.stdin)['size'][0])")
           SRC_H=$(gdalinfo -json /tmp/input.tif | python3 -c "import json,sys; print(json.load(sys.stdin)['size'][1])")
           echo "Source size: ${SRC_W}x${SRC_H}px — reprojecting to EPSG:4326 at matching size..."
+          # -r near (not bilinear): preserves exact DN values and does NOT blend
+          # real reflectance with the 0-border at the footprint edge — that blend
+          # biased every edge zone's stats. -srcnodata/-dstnodata 0 mark the
+          # transparent border as nodata so it's excluded from the COG and indices.
           gdalwarp \
             -t_srs EPSG:4326 \
-            -r bilinear \
+            -r near \
             -ts "$SRC_W" "$SRC_H" \
+            -srcnodata 0 -dstnodata 0 \
             -of GTiff \
             -co BIGTIFF=YES \
             /tmp/input.tif \
             /tmp/reprojected.tif
 
           echo "Converting reprojected TIFF to Cloud Optimized GeoTIFF..."
+          # PREDICTOR=2 = horizontal differencing for INTEGER data. The bands are
+          # UInt16 DN, so the old PREDICTOR=YES was invalid (silently ignored) and
+          # PREDICTOR=3 would be wrong too — that's the floating-point predictor.
           gdal_translate /tmp/reprojected.tif /tmp/output_cog.tif \
             -of COG \
             -co COMPRESS=DEFLATE \
-            -co PREDICTOR=YES \
+            -co PREDICTOR=2 \
             -co RESAMPLING=AVERAGE \
             -co OVERVIEWS=IGNORE_EXISTING \
             -co BIGTIFF=YES

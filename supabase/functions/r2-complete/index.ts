@@ -1,6 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { getCorsHeaders } from '../_shared/cors.ts'
-import { authenticate, AuthError } from '../_shared/auth.ts'
+import { resolveAuth, canAccessCourse, AuthError } from '../_shared/auth.ts'
 
 interface CompleteUploadRequest {
   fileId: string
@@ -16,35 +16,29 @@ serve(async (req) => {
   }
 
   try {
-    // verify_jwt=false: authenticate in-code. Finalizing an upload mutates
-    // content_files, so require an approved admin.
-    try {
-      const ctx = await authenticate(req, { requireApproved: true })
-      if (ctx.user && ctx.user.role !== 'admin') {
-        return new Response(JSON.stringify({ error: 'Forbidden - admin only' }), {
-          status: 403, headers: { ...getCorsHeaders(origin), 'Content-Type': 'application/json' },
-        })
-      }
-    } catch (authErr) {
-      const status = authErr instanceof AuthError ? authErr.status : 401
-      return new Response(JSON.stringify({ error: (authErr as Error).message }), {
-        status, headers: { ...getCorsHeaders(origin), 'Content-Type': 'application/json' },
+    // Auth: a satellite drone pass (scope=upload), the internal service key, or
+    // an admin via legacy Supabase Auth. Finalizing an upload mutates content_files.
+    const caller = await resolveAuth(req, { requireApproved: true })
+    if (caller.scope !== 'upload' && !caller.isInternal) {
+      return new Response(JSON.stringify({ error: 'This session is not permitted to finalize uploads' }), {
+        status: 403, headers: { ...getCorsHeaders(origin), 'Content-Type': 'application/json' },
       })
     }
 
     const { fileId, success, fileHash, isZipFile }: CompleteUploadRequest = await req.json()
 
-    const { createClient } = await import('https://esm.sh/@supabase/supabase-js@2')
-    const supabase = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
-      {
-        auth: {
-          autoRefreshToken: false,
-          persistSession: false
-        }
+    const supabase = caller.service
+
+    // Non-admin / non-internal callers may only finalize files in their own course.
+    if (caller.courseIds !== null) {
+      const { data: f } = await supabase
+        .from('content_files').select('golf_course_id').eq('id', fileId).single()
+      if (!f || !canAccessCourse(caller, f.golf_course_id)) {
+        return new Response(JSON.stringify({ error: 'Not authorized for this file' }), {
+          status: 403, headers: { ...getCorsHeaders(origin), 'Content-Type': 'application/json' },
+        })
       }
-    )
+    }
 
     if (success) {
       // Update file status to processing/published
@@ -87,6 +81,11 @@ serve(async (req) => {
     )
 
   } catch (error) {
+    if (error instanceof AuthError) {
+      return new Response(JSON.stringify({ error: error.message }), {
+        status: error.status, headers: { ...getCorsHeaders(origin), 'Content-Type': 'application/json' }
+      })
+    }
     console.error('Complete upload error:', error)
     return new Response(
       JSON.stringify({ error: error.message }),

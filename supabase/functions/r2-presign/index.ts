@@ -1,6 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { getCorsHeaders } from '../_shared/cors.ts'
-import { authenticate, AuthError } from '../_shared/auth.ts'
+import { resolveAuth, canAccessCourse, AuthError } from '../_shared/auth.ts'
 import { S3Client, PutObjectCommand } from "npm:@aws-sdk/client-s3";
 import { getSignedUrl } from "npm:@aws-sdk/s3-request-presigner";
 
@@ -21,18 +21,13 @@ serve(async (req) => {
   }
 
   try {
-    // verify_jwt=false: authenticate in-code. Uploads are an admin operation.
-    try {
-      const ctx = await authenticate(req, { requireApproved: true })
-      if (ctx.user && ctx.user.role !== 'admin') {
-        return new Response(JSON.stringify({ error: 'Forbidden - admin only' }), {
-          status: 403, headers: { ...getCorsHeaders(origin), 'Content-Type': 'application/json' },
-        })
-      }
-    } catch (authErr) {
-      const status = authErr instanceof AuthError ? authErr.status : 401
-      return new Response(JSON.stringify({ error: (authErr as Error).message }), {
-        status, headers: { ...getCorsHeaders(origin), 'Content-Type': 'application/json' },
+    // Auth: a satellite drone pass (scope=upload), the internal service key, or
+    // an admin via legacy Supabase Auth. Course entitlement is checked below
+    // once golfCourseId is parsed.
+    const caller = await resolveAuth(req, { requireApproved: true })
+    if (caller.scope !== 'upload' && !caller.isInternal) {
+      return new Response(JSON.stringify({ error: 'This session is not permitted to upload' }), {
+        status: 403, headers: { ...getCorsHeaders(origin), 'Content-Type': 'application/json' },
       })
     }
 
@@ -55,6 +50,13 @@ serve(async (req) => {
     // Validate required fields
     if (!fileName || !fileSize || !golfCourseId || !category) {
       throw new Error(`Missing required fields. Got: fileName=${fileName}, fileSize=${fileSize}, golfCourseId=${golfCourseId}, category=${category}`)
+    }
+
+    // Course entitlement: the caller must be allowed to upload to this course.
+    if (!canAccessCourse(caller, golfCourseId)) {
+      return new Response(JSON.stringify({ error: 'Not authorized for this golf course' }), {
+        status: 403, headers: { ...getCorsHeaders(origin), 'Content-Type': 'application/json' },
+      })
     }
 
     // Category allowlist (it becomes a path segment in the object key).
@@ -200,6 +202,11 @@ serve(async (req) => {
     )
 
   } catch (error) {
+    if (error instanceof AuthError) {
+      return new Response(JSON.stringify({ error: error.message }), {
+        status: error.status, headers: { ...getCorsHeaders(origin), 'Content-Type': 'application/json' }
+      })
+    }
     console.error('Presign URL generation error:', error)
     return new Response(
       JSON.stringify({ error: error.message }),

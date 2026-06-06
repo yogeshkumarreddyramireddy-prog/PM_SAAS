@@ -35,6 +35,44 @@ export async function fetchLatestDroneScene(droneCourseId: number): Promise<Dron
   return res.json()
 }
 
+export interface ZoneProps {
+  id: string
+  label: string
+  zone_class: string
+  area_m2: number | null
+  phyto_score: number | null
+  data_quality: string | null
+  vi_means: Record<string, number | null>
+}
+
+export interface ZonesResponse {
+  scene_id: string | null
+  acquired_at: string | null
+  type: 'FeatureCollection'
+  features: Array<{ type: 'Feature'; geometry: unknown; properties: ZoneProps }>
+}
+
+/** Polygon zones + per-zone Phyto/VI for the latest drone scene (pass-scoped). */
+export async function fetchDroneZones(droneCourseId: number): Promise<ZonesResponse> {
+  const res = await fetch(`${SATELLITE_API}/drone/courses/${droneCourseId}/zones`, {
+    headers: { ...passHeaders() },
+  })
+  if (!res.ok) throw new Error(`drone zones failed: ${res.status}`)
+  return res.json()
+}
+
+export interface Histogram { counts: number[]; bin_edges: number[] }
+
+/** Per-VI histogram for the latest drone scene (pass-scoped). */
+export async function fetchDroneHistogram(droneCourseId: number, viCode: string): Promise<Histogram> {
+  const res = await fetch(
+    `${SATELLITE_API}/drone/courses/${droneCourseId}/histogram?vi_code=${encodeURIComponent(viCode)}`,
+    { headers: { ...passHeaders() } },
+  )
+  if (!res.ok) throw new Error(`drone histogram failed: ${res.status}`)
+  return res.json()
+}
+
 // ── Resumable multipart upload (pass-native; browser → R2 direct) ────────────
 
 export interface UploadPart { PartNumber: number; ETag: string }

@@ -11,6 +11,7 @@
 // Anything else is rejected with 401.
 
 import { createClient, SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { verifyPassToken } from './pass.ts'
 
 export interface AuthedUser {
   id: string
@@ -110,4 +111,70 @@ export async function getAccessibleCourseIds(ctx: AuthContext): Promise<number[]
     if (row.golf_course_id != null) ids.add(row.golf_course_id)
   }
   return [...ids]
+}
+
+// ── Federated caller resolution ─────────────────────────────────────────────
+// Unifies the three ways an edge function may be called:
+//   1. A satellite-issued drone PASS (header `X-Drone-Pass` or `?pass=`) — the
+//      federated path; the pass carries the course + scope (view/upload).
+//   2. The INTERNAL service-role key (function→function, GitHub Actions).
+//   3. Legacy Supabase Auth (the current viewer, until the rebuilt viewer ships).
+// `courseIds === null` means unrestricted (super-admin / internal).
+export interface Caller {
+  via: 'pass' | 'internal' | 'supabase'
+  isInternal: boolean
+  isSuperAdmin: boolean
+  scope: 'view' | 'upload'
+  email: string | null
+  courseIds: number[] | null
+  service: SupabaseClient
+}
+
+export async function resolveAuth(
+  req: Request,
+  opts: { requireApproved?: boolean } = {},
+): Promise<Caller> {
+  // 1. Federation pass (header or query string).
+  const passTok = (
+    req.headers.get('x-drone-pass') ||
+    new URL(req.url).searchParams.get('pass') || ''
+  ).trim()
+  if (passTok) {
+    let p
+    try {
+      p = await verifyPassToken(passTok)
+    } catch (e) {
+      // Normalize PassError → AuthError so existing catch blocks handle it.
+      throw new AuthError((e as Error).message, (e as { status?: number }).status ?? 401)
+    }
+    return {
+      via: 'pass',
+      isInternal: false,
+      isSuperAdmin: p.is_super_admin,
+      scope: p.scope,
+      email: p.email,
+      courseIds: p.is_super_admin ? null : [p.drone_course_id],
+      service: serviceClient(),
+    }
+  }
+  // 2/3. Internal service-role key, or legacy Supabase Auth.
+  const ctx = await authenticate(req, opts)
+  if (ctx.isInternal) {
+    return { via: 'internal', isInternal: true, isSuperAdmin: true, scope: 'upload', email: null, courseIds: null, service: ctx.service }
+  }
+  const isAdmin = ctx.user?.role === 'admin'
+  return {
+    via: 'supabase',
+    isInternal: false,
+    isSuperAdmin: isAdmin,
+    scope: isAdmin ? 'upload' : 'view',
+    email: null, // AuthedUser does not carry email; not needed for gating
+    courseIds: isAdmin ? null : await getAccessibleCourseIds(ctx),
+    service: ctx.service,
+  }
+}
+
+/** True if the caller may act on the given drone course id. */
+export function canAccessCourse(c: Caller, courseId: number | string): boolean {
+  return c.courseIds === null || c.courseIds.includes(Number(courseId))
 }

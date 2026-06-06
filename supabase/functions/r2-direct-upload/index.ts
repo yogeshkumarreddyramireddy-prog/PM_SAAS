@@ -2,7 +2,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { S3Client, PutObjectCommand } from "npm:@aws-sdk/client-s3"
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { getCorsHeaders } from "../_shared/cors.ts"
-import { authenticate, getAccessibleCourseIds, AuthError } from "../_shared/auth.ts"
+import { resolveAuth, canAccessCourse, AuthError } from "../_shared/auth.ts"
 
 serve(async (req) => {
   const corsHeaders = getCorsHeaders(req.headers.get('origin'), req.method)
@@ -12,10 +12,10 @@ serve(async (req) => {
   }
 
   try {
-    // Require an approved, authenticated caller. Previously this endpoint had
-    // NO auth at all, so anyone could write tiles into any course's live_maps
-    // (poisoning maps + inflating R2 cost). Auth + course-entitlement closes it.
-    const ctx = await authenticate(req, { requireApproved: true })
+    // Auth: a satellite drone pass (scope=upload), the internal service key, or
+    // an admin via legacy Supabase Auth. Previously this endpoint had NO auth at
+    // all, so anyone could write tiles into any course's live_maps.
+    const caller = await resolveAuth(req, { requireApproved: true })
 
     const {
       golfCourseName,
@@ -28,13 +28,13 @@ serve(async (req) => {
       throw new Error('Golf course name, golf course ID, and files array are required')
     }
 
-    // Admins / internal callers may write any course; everyone else is limited
-    // to the courses they are assigned to.
-    if (!ctx.isInternal && ctx.user?.role !== 'admin') {
-      const allowed = await getAccessibleCourseIds(ctx)
-      if (!allowed.includes(Number(golfCourseId))) {
-        throw new AuthError('Not authorized to upload to this golf course', 403)
-      }
+    // Uploading requires upload scope (or the internal key), and the caller must
+    // be entitled to THIS course.
+    if (caller.scope !== 'upload' && !caller.isInternal) {
+      throw new AuthError('This session is not permitted to upload', 403)
+    }
+    if (!canAccessCourse(caller, golfCourseId)) {
+      throw new AuthError('Not authorized to upload to this golf course', 403)
     }
 
     console.log(`Processing batch ${batchInfo?.batchNumber || 1} with ${files.length} files`)

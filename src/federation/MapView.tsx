@@ -5,6 +5,7 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import { Protocol } from 'pmtiles'
 import { getClaims } from './pass'
 import { fetchLatestDroneScene, type DroneLatest } from './api'
+import UploadPanel from './UploadPanel'
 
 // Fresh drone viewer — MapLibre (the satellite's stack), pass-native, no Supabase
 // login. Basemap + the latest drone scene's per-VI heatmap PMTiles (raster,
@@ -46,6 +47,7 @@ export default function MapView() {
   const [scene, setScene] = useState<DroneLatest | null>(null)
   const [activeVi, setActiveVi] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [reloadKey, setReloadKey] = useState(0)
 
   // 1. Init the map once.
   useEffect(() => {
@@ -70,7 +72,7 @@ export default function MapView() {
       .then((s) => { if (!alive) return; setScene(s); setActiveVi(s.available_vis[0] ?? null) })
       .catch(() => { if (alive) setError('Could not load drone maps for this course.') })
     return () => { alive = false }
-  }, [claims?.drone_course_id])
+  }, [claims?.drone_course_id, reloadKey])
 
   // 3. Fit to the scene's bounds when it arrives.
   useEffect(() => {
@@ -139,6 +141,13 @@ export default function MapView() {
           </div>
         )}
       </div>
+
+      {view === 'upload' && (claims.scope === 'upload' || claims.is_super_admin) && (
+        <UploadPanel
+          droneCourseId={claims.drone_course_id}
+          onDone={() => setReloadKey((k) => k + 1)}
+        />
+      )}
 
       {scene && scene.available_vis.length > 0 && (
         <div

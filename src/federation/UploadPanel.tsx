@@ -23,6 +23,8 @@ export default function UploadPanel({
   // same area+date into one capture; the flight date groups areas into a flight.
   const [label, setLabel] = useState('')
   const [flightDate, setFlightDate] = useState(() => new Date().toISOString().slice(0, 10))
+  // Ortho kind: multispectral (→ VI heatmaps) or RGB (→ true-color display layer).
+  const [kind, setKind] = useState<'orthomosaic_ms' | 'orthomosaic_rgb'>('orthomosaic_ms')
 
   const isTouch =
     typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches
@@ -33,7 +35,7 @@ export default function UploadPanel({
     let uploadId = ''
     try {
       const { upload_id, part_size } = await initDroneUpload(
-        droneCourseId, 'orthomosaic_ms', file.size,
+        droneCourseId, kind, file.size,
         { captureLabel: label.trim() || file.name, captureDate: flightDate || null },
       )
       uploadId = upload_id
@@ -91,6 +93,24 @@ export default function UploadPanel({
   return (
     <div style={panel}>
       <div style={{ fontWeight: 600, fontSize: 14 }}>Upload drone map</div>
+      <div style={{ display: 'flex', gap: 6 }}>
+        {([['orthomosaic_ms', 'Multispectral'], ['orthomosaic_rgb', 'RGB']] as const).map(([k, lbl]) => (
+          <button
+            key={k}
+            type="button"
+            disabled={busy}
+            onClick={() => setKind(k)}
+            style={{
+              flex: 1, border: 'none', cursor: busy ? 'default' : 'pointer',
+              borderRadius: 8, padding: '6px 10px', fontSize: 12, fontWeight: 600,
+              background: kind === k ? '#16a34a' : '#e2e8f0',
+              color: kind === k ? '#fff' : '#334155',
+            }}
+          >
+            {lbl}
+          </button>
+        ))}
+      </div>
       <input
         type="file"
         accept=".tif,.tiff,image/tiff"

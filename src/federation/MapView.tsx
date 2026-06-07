@@ -5,8 +5,8 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import { Protocol, PMTiles, FetchSource } from 'pmtiles'
 import { getClaims, getPass } from './pass'
 import {
-  fetchLatestDroneScene, fetchDroneZones,
-  type DroneLatest, type ZonesResponse, type ZoneProps,
+  fetchLatestDroneScene, fetchDroneZones, fetchDroneHistogram,
+  type DroneLatest, type ZonesResponse, type ZoneProps, type Histogram,
 } from './api'
 import UploadPanel from './UploadPanel'
 
@@ -71,6 +71,24 @@ const VI_LABELS: Record<string, string> = {
   ndvi: 'NDVI', ndre: 'NDRE', gndvi: 'GNDVI', osavi: 'OSAVI',
 }
 
+// Lerp a normalised value (0..1) to a brown→yellow→green ramp for the histogram.
+function viColor(t: number): string {
+  const x = Math.max(0, Math.min(1, t))
+  const stops: Array<[number, [number, number, number]]> = [
+    [0.0, [180, 83, 9]],   // brown  #b45309
+    [0.5, [234, 179, 8]],  // yellow #eab308
+    [1.0, [21, 128, 61]],  // green  #15803d
+  ]
+  let a = stops[0]
+  let b = stops[stops.length - 1]
+  for (let i = 0; i < stops.length - 1; i++) {
+    if (x >= stops[i][0] && x <= stops[i + 1][0]) { a = stops[i]; b = stops[i + 1]; break }
+  }
+  const f = b[0] === a[0] ? 0 : (x - a[0]) / (b[0] - a[0])
+  const c = a[1].map((av, i) => Math.round(av + (b[1][i] - av) * f))
+  return `rgb(${c[0]},${c[1]},${c[2]})`
+}
+
 // Phyto Score → status label + colour (mirrors the satellite's bands).
 function phytoStatus(score: number | null): { label: string; color: string } {
   if (score == null) return { label: 'No reading', color: '#94a3b8' }
@@ -106,6 +124,7 @@ export default function MapView() {
   const [selected, setSelected] = useState<ZoneProps | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
+  const [hist, setHist] = useState<Histogram | null>(null)
 
   // 1. Init the map once.
   useEffect(() => {
@@ -143,6 +162,16 @@ export default function MapView() {
     return () => { alive = false }
   }, [claims?.drone_course_id, reloadKey])
 
+  // 2b. Fetch the histogram for the active index (the left-panel distribution).
+  useEffect(() => {
+    if (!claims || !activeVi) { setHist(null); return }
+    let alive = true
+    fetchDroneHistogram(claims.drone_course_id, activeVi)
+      .then((h) => { if (alive) setHist(h) })
+      .catch(() => { if (alive) setHist(null) })
+    return () => { alive = false }
+  }, [claims?.drone_course_id, activeVi, reloadKey])
+
   // 3. Fit to the scene's bounds when it arrives.
   useEffect(() => {
     const map = mapRef.current
@@ -152,38 +181,34 @@ export default function MapView() {
     if (map.isStyleLoaded()) fit(); else map.once('load', fit)
   }, [scene])
 
-  // 4. Render the active VI heatmap. Each VI gets its own source/layer (added
-  //    lazily); switching toggles visibility. Insert BELOW the zone outlines so
-  //    the white boundaries + labels stay legible on top of the raster.
+  // 4. Render the VI heatmaps. ALL indices are added up-front as raster layers
+  //    (so their tiles are fetched eagerly), kept BELOW the zone outlines, and
+  //    switching just flips `raster-opacity`. That makes the swap instant at any
+  //    zoom — the old visibility-toggle left the previous index's tiles painted
+  //    until a camera change forced a reload (hence "only switches when zoomed
+  //    in"). The opacity transition gives a smooth cross-fade.
   useEffect(() => {
     const map = mapRef.current
     if (!map || !scene) return
     const apply = () => {
       const beforeId = map.getLayer('zones-line') ? 'zones-line' : undefined
-      // Add + show the wanted layer FIRST (lazily, once), then hide the rest —
-      // so a repeat switch is instant and the basemap doesn't flash between them.
       for (const l of scene.layers) {
+        if (!l.url) continue
         const id = `drone-vi-${l.vi_code}`
-        const want = l.vi_code === activeVi
-        if (want && l.url && !map.getSource(id)) {
+        const active = l.vi_code === activeVi
+        if (!map.getSource(id)) {
           registerDronePmtiles(l.url) // attach the pass to this archive's reads
           map.addSource(id, { type: 'raster', url: `pmtiles://${l.url}`, tileSize: 256 })
           map.addLayer({
             id, type: 'raster', source: id,
             paint: {
-              'raster-opacity': 1,
+              'raster-opacity': active ? 1 : 0,
+              'raster-opacity-transition': { duration: 200, delay: 0 },
               'raster-resampling': 'nearest',
-              // Brief cross-fade smooths the swap between indices.
-              'raster-fade-duration': 250,
             },
           }, beforeId)
-        }
-        if (want && map.getLayer(id)) map.setLayoutProperty(id, 'visibility', 'visible')
-      }
-      for (const l of scene.layers) {
-        const id = `drone-vi-${l.vi_code}`
-        if (l.vi_code !== activeVi && map.getLayer(id)) {
-          map.setLayoutProperty(id, 'visibility', 'none')
+        } else {
+          map.setPaintProperty(id, 'raster-opacity', active ? 1 : 0)
         }
       }
     }
@@ -277,6 +302,38 @@ export default function MapView() {
             No processed maps yet — check back after the flight is processed.
           </div>
         )}
+        {hist && hist.counts.length > 1 && activeVi && (() => {
+          const max = Math.max(...hist.counts) || 1
+          const lo = hist.bin_edges[0]
+          const hi = hist.bin_edges[hist.bin_edges.length - 1]
+          const span = (hi - lo) || 1
+          return (
+            <div style={{ marginTop: 10 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: '#475569', marginBottom: 4 }}>
+                {(VI_LABELS[activeVi] || activeVi.toUpperCase())} distribution
+              </div>
+              <div style={{ display: 'flex', alignItems: 'flex-end', gap: 1, height: 44 }}>
+                {hist.counts.map((c, i) => {
+                  const mid = (hist.bin_edges[i] + hist.bin_edges[i + 1]) / 2
+                  return (
+                    <div
+                      key={i}
+                      title={`${mid.toFixed(2)} · ${c.toLocaleString()}`}
+                      style={{
+                        flex: 1, height: `${Math.max(2, (c / max) * 44)}px`,
+                        background: viColor((mid - lo) / span), borderRadius: 1,
+                      }}
+                    />
+                  )
+                })}
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9.5, color: '#94a3b8', marginTop: 2 }}>
+                <span>{lo?.toFixed(2)}</span>
+                <span>{hi?.toFixed(2)}</span>
+              </div>
+            </div>
+          )
+        })()}
         {canUpload && (
           <button
             onClick={toggleUpload}

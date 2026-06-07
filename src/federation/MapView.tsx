@@ -101,19 +101,12 @@ function phytoStatus(score: number | null): { label: string; color: string } {
 
 export default function MapView() {
   const { courseId } = useParams()
-  const [params, setParams] = useSearchParams()
+  const [params] = useSearchParams()
+  // Upload mode is reached from the satellite sidebar's "Upload drone" entry,
+  // which opens this viewer with ?view=upload (Phase B). There's no in-viewer
+  // toggle — entitlement is enforced by the pass scope on the UploadPanel below.
   const view = params.get('view') || 'map'
   const claims = getClaims()
-  // The pass carries the entitlement, so the Upload toggle is self-gating: only
-  // an upload-scoped (or super-admin) pass can ever reach upload mode. No
-  // satellite role lookup needed — a view-only client never sees the toggle.
-  const canUpload = !!claims && (claims.scope === 'upload' || claims.is_super_admin)
-  const toggleUpload = () => {
-    const next = new URLSearchParams(params)
-    if (view === 'upload') next.delete('view')
-    else next.set('view', 'upload')
-    setParams(next, { replace: true })
-  }
 
   const mapEl = useRef<HTMLDivElement>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
@@ -334,19 +327,6 @@ export default function MapView() {
             </div>
           )
         })()}
-        {canUpload && (
-          <button
-            onClick={toggleUpload}
-            style={{
-              marginTop: 8, width: '100%', border: 'none', cursor: 'pointer',
-              borderRadius: 8, padding: '7px 12px', fontSize: 12.5, fontWeight: 600,
-              background: view === 'upload' ? '#e2e8f0' : '#16a34a',
-              color: view === 'upload' ? '#334155' : '#fff',
-            }}
-          >
-            {view === 'upload' ? '🗺 View maps' : '⬆ Upload drone map'}
-          </button>
-        )}
       </div>
 
       {view === 'upload' && (claims.scope === 'upload' || claims.is_super_admin) && (

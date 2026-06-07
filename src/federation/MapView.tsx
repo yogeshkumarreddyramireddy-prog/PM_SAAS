@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
-import { Protocol } from 'pmtiles'
-import { getClaims } from './pass'
+import { Protocol, PMTiles, FetchSource } from 'pmtiles'
+import { getClaims, getPass } from './pass'
 import {
   fetchLatestDroneScene, fetchDroneZones,
   type DroneLatest, type ZonesResponse, type ZoneProps,
@@ -11,31 +11,60 @@ import {
 import UploadPanel from './UploadPanel'
 
 // Fresh drone viewer — MapLibre (the satellite's stack), pass-native, no Supabase
-// login. Basemap + the latest drone scene's per-VI heatmap PMTiles + the course
-// zones (outlines, hole-numbered labels, click-to-detail with per-zone Phyto +
-// VI mean). NDMI is absent (the Mavic 3M has no SWIR), so it's never offered.
+// login. Satellite-imagery basemap (matching the satellite viewer) + the latest
+// drone scene's per-VI heatmap PMTiles + the course zones (outlines,
+// hole-numbered labels, click-to-detail with per-zone Phyto + VI mean). NDMI is
+// absent (the Mavic 3M has no SWIR), so it's never offered.
 
-// Register the pmtiles:// protocol once for the whole app.
-if (!(window as unknown as { __pmtilesReady?: boolean }).__pmtilesReady) {
-  const protocol = new Protocol()
-  maplibregl.addProtocol('pmtiles', protocol.tile as never)
-  ;(window as unknown as { __pmtilesReady?: boolean }).__pmtilesReady = true
+// Register the pmtiles:// protocol once for the whole app. We keep a reference to
+// the protocol so each VI archive can be registered with a source that re-sends
+// the drone pass on every byte-range read: the satellite serves the tiles through
+// a pass-gated API proxy (no public R2 access), so without the header the proxy
+// would 401 every tile. This mirrors the satellite viewer's credentialed source.
+const pmtilesProtocol = new Protocol()
+const _pmReady = window as unknown as { __dronePmtilesReady?: boolean }
+if (!_pmReady.__dronePmtilesReady) {
+  maplibregl.addProtocol('pmtiles', pmtilesProtocol.tile as never)
+  _pmReady.__dronePmtilesReady = true
+}
+const _registeredPmtiles = new Set<string>()
+function registerDronePmtiles(url: string): void {
+  if (_registeredPmtiles.has(url)) return
+  const headers = new Headers()
+  const pass = getPass()
+  if (pass) headers.set('X-Drone-Pass', pass)
+  pmtilesProtocol.add(new PMTiles(new FetchSource(url, headers)))
+  _registeredPmtiles.add(url)
 }
 
-const OSM_STYLE: maplibregl.StyleSpecification = {
-  version: 8,
-  // Glyphs are required for the zone-label symbol layer (the raster basemap
-  // alone ships none). OpenMapTiles' public font endpoint carries Open Sans.
-  glyphs: 'https://fonts.openmaptiles.org/{fontstack}/{range}.pbf',
-  sources: {
-    osm: {
-      type: 'raster',
-      tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
-      tileSize: 256,
-      attribution: '© OpenStreetMap contributors',
+// Satellite-imagery basemap — mirrors the satellite viewer's buildSatelliteStyle
+// (Golf_sat apps/web/src/lib/maplibre.ts): Mapbox Satellite when a token is set,
+// else Esri World Imagery. Glyphs come from the same endpoint as the satellite so
+// 'Open Sans Semibold' (the zone labels) resolves.
+const MAPBOX_TOKEN =
+  ((import.meta as any).env?.VITE_MAPBOX_ACCESS_TOKEN as string | undefined) ||
+  ((import.meta as any).env?.VITE_MAPBOX_TOKEN as string | undefined) ||
+  ''
+
+function buildSatelliteStyle(token: string): maplibregl.StyleSpecification {
+  const url = token
+    ? `https://api.mapbox.com/v4/mapbox.satellite/{z}/{x}/{y}@2x.jpg90?access_token=${token}`
+    : 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
+  return {
+    version: 8,
+    glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
+    sources: {
+      satellite: {
+        type: 'raster',
+        tiles: [url],
+        tileSize: 256,
+        attribution: token
+          ? '© Mapbox © Maxar'
+          : 'Tiles © Esri — Source: Esri, Maxar, Earthstar Geographics',
+      },
     },
-  },
-  layers: [{ id: 'osm', type: 'raster', source: 'osm' }],
+    layers: [{ id: 'satellite', type: 'raster', source: 'satellite' }],
+  }
 }
 
 const VI_LABELS: Record<string, string> = {
@@ -73,12 +102,20 @@ export default function MapView() {
     if (!mapEl.current || mapRef.current) return
     const map = new maplibregl.Map({
       container: mapEl.current,
-      style: OSM_STYLE,
+      style: buildSatelliteStyle(MAPBOX_TOKEN),
       center: [6.21, 51.75],
       zoom: 13,
       attributionControl: { compact: true },
     })
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right')
+    // Registering an error listener also suppresses MapLibre's default
+    // console.error-per-failed-tile flood. Aborted range reads (normal on pan/
+    // zoom and on unmount) are noise; everything else is logged once as a warning.
+    map.on('error', (e) => {
+      const msg = (e?.error as Error | undefined)?.message || ''
+      if (/abort/i.test(msg) || (e?.error as { name?: string })?.name === 'AbortError') return
+      console.warn('[drone map]', msg || e)
+    })
     mapRef.current = map
     return () => { map.remove(); mapRef.current = null }
   }, [])
@@ -113,18 +150,30 @@ export default function MapView() {
     if (!map || !scene) return
     const apply = () => {
       const beforeId = map.getLayer('zones-line') ? 'zones-line' : undefined
+      // Add + show the wanted layer FIRST (lazily, once), then hide the rest —
+      // so a repeat switch is instant and the basemap doesn't flash between them.
       for (const l of scene.layers) {
         const id = `drone-vi-${l.vi_code}`
         const want = l.vi_code === activeVi
         if (want && l.url && !map.getSource(id)) {
+          registerDronePmtiles(l.url) // attach the pass to this archive's reads
           map.addSource(id, { type: 'raster', url: `pmtiles://${l.url}`, tileSize: 256 })
           map.addLayer({
             id, type: 'raster', source: id,
-            paint: { 'raster-opacity': 1, 'raster-resampling': 'nearest' },
+            paint: {
+              'raster-opacity': 1,
+              'raster-resampling': 'nearest',
+              // Brief cross-fade smooths the swap between indices.
+              'raster-fade-duration': 250,
+            },
           }, beforeId)
         }
-        if (map.getLayer(id)) {
-          map.setLayoutProperty(id, 'visibility', want ? 'visible' : 'none')
+        if (want && map.getLayer(id)) map.setLayoutProperty(id, 'visibility', 'visible')
+      }
+      for (const l of scene.layers) {
+        const id = `drone-vi-${l.vi_code}`
+        if (l.vi_code !== activeVi && map.getLayer(id)) {
+          map.setLayoutProperty(id, 'visibility', 'none')
         }
       }
     }

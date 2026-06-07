@@ -16,12 +16,24 @@ export interface DroneLayer {
   url: string | null
 }
 
+// One capture = one ortho area within a flight (course + date). It carries an
+// RGB true-color layer (if uploaded) + the per-VI heatmaps for that area.
+export interface DroneCapture {
+  scene_id: string | null
+  label: string | null
+  bounds: [number, number, number, number] | null
+  rgb_url: string | null
+  vi_layers: DroneLayer[]
+  available_vis: string[]
+}
+
 export interface DroneLatest {
   scene_id: string | null
   acquired_at: string | null
-  bounds: [number, number, number, number] | null // [minlon, minlat, maxlon, maxlat]
-  layers: DroneLayer[]
-  available_vis: string[]
+  bounds: [number, number, number, number] | null // union of the flight's captures
+  layers: DroneLayer[]        // back-compat: the primary capture's VI layers
+  available_vis: string[]     // back-compat: the primary capture's indices
+  captures: DroneCapture[]    // the whole latest flight (≥1 area)
 }
 
 /** Latest processed drone scene for a drone course (pass-scoped, server-verified). */
@@ -79,11 +91,17 @@ export interface UploadPart { PartNumber: number; ETag: string }
 
 export async function initDroneUpload(
   droneCourseId: number, kind: string, totalBytes: number,
+  opts?: { captureLabel?: string | null; captureDate?: string | null },
 ): Promise<{ upload_id: string; part_size: number; key: string }> {
   const res = await fetch(`${SATELLITE_API}/drone/courses/${droneCourseId}/uploads`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...passHeaders() },
-    body: JSON.stringify({ kind, total_bytes: totalBytes }),
+    body: JSON.stringify({
+      kind,
+      total_bytes: totalBytes,
+      capture_label: opts?.captureLabel ?? null,
+      capture_date: opts?.captureDate ?? null,
+    }),
   })
   if (!res.ok) throw new Error(`init upload failed: ${res.status}`)
   return res.json()

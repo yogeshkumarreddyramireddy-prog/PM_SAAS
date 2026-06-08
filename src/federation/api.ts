@@ -174,3 +174,32 @@ export async function fetchRawUploads(droneCourseId: number): Promise<RawUpload[
   if (!res.ok) throw new Error(`raw uploads failed: ${res.status}`)
   return (await res.json()).uploads as RawUpload[]
 }
+
+export interface UploadItem {
+  id: string
+  kind: string
+  status: string
+  total_bytes: number | null
+  created_at: string | null
+  label: string | null
+  capture_date?: string | null
+  download_url: string | null
+}
+
+/** Every upload for the course (MS/RGB orthos + raw archives), pass-scoped. */
+export async function fetchUploads(droneCourseId: number): Promise<UploadItem[]> {
+  const res = await fetch(`${SATELLITE_API}/drone/courses/${droneCourseId}/uploads`, {
+    headers: { ...passHeaders() },
+  })
+  if (!res.ok) throw new Error(`uploads failed: ${res.status}`)
+  return (await res.json()).uploads as UploadItem[]
+}
+
+/** Delete an upload + everything it produced (R2 source + derived COG/tiles + DB). */
+export async function deleteUpload(droneCourseId: number, uploadId: string): Promise<void> {
+  const res = await fetch(`${SATELLITE_API}/drone/courses/${droneCourseId}/uploads/${uploadId}`, {
+    method: 'DELETE',
+    headers: { ...passHeaders() },
+  })
+  if (!res.ok) throw new Error(`delete failed: ${res.status}`)
+}

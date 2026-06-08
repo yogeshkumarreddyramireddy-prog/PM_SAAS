@@ -5,8 +5,8 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import { Protocol, PMTiles, FetchSource } from 'pmtiles'
 import { getClaims, getPass } from './pass'
 import {
-  fetchLatestDroneScene, fetchDroneZones,
-  type DroneLatest, type ZonesResponse, type ZoneProps,
+  fetchLatestDroneScene, fetchDroneZones, fetchDroneHistogram,
+  type DroneLatest, type DroneCapture, type ZonesResponse, type ZoneProps, type Histogram,
 } from './api'
 import UploadPanel from './UploadPanel'
 
@@ -70,6 +70,37 @@ function buildSatelliteStyle(token: string): maplibregl.StyleSpecification {
 const VI_LABELS: Record<string, string> = {
   ndvi: 'NDVI', ndre: 'NDRE', gndvi: 'GNDVI', osavi: 'OSAVI',
 }
+const VI_ORDER = ['ndvi', 'ndre', 'gndvi', 'osavi']
+
+// Normalise /latest into a capture list. The new backend returns `captures` (the
+// whole latest flight); fall back to a single synthetic capture from the legacy
+// top-level fields so the viewer also works against an older API.
+function normalizeCaptures(s: DroneLatest | null): DroneCapture[] {
+  if (!s) return []
+  if (s.captures && s.captures.length) return s.captures
+  return [{
+    scene_id: s.scene_id, label: null, bounds: s.bounds,
+    rgb_url: null, vi_layers: s.layers ?? [], available_vis: s.available_vis ?? [],
+  }]
+}
+
+// Lerp a normalised value (0..1) to a brown→yellow→green ramp for the histogram.
+function viColor(t: number): string {
+  const x = Math.max(0, Math.min(1, t))
+  const stops: Array<[number, [number, number, number]]> = [
+    [0.0, [180, 83, 9]],   // brown  #b45309
+    [0.5, [234, 179, 8]],  // yellow #eab308
+    [1.0, [21, 128, 61]],  // green  #15803d
+  ]
+  let a = stops[0]
+  let b = stops[stops.length - 1]
+  for (let i = 0; i < stops.length - 1; i++) {
+    if (x >= stops[i][0] && x <= stops[i + 1][0]) { a = stops[i]; b = stops[i + 1]; break }
+  }
+  const f = b[0] === a[0] ? 0 : (x - a[0]) / (b[0] - a[0])
+  const c = a[1].map((av, i) => Math.round(av + (b[1][i] - av) * f))
+  return `rgb(${c[0]},${c[1]},${c[2]})`
+}
 
 // Phyto Score → status label + colour (mirrors the satellite's bands).
 function phytoStatus(score: number | null): { label: string; color: string } {
@@ -83,19 +114,12 @@ function phytoStatus(score: number | null): { label: string; color: string } {
 
 export default function MapView() {
   const { courseId } = useParams()
-  const [params, setParams] = useSearchParams()
+  const [params] = useSearchParams()
+  // Upload mode is reached from the satellite sidebar's "Upload drone" entry,
+  // which opens this viewer with ?view=upload (Phase B). There's no in-viewer
+  // toggle — entitlement is enforced by the pass scope on the UploadPanel below.
   const view = params.get('view') || 'map'
   const claims = getClaims()
-  // The pass carries the entitlement, so the Upload toggle is self-gating: only
-  // an upload-scoped (or super-admin) pass can ever reach upload mode. No
-  // satellite role lookup needed — a view-only client never sees the toggle.
-  const canUpload = !!claims && (claims.scope === 'upload' || claims.is_super_admin)
-  const toggleUpload = () => {
-    const next = new URLSearchParams(params)
-    if (view === 'upload') next.delete('view')
-    else next.set('view', 'upload')
-    setParams(next, { replace: true })
-  }
 
   const mapEl = useRef<HTMLDivElement>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
@@ -106,6 +130,13 @@ export default function MapView() {
   const [selected, setSelected] = useState<ZoneProps | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
+  const [hist, setHist] = useState<Histogram | null>(null)
+  // Layer selector state. activeVi = the one MS heatmap on top (null = none, RGB
+  // only). showRgb = the true-color base layer. visibleCaptures = which areas are
+  // shown (all by default; non-overlapping captures show together).
+  const [showRgb, setShowRgb] = useState(true)
+  const [msOpacity, setMsOpacity] = useState(1)
+  const [visibleCaptures, setVisibleCaptures] = useState<Set<string>>(new Set())
 
   // 1. Init the map once.
   useEffect(() => {
@@ -135,13 +166,31 @@ export default function MapView() {
     if (!claims) return
     let alive = true
     fetchLatestDroneScene(claims.drone_course_id)
-      .then((s) => { if (!alive) return; setScene(s); setActiveVi(s.available_vis[0] ?? null) })
+      .then((s) => {
+        if (!alive) return
+        setScene(s)
+        const caps = normalizeCaptures(s)
+        const present = new Set(caps.flatMap((c) => c.available_vis))
+        setActiveVi(VI_ORDER.find((v) => present.has(v)) ?? null)
+        setShowRgb(caps.some((c) => !!c.rgb_url))
+        setVisibleCaptures(new Set(caps.map((c) => c.scene_id).filter(Boolean) as string[]))
+      })
       .catch(() => { if (alive) setError('Could not load drone maps for this course.') })
     fetchDroneZones(claims.drone_course_id)
       .then((z) => { if (alive) { zonesRef.current = z; setZones(z) } })
       .catch(() => { /* zones are best-effort; the heatmap still renders */ })
     return () => { alive = false }
   }, [claims?.drone_course_id, reloadKey])
+
+  // 2b. Fetch the histogram for the active index (the left-panel distribution).
+  useEffect(() => {
+    if (!claims || !activeVi) { setHist(null); return }
+    let alive = true
+    fetchDroneHistogram(claims.drone_course_id, activeVi)
+      .then((h) => { if (alive) setHist(h) })
+      .catch(() => { if (alive) setHist(null) })
+    return () => { alive = false }
+  }, [claims?.drone_course_id, activeVi, reloadKey])
 
   // 3. Fit to the scene's bounds when it arrives.
   useEffect(() => {
@@ -152,43 +201,72 @@ export default function MapView() {
     if (map.isStyleLoaded()) fit(); else map.once('load', fit)
   }, [scene])
 
-  // 4. Render the active VI heatmap. Each VI gets its own source/layer (added
-  //    lazily); switching toggles visibility. Insert BELOW the zone outlines so
-  //    the white boundaries + labels stay legible on top of the raster.
+  // 4. Render the flight's layers: per capture, an RGB true-color layer on the
+  //    basemap and the active MS index heatmap on top. z-order = basemap → RGB →
+  //    heatmap → zones (achieved by adding ALL RGB before any heatmap, both below
+  //    zones-line). Switching/toggling just flips `raster-opacity` (200ms fade),
+  //    so it's instant at any zoom; the active index is added lazily but kept, so
+  //    switching back is instant too. Several non-overlapping areas render at once.
   useEffect(() => {
     const map = mapRef.current
     if (!map || !scene) return
     const apply = () => {
+      const caps = normalizeCaptures(scene)
       const beforeId = map.getLayer('zones-line') ? 'zones-line' : undefined
-      // Add + show the wanted layer FIRST (lazily, once), then hide the rest —
-      // so a repeat switch is instant and the basemap doesn't flash between them.
-      for (const l of scene.layers) {
-        const id = `drone-vi-${l.vi_code}`
-        const want = l.vi_code === activeVi
-        if (want && l.url && !map.getSource(id)) {
-          registerDronePmtiles(l.url) // attach the pass to this archive's reads
-          map.addSource(id, { type: 'raster', url: `pmtiles://${l.url}`, tileSize: 256 })
+      const isOn = (sid: string | null) => !!sid && visibleCaptures.has(sid)
+
+      // Pass 1 — RGB base layers (below the heatmaps).
+      for (const cap of caps) {
+        if (!cap.rgb_url || !cap.scene_id) continue
+        const id = `drone-rgb-${cap.scene_id}`
+        const op = showRgb && isOn(cap.scene_id) ? 1 : 0
+        if (!map.getSource(id)) {
+          registerDronePmtiles(cap.rgb_url)
+          map.addSource(id, { type: 'raster', url: `pmtiles://${cap.rgb_url}`, tileSize: 256 })
+          map.addLayer({
+            id, type: 'raster', source: id,
+            paint: { 'raster-opacity': op, 'raster-opacity-transition': { duration: 200, delay: 0 } },
+          }, beforeId)
+        } else {
+          map.setPaintProperty(id, 'raster-opacity', op)
+        }
+      }
+
+      // Pass 2 — the active MS index heatmap, per capture (lazily added, kept, on top of RGB).
+      for (const cap of caps) {
+        if (!cap.scene_id || !activeVi) continue
+        const layer = cap.vi_layers.find((vl) => vl.vi_code === activeVi)
+        if (!layer?.url) continue
+        const id = `drone-vi-${cap.scene_id}-${activeVi}`
+        const op = isOn(cap.scene_id) ? msOpacity : 0
+        if (!map.getSource(id)) {
+          registerDronePmtiles(layer.url)
+          map.addSource(id, { type: 'raster', url: `pmtiles://${layer.url}`, tileSize: 256 })
           map.addLayer({
             id, type: 'raster', source: id,
             paint: {
-              'raster-opacity': 1,
+              'raster-opacity': op,
+              'raster-opacity-transition': { duration: 200, delay: 0 },
               'raster-resampling': 'nearest',
-              // Brief cross-fade smooths the swap between indices.
-              'raster-fade-duration': 250,
             },
           }, beforeId)
+        } else {
+          map.setPaintProperty(id, 'raster-opacity', op)
         }
-        if (want && map.getLayer(id)) map.setLayoutProperty(id, 'visibility', 'visible')
       }
-      for (const l of scene.layers) {
-        const id = `drone-vi-${l.vi_code}`
-        if (l.vi_code !== activeVi && map.getLayer(id)) {
-          map.setLayoutProperty(id, 'visibility', 'none')
+
+      // Pass 3 — hide any previously-added heatmap layers for non-active indices.
+      for (const cap of caps) {
+        if (!cap.scene_id) continue
+        for (const vl of cap.vi_layers) {
+          if (vl.vi_code === activeVi) continue
+          const id = `drone-vi-${cap.scene_id}-${vl.vi_code}`
+          if (map.getLayer(id)) map.setPaintProperty(id, 'raster-opacity', 0)
         }
       }
     }
     if (map.isStyleLoaded()) apply(); else map.once('load', apply)
-  }, [scene, activeVi])
+  }, [scene, activeVi, showRgb, msOpacity, visibleCaptures])
 
   // 5. Render the zone outlines + hole-numbered labels + click-to-detail.
   useEffect(() => {
@@ -254,6 +332,32 @@ export default function MapView() {
   const selMean = selected && activeVi ? selected.vi_means?.[activeVi] : null
   const status = phytoStatus(selected?.phyto_score ?? null)
 
+  // Layer-selector derivations.
+  const captures = normalizeCaptures(scene)
+  const presentVis = new Set(captures.flatMap((c) => c.available_vis))
+  const allVis = VI_ORDER.filter((v) => presentVis.has(v))
+  const anyRgb = captures.some((c) => !!c.rgb_url)
+  const hasAnyLayer = allVis.length > 0 || anyRgb
+  const toggleCapture = (sid: string) =>
+    setVisibleCaptures((prev) => {
+      const n = new Set(prev)
+      if (n.has(sid)) n.delete(sid)
+      else n.add(sid)
+      return n
+    })
+  const pillStyle = (active: boolean): React.CSSProperties => ({
+    border: 'none', cursor: 'pointer', borderRadius: 999, padding: '6px 14px',
+    fontSize: 13, fontWeight: 600,
+    background: active ? '#16a34a' : 'transparent',
+    color: active ? '#fff' : '#334155',
+  })
+  const chipStyle = (on: boolean): React.CSSProperties => ({
+    border: `1px solid ${on ? '#16a34a' : '#cbd5e1'}`, cursor: 'pointer',
+    borderRadius: 999, padding: '3px 10px', fontSize: 11.5, fontWeight: 600,
+    background: on ? 'rgba(22,163,74,0.12)' : 'transparent',
+    color: on ? '#15803d' : '#94a3b8',
+  })
+
   return (
     <div style={{ position: 'relative', height: '100vh' }}>
       <div ref={mapEl} style={{ position: 'absolute', inset: 0 }} />
@@ -268,28 +372,48 @@ export default function MapView() {
         {scene?.acquired_at && (
           <div style={{ fontSize: 12, color: '#475569', marginTop: 2 }}>
             Flight: {new Date(scene.acquired_at).toLocaleDateString()}
+            {captures.length > 1 ? ` · ${captures.length} areas` : ''}
           </div>
         )}
         {!scene && !error && <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>Loading…</div>}
         {error && <div style={{ fontSize: 12, color: '#b91c1c', marginTop: 4 }}>{error}</div>}
-        {scene && scene.available_vis.length === 0 && (
+        {scene && !hasAnyLayer && (
           <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>
             No processed maps yet — check back after the flight is processed.
           </div>
         )}
-        {canUpload && (
-          <button
-            onClick={toggleUpload}
-            style={{
-              marginTop: 8, width: '100%', border: 'none', cursor: 'pointer',
-              borderRadius: 8, padding: '7px 12px', fontSize: 12.5, fontWeight: 600,
-              background: view === 'upload' ? '#e2e8f0' : '#16a34a',
-              color: view === 'upload' ? '#334155' : '#fff',
-            }}
-          >
-            {view === 'upload' ? '🗺 View maps' : '⬆ Upload drone map'}
-          </button>
-        )}
+        {hist && hist.counts.length > 1 && activeVi && (() => {
+          const max = Math.max(...hist.counts) || 1
+          const lo = hist.bin_edges[0]
+          const hi = hist.bin_edges[hist.bin_edges.length - 1]
+          const span = (hi - lo) || 1
+          return (
+            <div style={{ marginTop: 10 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: '#475569', marginBottom: 4 }}>
+                {(VI_LABELS[activeVi] || activeVi.toUpperCase())} distribution
+              </div>
+              <div style={{ display: 'flex', alignItems: 'flex-end', gap: 1, height: 44 }}>
+                {hist.counts.map((c, i) => {
+                  const mid = (hist.bin_edges[i] + hist.bin_edges[i + 1]) / 2
+                  return (
+                    <div
+                      key={i}
+                      title={`${mid.toFixed(2)} · ${c.toLocaleString()}`}
+                      style={{
+                        flex: 1, height: `${Math.max(2, (c / max) * 44)}px`,
+                        background: viColor((mid - lo) / span), borderRadius: 1,
+                      }}
+                    />
+                  )
+                })}
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9.5, color: '#94a3b8', marginTop: 2 }}>
+                <span>{lo?.toFixed(2)}</span>
+                <span>{hi?.toFixed(2)}</span>
+              </div>
+            </div>
+          )
+        })()}
       </div>
 
       {view === 'upload' && (claims.scope === 'upload' || claims.is_super_admin) && (
@@ -341,31 +465,58 @@ export default function MapView() {
         </div>
       )}
 
-      {scene && scene.available_vis.length > 0 && (
+      {scene && hasAnyLayer && (
         <div
           style={{
             position: 'absolute', bottom: 16, left: '50%', transform: 'translateX(-50%)', zIndex: 1,
-            display: 'flex', gap: 6, background: 'rgba(255,255,255,0.96)', borderRadius: 999,
-            padding: 6, boxShadow: '0 2px 10px rgba(0,0,0,0.15)', fontFamily: 'system-ui, sans-serif',
+            display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'center', maxWidth: '92vw',
+            background: 'rgba(255,255,255,0.96)', borderRadius: 16, padding: '8px 12px',
+            boxShadow: '0 2px 10px rgba(0,0,0,0.15)', fontFamily: 'system-ui, sans-serif',
           }}
         >
-          {scene.available_vis.map((vi) => {
-            const active = vi === activeVi
-            return (
+          {/* Layer pills: RGB base toggle + one MS index on top (click the active one to turn it off). */}
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'center' }}>
+            {anyRgb && (
+              <button onClick={() => setShowRgb((v) => !v)} style={pillStyle(showRgb)}>RGB</button>
+            )}
+            {allVis.map((vi) => (
               <button
                 key={vi}
-                onClick={() => setActiveVi(vi)}
-                style={{
-                  border: 'none', cursor: 'pointer', borderRadius: 999, padding: '6px 14px',
-                  fontSize: 13, fontWeight: 600,
-                  background: active ? '#16a34a' : 'transparent',
-                  color: active ? '#fff' : '#334155',
-                }}
+                onClick={() => setActiveVi((cur) => (cur === vi ? null : vi))}
+                style={pillStyle(vi === activeVi)}
               >
                 {VI_LABELS[vi] || vi.toUpperCase()}
               </button>
-            )
-          })}
+            ))}
+          </div>
+
+          {/* Heatmap opacity (only meaningful when an index is active). */}
+          {activeVi && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%' }}>
+              <span style={{ fontSize: 10.5, color: '#94a3b8' }}>Opacity</span>
+              <input
+                type="range" min={0} max={100} value={Math.round(msOpacity * 100)}
+                onChange={(e) => setMsOpacity(Number(e.target.value) / 100)}
+                style={{ flex: 1 }}
+                aria-label="Heatmap opacity"
+              />
+            </div>
+          )}
+
+          {/* Areas — only when the flight has multiple captures. Toggle which show. */}
+          {captures.length > 1 && (
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'center' }}>
+              {captures.map((cap, i) => cap.scene_id && (
+                <button
+                  key={cap.scene_id}
+                  onClick={() => toggleCapture(cap.scene_id as string)}
+                  style={chipStyle(visibleCaptures.has(cap.scene_id))}
+                >
+                  {cap.label || `Area ${i + 1}`}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>

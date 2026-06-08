@@ -177,12 +177,17 @@ export default function MapView() {
   }, [scene])
 
   // 4. Render the flight's layers: per capture, an RGB true-color layer on the
-  //    basemap and EVERY VI index heatmap on top. z-order = basemap → RGB →
-  //    heatmaps → zones (all RGB added before any heatmap, both below zones-line).
-  //    ALL index layers are added once when the flight loads — that preloads
-  //    their tiles — and switching/toggling only flips `raster-opacity` (200ms
-  //    fade). Nothing is added/removed or visibility-toggled on switch, so the
-  //    swap is INSTANT at any zoom. Several non-overlapping areas render at once.
+  //    basemap and the active VI heatmap on top. z-order = basemap → RGB →
+  //    heatmap → zones (RGB added before any heatmap, both below zones-line).
+  //    The active VI layer is ADDED / REMOVED on switch (not preloaded + opacity-
+  //    toggled): MapLibre only fetches a raster source's tiles while a layer that
+  //    uses it is actually visible — a layer left at opacity 0 never loads its
+  //    tiles, and flipping opacity later doesn't trigger a fetch, so it showed
+  //    nothing until a camera move (the "only switches when zoomed in" bug, which
+  //    also broke the area toggles). addSource forces an immediate tile load at
+  //    the current view, so switching + area-toggling work at any zoom. This is
+  //    the exact pattern the satellite viewer uses. The opacity slider stays a
+  //    pure setPaintProperty on the live layer.
   useEffect(() => {
     const map = mapRef.current
     if (!map || !scene) return
@@ -208,28 +213,28 @@ export default function MapView() {
         }
       }
 
-      // Pass 2 — PRELOAD every VI index layer (each capture × each index). The
-      // active index is opaque; the rest are transparent (but loaded), so a
-      // switch is just an opacity flip.
+      // Pass 2 — the active VI heatmap per visible area. ADD the wanted layer
+      // (forces a tile load), REMOVE every other VI layer. Only opacity uses
+      // setPaintProperty on the live layer.
       for (const cap of caps) {
         if (!cap.scene_id) continue
         for (const l of cap.vi_layers) {
-          if (!l.url) continue
           const id = `drone-vi-${cap.scene_id}-${l.vi_code}`
-          const op = (l.vi_code === activeVi && isOn(cap.scene_id)) ? msOpacity : 0
-          if (!map.getSource(id)) {
-            registerDronePmtiles(l.url)
-            map.addSource(id, { type: 'raster', url: `pmtiles://${l.url}`, tileSize: 256 })
-            map.addLayer({
-              id, type: 'raster', source: id,
-              paint: {
-                'raster-opacity': op,
-                'raster-opacity-transition': { duration: 200, delay: 0 },
-                'raster-resampling': 'nearest',
-              },
-            }, beforeId)
-          } else {
-            map.setPaintProperty(id, 'raster-opacity', op)
+          const want = !!l.url && l.vi_code === activeVi && isOn(cap.scene_id)
+          if (want) {
+            if (!map.getSource(id)) {
+              registerDronePmtiles(l.url as string)
+              map.addSource(id, { type: 'raster', url: `pmtiles://${l.url}`, tileSize: 256 })
+              map.addLayer({
+                id, type: 'raster', source: id,
+                paint: { 'raster-opacity': msOpacity, 'raster-resampling': 'nearest' },
+              }, beforeId)
+            } else {
+              map.setPaintProperty(id, 'raster-opacity', msOpacity)
+            }
+          } else if (map.getLayer(id)) {
+            map.removeLayer(id)
+            map.removeSource(id)
           }
         }
       }

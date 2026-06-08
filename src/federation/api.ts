@@ -143,3 +143,23 @@ export async function abortDroneUpload(droneCourseId: number, uploadId: string):
     headers: { ...passHeaders() },
   })
 }
+
+// ── Raw-image archives (Phase D — store-only, offline stitch) ─────────────────
+
+export interface RawUpload {
+  id: string
+  status: string
+  total_bytes: number | null
+  created_at: string | null
+  label: string | null
+  download_url: string | null
+}
+
+/** The course's raw-image archives + presigned download links (pass-scoped). */
+export async function fetchRawUploads(droneCourseId: number): Promise<RawUpload[]> {
+  const res = await fetch(`${SATELLITE_API}/drone/courses/${droneCourseId}/raw-uploads`, {
+    headers: { ...passHeaders() },
+  })
+  if (!res.ok) throw new Error(`raw uploads failed: ${res.status}`)
+  return (await res.json()).uploads as RawUpload[]
+}

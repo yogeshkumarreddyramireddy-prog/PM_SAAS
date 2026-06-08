@@ -14,6 +14,16 @@ const SATELLITE_API =
 export interface DroneLayer {
   vi_code: string
   url: string | null
+  // [lo, hi] = the red→green value range the tiles are coloured against (for the
+  // legend; the colour stretch is baked into the PMTiles). May be null on tiles
+  // rendered before the anchored-adaptive change.
+  domain?: [number, number] | null
+}
+
+export interface DroneLegend {
+  kind: string
+  low_label: string
+  high_label: string
 }
 
 // One capture = one ortho area within a flight (course + date). It carries an
@@ -34,6 +44,7 @@ export interface DroneLatest {
   layers: DroneLayer[]        // back-compat: the primary capture's VI layers
   available_vis: string[]     // back-compat: the primary capture's indices
   captures: DroneCapture[]    // the whole latest flight (≥1 area)
+  legend?: DroneLegend | null // red→green legend labels (anchored-adaptive)
 }
 
 /** Latest processed drone scene for a drone course (pass-scoped, server-verified). */

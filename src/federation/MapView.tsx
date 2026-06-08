@@ -5,8 +5,8 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import { Protocol, PMTiles, FetchSource } from 'pmtiles'
 import { getClaims, getPass } from './pass'
 import {
-  fetchLatestDroneScene, fetchDroneZones, fetchDroneHistogram,
-  type DroneLatest, type DroneCapture, type ZonesResponse, type ZoneProps, type Histogram,
+  fetchLatestDroneScene, fetchDroneZones,
+  type DroneLatest, type DroneCapture, type ZonesResponse, type ZoneProps,
 } from './api'
 import UploadPanel from './UploadPanel'
 
@@ -84,23 +84,9 @@ function normalizeCaptures(s: DroneLatest | null): DroneCapture[] {
   }]
 }
 
-// Lerp a normalised value (0..1) to a brown→yellow→green ramp for the histogram.
-function viColor(t: number): string {
-  const x = Math.max(0, Math.min(1, t))
-  const stops: Array<[number, [number, number, number]]> = [
-    [0.0, [180, 83, 9]],   // brown  #b45309
-    [0.5, [234, 179, 8]],  // yellow #eab308
-    [1.0, [21, 128, 61]],  // green  #15803d
-  ]
-  let a = stops[0]
-  let b = stops[stops.length - 1]
-  for (let i = 0; i < stops.length - 1; i++) {
-    if (x >= stops[i][0] && x <= stops[i + 1][0]) { a = stops[i]; b = stops[i + 1]; break }
-  }
-  const f = b[0] === a[0] ? 0 : (x - a[0]) / (b[0] - a[0])
-  const c = a[1].map((av, i) => Math.round(av + (b[1][i] - av) * f))
-  return `rgb(${c[0]},${c[1]},${c[2]})`
-}
+// Red→green legend ramp. The VI tiles are already colour-stretched against each
+// layer's `domain` server-side; this just shows the scale in the info card.
+const RAMP = ['#dc2626', '#ea580c', '#f59e0b', '#eab308', '#a3e635', '#4ade80', '#22c55e', '#16a34a']
 
 // Phyto Score → status label + colour (mirrors the satellite's bands).
 function phytoStatus(score: number | null): { label: string; color: string } {
@@ -130,7 +116,6 @@ export default function MapView() {
   const [selected, setSelected] = useState<ZoneProps | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
-  const [hist, setHist] = useState<Histogram | null>(null)
   // Layer selector state. activeVi = the one MS heatmap on top (null = none, RGB
   // only). showRgb = the true-color base layer. visibleCaptures = which areas are
   // shown (all by default; non-overlapping captures show together).
@@ -182,16 +167,6 @@ export default function MapView() {
     return () => { alive = false }
   }, [claims?.drone_course_id, reloadKey])
 
-  // 2b. Fetch the histogram for the active index (the left-panel distribution).
-  useEffect(() => {
-    if (!claims || !activeVi) { setHist(null); return }
-    let alive = true
-    fetchDroneHistogram(claims.drone_course_id, activeVi)
-      .then((h) => { if (alive) setHist(h) })
-      .catch(() => { if (alive) setHist(null) })
-    return () => { alive = false }
-  }, [claims?.drone_course_id, activeVi, reloadKey])
-
   // 3. Fit to the scene's bounds when it arrives.
   useEffect(() => {
     const map = mapRef.current
@@ -202,11 +177,12 @@ export default function MapView() {
   }, [scene])
 
   // 4. Render the flight's layers: per capture, an RGB true-color layer on the
-  //    basemap and the active MS index heatmap on top. z-order = basemap → RGB →
-  //    heatmap → zones (achieved by adding ALL RGB before any heatmap, both below
-  //    zones-line). Switching/toggling just flips `raster-opacity` (200ms fade),
-  //    so it's instant at any zoom; the active index is added lazily but kept, so
-  //    switching back is instant too. Several non-overlapping areas render at once.
+  //    basemap and EVERY VI index heatmap on top. z-order = basemap → RGB →
+  //    heatmaps → zones (all RGB added before any heatmap, both below zones-line).
+  //    ALL index layers are added once when the flight loads — that preloads
+  //    their tiles — and switching/toggling only flips `raster-opacity` (200ms
+  //    fade). Nothing is added/removed or visibility-toggled on switch, so the
+  //    swap is INSTANT at any zoom. Several non-overlapping areas render at once.
   useEffect(() => {
     const map = mapRef.current
     if (!map || !scene) return
@@ -232,36 +208,29 @@ export default function MapView() {
         }
       }
 
-      // Pass 2 — the active MS index heatmap, per capture (lazily added, kept, on top of RGB).
-      for (const cap of caps) {
-        if (!cap.scene_id || !activeVi) continue
-        const layer = cap.vi_layers.find((vl) => vl.vi_code === activeVi)
-        if (!layer?.url) continue
-        const id = `drone-vi-${cap.scene_id}-${activeVi}`
-        const op = isOn(cap.scene_id) ? msOpacity : 0
-        if (!map.getSource(id)) {
-          registerDronePmtiles(layer.url)
-          map.addSource(id, { type: 'raster', url: `pmtiles://${layer.url}`, tileSize: 256 })
-          map.addLayer({
-            id, type: 'raster', source: id,
-            paint: {
-              'raster-opacity': op,
-              'raster-opacity-transition': { duration: 200, delay: 0 },
-              'raster-resampling': 'nearest',
-            },
-          }, beforeId)
-        } else {
-          map.setPaintProperty(id, 'raster-opacity', op)
-        }
-      }
-
-      // Pass 3 — hide any previously-added heatmap layers for non-active indices.
+      // Pass 2 — PRELOAD every VI index layer (each capture × each index). The
+      // active index is opaque; the rest are transparent (but loaded), so a
+      // switch is just an opacity flip.
       for (const cap of caps) {
         if (!cap.scene_id) continue
-        for (const vl of cap.vi_layers) {
-          if (vl.vi_code === activeVi) continue
-          const id = `drone-vi-${cap.scene_id}-${vl.vi_code}`
-          if (map.getLayer(id)) map.setPaintProperty(id, 'raster-opacity', 0)
+        for (const l of cap.vi_layers) {
+          if (!l.url) continue
+          const id = `drone-vi-${cap.scene_id}-${l.vi_code}`
+          const op = (l.vi_code === activeVi && isOn(cap.scene_id)) ? msOpacity : 0
+          if (!map.getSource(id)) {
+            registerDronePmtiles(l.url)
+            map.addSource(id, { type: 'raster', url: `pmtiles://${l.url}`, tileSize: 256 })
+            map.addLayer({
+              id, type: 'raster', source: id,
+              paint: {
+                'raster-opacity': op,
+                'raster-opacity-transition': { duration: 200, delay: 0 },
+                'raster-resampling': 'nearest',
+              },
+            }, beforeId)
+          } else {
+            map.setPaintProperty(id, 'raster-opacity', op)
+          }
         }
       }
     }
@@ -382,34 +351,21 @@ export default function MapView() {
             No processed maps yet — check back after the flight is processed.
           </div>
         )}
-        {hist && hist.counts.length > 1 && activeVi && (() => {
-          const max = Math.max(...hist.counts) || 1
-          const lo = hist.bin_edges[0]
-          const hi = hist.bin_edges[hist.bin_edges.length - 1]
-          const span = (hi - lo) || 1
+        {scene && activeVi && (() => {
+          // Domain = the active index's red→green range (primary capture). The
+          // tiles are already coloured server-side; this shows the scale.
+          const domain = scene.layers.find((l) => l.vi_code === activeVi)?.domain
+          const lowLabel = scene.legend?.low_label || 'Stressed'
+          const highLabel = scene.legend?.high_label || 'Healthy'
           return (
             <div style={{ marginTop: 10 }}>
               <div style={{ fontSize: 11, fontWeight: 600, color: '#475569', marginBottom: 4 }}>
-                {(VI_LABELS[activeVi] || activeVi.toUpperCase())} distribution
+                {VI_LABELS[activeVi] || activeVi.toUpperCase()}
               </div>
-              <div style={{ display: 'flex', alignItems: 'flex-end', gap: 1, height: 44 }}>
-                {hist.counts.map((c, i) => {
-                  const mid = (hist.bin_edges[i] + hist.bin_edges[i + 1]) / 2
-                  return (
-                    <div
-                      key={i}
-                      title={`${mid.toFixed(2)} · ${c.toLocaleString()}`}
-                      style={{
-                        flex: 1, height: `${Math.max(2, (c / max) * 44)}px`,
-                        background: viColor((mid - lo) / span), borderRadius: 1,
-                      }}
-                    />
-                  )
-                })}
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9.5, color: '#94a3b8', marginTop: 2 }}>
-                <span>{lo?.toFixed(2)}</span>
-                <span>{hi?.toFixed(2)}</span>
+              <div style={{ height: 8, borderRadius: 4, background: `linear-gradient(to right, ${RAMP.join(',')})` }} />
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#475569', marginTop: 3 }}>
+                <span>{lowLabel}{domain ? ` · ${domain[0].toFixed(2)}` : ''}</span>
+                <span>{highLabel}{domain ? ` · ${domain[1].toFixed(2)}` : ''}</span>
               </div>
             </div>
           )

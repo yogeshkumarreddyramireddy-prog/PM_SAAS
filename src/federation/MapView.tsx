@@ -5,8 +5,8 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import { Protocol, PMTiles, FetchSource } from 'pmtiles'
 import { getClaims, getPass } from './pass'
 import {
-  fetchLatestDroneScene, fetchDroneZones,
-  type DroneLatest, type DroneCapture, type ZonesResponse, type ZoneProps,
+  fetchLatestDroneScene, fetchDroneZones, fetchDroneHistogram,
+  type DroneLatest, type DroneCapture, type ZonesResponse, type ZoneProps, type Histogram,
 } from './api'
 import UploadPanel from './UploadPanel'
 
@@ -88,6 +88,18 @@ function normalizeCaptures(s: DroneLatest | null): DroneCapture[] {
 // layer's `domain` server-side; this just shows the scale in the info card.
 const RAMP = ['#dc2626', '#ea580c', '#f59e0b', '#eab308', '#a3e635', '#4ade80', '#22c55e', '#16a34a']
 
+// Interpolate the RAMP at t∈[0,1] (used to colour the histogram bars by value so
+// they match the legend).
+function rampColor(t: number): string {
+  const x = Math.max(0, Math.min(1, t)) * (RAMP.length - 1)
+  const i = Math.min(RAMP.length - 2, Math.floor(x))
+  const f = x - i
+  const hex = (h: string) => [1, 3, 5].map((k) => parseInt(h.slice(k, k + 2), 16))
+  const a = hex(RAMP[i])
+  const b = hex(RAMP[i + 1])
+  return `rgb(${a.map((av, k) => Math.round(av + (b[k] - av) * f)).join(',')})`
+}
+
 // Phyto Score → status label + colour (mirrors the satellite's bands).
 function phytoStatus(score: number | null): { label: string; color: string } {
   if (score == null) return { label: 'No reading', color: '#94a3b8' }
@@ -116,6 +128,7 @@ export default function MapView() {
   const [selected, setSelected] = useState<ZoneProps | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
+  const [hist, setHist] = useState<Histogram | null>(null)
   // Layer selector state. activeVi = the one MS heatmap on top (null = none, RGB
   // only). showRgb = the true-color base layer. visibleCaptures = which areas are
   // shown (all by default; non-overlapping captures show together).
@@ -166,6 +179,16 @@ export default function MapView() {
       .catch(() => { /* zones are best-effort; the heatmap still renders */ })
     return () => { alive = false }
   }, [claims?.drone_course_id, reloadKey])
+
+  // 2b. Histogram for the active index (flight-aggregated server-side).
+  useEffect(() => {
+    if (!claims || !activeVi) { setHist(null); return }
+    let alive = true
+    fetchDroneHistogram(claims.drone_course_id, activeVi)
+      .then((h) => { if (alive) setHist(h) })
+      .catch(() => { if (alive) setHist(null) })
+    return () => { alive = false }
+  }, [claims?.drone_course_id, activeVi, reloadKey])
 
   // 3. Fit to the scene's bounds when it arrives.
   useEffect(() => {
@@ -372,6 +395,31 @@ export default function MapView() {
                 <span>{lowLabel}{domain ? ` · ${domain[0].toFixed(2)}` : ''}</span>
                 <span>{highLabel}{domain ? ` · ${domain[1].toFixed(2)}` : ''}</span>
               </div>
+              {hist && hist.counts.length > 1 && (() => {
+                // Distribution within the legend's domain (most VI mass sits in a
+                // narrow band), bars coloured to match the ramp.
+                const lo = domain ? domain[0] : hist.bin_edges[0]
+                const hi = domain ? domain[1] : hist.bin_edges[hist.bin_edges.length - 1]
+                const span = (hi - lo) || 1
+                const all = hist.counts.map((c, i) => ({ c, mid: (hist.bin_edges[i] + hist.bin_edges[i + 1]) / 2 }))
+                const inDomain = all.filter((b) => b.mid >= lo && b.mid <= hi)
+                const bars = inDomain.length >= 2 ? inDomain : all
+                const max = Math.max(...bars.map((b) => b.c), 1)
+                return (
+                  <div style={{ display: 'flex', alignItems: 'flex-end', gap: 1, height: 32, marginTop: 6 }}>
+                    {bars.map((b, i) => (
+                      <div
+                        key={i}
+                        title={`${b.mid.toFixed(2)} · ${b.c.toLocaleString()}`}
+                        style={{
+                          flex: 1, height: `${Math.max(2, (b.c / max) * 32)}px`,
+                          background: rampColor((b.mid - lo) / span), borderRadius: 1,
+                        }}
+                      />
+                    ))}
+                  </div>
+                )
+              })()}
             </div>
           )
         })()}

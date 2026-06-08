@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import {
-  initDroneUpload, getPartUrls, completeDroneUpload, abortDroneUpload, fetchRawUploads,
-  type UploadPart, type RawUpload,
+  initDroneUpload, getPartUrls, completeDroneUpload, abortDroneUpload, fetchUploads, deleteUpload,
+  type UploadPart, type UploadItem,
 } from './api'
 
 // Desktop-only resumable multipart uploader for a drone MS orthomosaic. The
@@ -11,6 +11,9 @@ import {
 
 type Phase = 'idle' | 'uploading' | 'finalizing' | 'done' | 'error'
 const URL_BATCH = 20 // re-mint presigned URLs this many parts at a time
+const KIND_LABEL: Record<string, string> = {
+  orthomosaic_ms: 'MS', orthomosaic_rgb: 'RGB', raw_frames_archive: 'Raw',
+}
 
 export default function UploadPanel({
   droneCourseId, onDone,
@@ -27,14 +30,32 @@ export default function UploadPanel({
   // images (a .zip, stored only for offline stitching — Phase D).
   const [kind, setKind] = useState<'orthomosaic_ms' | 'orthomosaic_rgb' | 'raw_frames_archive'>('orthomosaic_ms')
   const isRaw = kind === 'raw_frames_archive'
-  const [rawUploads, setRawUploads] = useState<RawUpload[]>([])
+  const [uploads, setUploads] = useState<UploadItem[]>([])
+  const [deleting, setDeleting] = useState<string | null>(null)
 
-  // List existing raw archives so a super-admin can download + stitch them.
+  // List all uploads (MS/RGB/raw) so they can be downloaded (raw) or deleted.
+  const refreshUploads = () =>
+    fetchUploads(droneCourseId).then(setUploads).catch(() => { /* best-effort */ })
   useEffect(() => {
     let alive = true
-    fetchRawUploads(droneCourseId).then((u) => { if (alive) setRawUploads(u) }).catch(() => { /* best-effort */ })
+    fetchUploads(droneCourseId).then((u) => { if (alive) setUploads(u) }).catch(() => { /* best-effort */ })
     return () => { alive = false }
   }, [droneCourseId])
+
+  async function handleDelete(u: UploadItem) {
+    const what = u.label ? `"${u.label}"` : `this ${KIND_LABEL[u.kind] || u.kind} upload`
+    if (!window.confirm(`Delete ${what} and the maps generated from it? This can't be undone.`)) return
+    setDeleting(u.id)
+    try {
+      await deleteUpload(droneCourseId, u.id)
+      setUploads((prev) => prev.filter((x) => x.id !== u.id))
+      onDone?.() // refresh the viewer — the area may disappear
+    } catch {
+      window.alert('Could not delete this upload. Please try again.')
+    } finally {
+      setDeleting(null)
+    }
+  }
 
   const isTouch =
     typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches
@@ -75,7 +96,7 @@ export default function UploadPanel({
       setMsg(isRaw
         ? 'Uploaded. Stored for offline stitching.'
         : 'Uploaded. Processing your map — it will appear in the viewer shortly.')
-      fetchRawUploads(droneCourseId).then(setRawUploads).catch(() => { /* best-effort */ })
+      refreshUploads()
       onDone?.()
     } catch (e) {
       if (uploadId) { try { await abortDroneUpload(droneCourseId, uploadId) } catch { /* best-effort */ } }
@@ -192,21 +213,31 @@ export default function UploadPanel({
         {phase === 'done' ? 'Upload another' : 'Upload'}
       </button>
 
-      {rawUploads.length > 0 && (
+      {uploads.length > 0 && (
         <div style={{ marginTop: 4, borderTop: '1px solid #e2e8f0', paddingTop: 8 }}>
           <div style={{ fontSize: 11, fontWeight: 600, color: '#475569', marginBottom: 4 }}>
-            Raw uploads (for stitching)
+            Manage uploads
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 150, overflowY: 'auto' }}>
-            {rawUploads.map((u) => (
-              <div key={u.id} style={{ fontSize: 11, color: '#475569', display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {u.label || 'raw.zip'}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 5, maxHeight: 170, overflowY: 'auto' }}>
+            {uploads.map((u) => (
+              <div key={u.id} style={{ fontSize: 11, color: '#475569', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <b>{KIND_LABEL[u.kind] || u.kind}</b>
+                  {u.label ? ` · ${u.label}` : ''}
                   {u.total_bytes ? ` · ${(u.total_bytes / 1e9).toFixed(2)} GB` : ''}
                 </span>
-                {u.download_url
-                  ? <a href={u.download_url} target="_blank" rel="noopener" style={{ color: '#16a34a', fontWeight: 600, textDecoration: 'none', flexShrink: 0 }}>Download</a>
-                  : <span style={{ color: '#94a3b8', flexShrink: 0 }}>{u.status}</span>}
+                {u.download_url && (
+                  <a href={u.download_url} target="_blank" rel="noopener"
+                     style={{ color: '#16a34a', fontWeight: 600, textDecoration: 'none', flexShrink: 0 }}>Download</a>
+                )}
+                <button
+                  type="button"
+                  disabled={deleting === u.id}
+                  onClick={() => handleDelete(u)}
+                  style={{ border: 'none', background: 'transparent', color: '#dc2626', cursor: deleting === u.id ? 'default' : 'pointer', fontWeight: 600, flexShrink: 0, padding: 0 }}
+                >
+                  {deleting === u.id ? '…' : 'Delete'}
+                </button>
               </div>
             ))}
           </div>

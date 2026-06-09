@@ -84,20 +84,182 @@ function normalizeCaptures(s: DroneLatest | null): DroneCapture[] {
   }]
 }
 
-// Red→green legend ramp. The VI tiles are already colour-stretched against each
-// layer's `domain` server-side; this just shows the scale in the info card.
-const RAMP = ['#dc2626', '#ea580c', '#f59e0b', '#eab308', '#a3e635', '#4ade80', '#22c55e', '#16a34a']
+// Per-VI red→green ramp — the SAME palette the satellite viewer uses
+// (VI_RAMP_STANDARD), so the drone legend, histogram and slider read identically
+// to the satellite "Plant Health" panel. The VI tiles are already colour-
+// stretched against each layer's `domain` server-side; these just show the scale.
+const VI_RAMP: Record<string, readonly [string, string, string, string, string]> = {
+  ndvi: ['#dc2626', '#f59e0b', '#eab308', '#22c55e', '#14532d'],
+  ndre: ['#dc2626', '#f59e0b', '#eab308', '#22c55e', '#14532d'],
+  gndvi: ['#dc2626', '#f59e0b', '#eab308', '#22c55e', '#14532d'],
+  osavi: ['#dc2626', '#f59e0b', '#eab308', '#22c55e', '#14532d'],
+}
+const DEFAULT_VI_RAMP = VI_RAMP.ndvi
+function viRampFor(code: string): readonly [string, string, string, string, string] {
+  return VI_RAMP[code] ?? DEFAULT_VI_RAMP
+}
+function viGradientFor(code: string): string {
+  const r = viRampFor(code)
+  return `linear-gradient(to right, ${r[0]} 0%, ${r[1]} 25%, ${r[2]} 50%, ${r[3]} 75%, ${r[4]} 100%)`
+}
 
-// Interpolate the RAMP at t∈[0,1] (used to colour the histogram bars by value so
-// they match the legend).
-function rampColor(t: number): string {
-  const x = Math.max(0, Math.min(1, t)) * (RAMP.length - 1)
-  const i = Math.min(RAMP.length - 2, Math.floor(x))
-  const f = x - i
-  const hex = (h: string) => [1, 3, 5].map((k) => parseInt(h.slice(k, k + 2), 16))
-  const a = hex(RAMP[i])
-  const b = hex(RAMP[i + 1])
-  return `rgb(${a.map((av, k) => Math.round(av + (b[k] - av) * f)).join(',')})`
+// One-line plain-language description per index (mirrors the satellite vi.options).
+const VI_DESC: Record<string, string> = {
+  ndvi: 'General canopy vigor.',
+  ndre: 'Best for spotting chlorophyll on thick, established turf.',
+  gndvi: 'Tracks overall greenness through chlorophyll.',
+  osavi: 'Best for thin or new turf where soil shows through.',
+}
+
+// Course-wide average of the active VI for the "Course average" card — area-
+// weighted across zones that have a reading (mirrors the satellite's
+// computeHealthSummary). Falls back to a count-weighted mean if area is absent.
+function computeDroneAverage(zones: ZonesResponse | null, viCode: string | null): number | null {
+  if (!zones || !viCode) return null
+  let wSum = 0, aSum = 0, cSum = 0, n = 0
+  for (const f of zones.features) {
+    const m = f.properties.vi_means?.[viCode]
+    if (m == null) continue
+    const a = f.properties.area_m2 ?? 0
+    wSum += m * a; aSum += a; cSum += m; n += 1
+  }
+  if (n === 0) return null
+  return aSum > 0 ? wSum / aSum : cSum / n
+}
+
+// The satellite "Plant Health" panel, ported to the drone viewer's inline-styled
+// card: a gradient-filled area-chart histogram + a read-only min/max slider
+// legend + the course-average hero metric. Same geometry/maths as the satellite
+// VIHistogram (W=240, H=70, cubic-Bézier, 5-stop ramp) so they look identical.
+function PlantHealthCard({
+  viCode, hist, domain, average, lowLabel, highLabel,
+}: {
+  viCode: string
+  hist: Histogram | null
+  domain: [number, number] | null | undefined
+  average: number | null
+  lowLabel: string
+  highLabel: string
+}) {
+  const W = 240, H = 70
+  const ramp = viRampFor(viCode)
+  const gradId = `drone-vi-grad-${viCode}`
+
+  // Auto-fit the working domain to the populated histogram range (so a 0.4..0.9
+  // NDVI distribution fills the chart instead of being a sliver). Fall back to
+  // the layer's server domain, then [0, 1].
+  let lo = domain?.[0] ?? 0
+  let hi = domain?.[1] ?? 1
+  if (hist?.counts?.length) {
+    for (let i = 0; i < hist.counts.length; i++) {
+      if (hist.counts[i] > 0) { lo = hist.bin_edges[i]; break }
+    }
+    for (let i = hist.counts.length - 1; i >= 0; i--) {
+      if (hist.counts[i] > 0) { hi = hist.bin_edges[i + 1]; break }
+    }
+  }
+  if (hi - lo < 0.05) hi = lo + 0.05
+  const dSpan = Math.max(1e-6, hi - lo)
+
+  // Smooth area-chart path over the bins inside [lo, hi].
+  let pathD = ''
+  if (hist?.counts?.length) {
+    const { counts, bin_edges: edges } = hist
+    const maxCount = Math.max(...counts, 1)
+    const xOf = (v: number) => Math.max(0, Math.min(W, ((v - lo) / dSpan) * W))
+    const pts: Array<[number, number]> = []
+    for (let i = 0; i < counts.length; i++) {
+      const mid = (edges[i] + edges[i + 1]) / 2
+      if (mid < lo || mid > hi) continue
+      pts.push([xOf(mid), H - (counts[i] / maxCount) * H])
+    }
+    if (pts.length === 0) pts.push([W / 2, H])
+    pathD = `M 0 ${H} L ${pts[0][0]} ${pts[0][1]}`
+    for (let i = 0; i < pts.length - 1; i++) {
+      const [x1, y1] = pts[i]
+      const [x2, y2] = pts[i + 1]
+      const cx = (x1 + x2) / 2
+      pathD += ` C ${cx} ${y1}, ${cx} ${y2}, ${x2} ${y2}`
+    }
+    pathD += ` L ${W} ${H} Z`
+  }
+
+  const pill = (leftPct: number, text: string) => (
+    <span
+      style={{
+        position: 'absolute', top: 15, left: `${leftPct}%`, transform: 'translateX(-50%)',
+        padding: '1px 6px', borderRadius: 6, fontSize: 11, fontWeight: 600, color: '#fff',
+        background: '#16a34a', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums',
+        boxShadow: '0 1px 2px rgba(0,0,0,0.15)',
+      }}
+    >{text}</span>
+  )
+
+  return (
+    <div style={{ marginTop: 10, userSelect: 'none' }}>
+      <div style={{ fontSize: 12, fontWeight: 600, color: '#0f172a' }}>
+        {VI_LABELS[viCode] || viCode.toUpperCase()}
+      </div>
+      <div style={{ fontSize: 11, color: '#64748b', marginBottom: 6 }}>{VI_DESC[viCode] || ''}</div>
+
+      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 56, display: 'block' }}>
+        <defs>
+          <linearGradient id={gradId} x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stopColor={ramp[0]} />
+            <stop offset="25%" stopColor={ramp[1]} />
+            <stop offset="50%" stopColor={ramp[2]} />
+            <stop offset="75%" stopColor={ramp[3]} />
+            <stop offset="100%" stopColor={ramp[4]} />
+          </linearGradient>
+        </defs>
+        {pathD && <path d={pathD} fill={`url(#${gradId})`} fillOpacity={0.9} />}
+        {pathD && <path d={pathD.replace(/Z$/, '')} fill="none" stroke="rgba(0,0,0,0.10)" strokeWidth={0.6} />}
+      </svg>
+
+      {/* Read-only min/max legend: gradient track + handles + value pills. */}
+      <div style={{ position: 'relative', padding: '6px 4px 26px' }}>
+        <div style={{ position: 'relative', height: 6, borderRadius: 999, backgroundImage: viGradientFor(viCode) }}>
+          {[0, 100].map((p) => (
+            <span
+              key={p}
+              style={{
+                position: 'absolute', top: '50%', left: `${p}%`, transform: 'translate(-50%,-50%)',
+                width: 14, height: 14, borderRadius: '50%', background: '#fff',
+                border: '2px solid #16a34a', boxShadow: '0 1px 2px rgba(0,0,0,0.2)',
+              }}
+            />
+          ))}
+          {pill(0, lo.toFixed(2))}
+          {pill(100, hi.toFixed(2))}
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#475569', marginTop: -4 }}>
+        <span>{lowLabel}</span>
+        <span>{highLabel}</span>
+      </div>
+
+      {average != null && (
+        <div
+          style={{
+            marginTop: 10, display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between',
+            gap: 12, borderRadius: 10, padding: '8px 10px',
+            background: 'rgba(255,255,255,0.55)', border: '1px solid rgba(15,23,42,0.06)',
+          }}
+        >
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', color: '#64748b', textTransform: 'uppercase' }}>
+              Course average
+            </div>
+            <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>{VI_LABELS[viCode] || viCode.toUpperCase()}</div>
+          </div>
+          <div style={{ fontSize: 22, fontWeight: 600, lineHeight: 1, color: '#0f172a', fontVariantNumeric: 'tabular-nums', letterSpacing: '-0.02em' }}>
+            {average.toFixed(2)}
+          </div>
+        </div>
+      )}
+    </div>
+  )
 }
 
 // Phyto Score → status label + colour (mirrors the satellite's bands).
@@ -135,6 +297,12 @@ export default function MapView() {
   const [showRgb, setShowRgb] = useState(true)
   const [msOpacity, setMsOpacity] = useState(1)
   const [visibleCaptures, setVisibleCaptures] = useState<Set<string>>(new Set())
+  // Persistent "the style has loaded once" gate. We DON'T use map.isStyleLoaded()
+  // (it flips back to false transiently while tiles stream) nor map.once('load')
+  // (a one-shot that never re-fires) — both silently dropped VI switches unless
+  // the map happened to be settled, which is why switching only worked after a
+  // big zoom. This mirrors the satellite viewer's `mapReady` gate exactly.
+  const [mapReady, setMapReady] = useState(false)
 
   // 1. Init the map once.
   useEffect(() => {
@@ -155,8 +323,9 @@ export default function MapView() {
       if (/abort/i.test(msg) || (e?.error as { name?: string })?.name === 'AbortError') return
       console.warn('[drone map]', msg || e)
     })
+    map.on('load', () => setMapReady(true))
     mapRef.current = map
-    return () => { map.remove(); mapRef.current = null }
+    return () => { map.remove(); mapRef.current = null; setMapReady(false) }
   }, [])
 
   // 2. Fetch the latest scene + the zones for this pass's course.
@@ -193,11 +362,10 @@ export default function MapView() {
   // 3. Fit to the scene's bounds when it arrives.
   useEffect(() => {
     const map = mapRef.current
-    if (!map || !scene?.bounds) return
+    if (!map || !mapReady || !scene?.bounds) return
     const [w, s, e, n] = scene.bounds
-    const fit = () => map.fitBounds([[w, s], [e, n]], { padding: 50, duration: 0 })
-    if (map.isStyleLoaded()) fit(); else map.once('load', fit)
-  }, [scene])
+    map.fitBounds([[w, s], [e, n]], { padding: 50, duration: 0 })
+  }, [scene, mapReady])
 
   // 4. Render the flight's layers: per capture, an RGB true-color layer on the
   //    basemap and the active VI heatmap on top. z-order = basemap → RGB →
@@ -213,7 +381,7 @@ export default function MapView() {
   //    pure setPaintProperty on the live layer.
   useEffect(() => {
     const map = mapRef.current
-    if (!map || !scene) return
+    if (!map || !mapReady || !scene) return
     const apply = () => {
       const caps = normalizeCaptures(scene)
       const beforeId = map.getLayer('zones-line') ? 'zones-line' : undefined
@@ -229,7 +397,7 @@ export default function MapView() {
           map.addSource(id, { type: 'raster', url: `pmtiles://${cap.rgb_url}`, tileSize: 256 })
           map.addLayer({
             id, type: 'raster', source: id,
-            paint: { 'raster-opacity': op, 'raster-opacity-transition': { duration: 200, delay: 0 } },
+            paint: { 'raster-opacity': op },
           }, beforeId)
         } else {
           map.setPaintProperty(id, 'raster-opacity', op)
@@ -261,14 +429,25 @@ export default function MapView() {
           }
         }
       }
+
+      // Keep the zone outlines + hole labels above the freshly (re-)added
+      // rasters (addLayer with a beforeId already targets zones-line, but the
+      // RGB pass + a missing zones layer on first paint can reorder them).
+      ;['zones-fill', 'zones-line', 'zones-label'].forEach((id) => {
+        if (map.getLayer(id)) map.moveLayer(id)
+      })
+      // Nudge a repaint so the just-added source requests tiles for the CURRENT
+      // viewport immediately, instead of waiting for the next camera move (the
+      // "only switches when I zoom in" symptom).
+      map.triggerRepaint()
     }
-    if (map.isStyleLoaded()) apply(); else map.once('load', apply)
-  }, [scene, activeVi, showRgb, msOpacity, visibleCaptures])
+    apply()
+  }, [scene, activeVi, showRgb, msOpacity, visibleCaptures, mapReady])
 
   // 5. Render the zone outlines + hole-numbered labels + click-to-detail.
   useEffect(() => {
     const map = mapRef.current
-    if (!map || !zones || zones.features.length === 0) return
+    if (!map || !mapReady || !zones || zones.features.length === 0) return
     const apply = () => {
       const data = zones as unknown as GeoJSON.FeatureCollection
       const src = map.getSource('zones') as maplibregl.GeoJSONSource | undefined
@@ -309,8 +488,8 @@ export default function MapView() {
       map.on('mouseenter', 'zones-fill', () => { map.getCanvas().style.cursor = 'pointer' })
       map.on('mouseleave', 'zones-fill', () => { map.getCanvas().style.cursor = '' })
     }
-    if (map.isStyleLoaded()) apply(); else map.once('load', apply)
-  }, [zones])
+    apply()
+  }, [zones, mapReady])
 
   if (!claims) {
     return (
@@ -379,50 +558,16 @@ export default function MapView() {
             No processed maps yet — check back after the flight is processed.
           </div>
         )}
-        {scene && activeVi && (() => {
-          // Domain = the active index's red→green range (primary capture). The
-          // tiles are already coloured server-side; this shows the scale.
-          const domain = scene.layers.find((l) => l.vi_code === activeVi)?.domain
-          const lowLabel = scene.legend?.low_label || 'Stressed'
-          const highLabel = scene.legend?.high_label || 'Healthy'
-          return (
-            <div style={{ marginTop: 10 }}>
-              <div style={{ fontSize: 11, fontWeight: 600, color: '#475569', marginBottom: 4 }}>
-                {VI_LABELS[activeVi] || activeVi.toUpperCase()}
-              </div>
-              <div style={{ height: 8, borderRadius: 4, background: `linear-gradient(to right, ${RAMP.join(',')})` }} />
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#475569', marginTop: 3 }}>
-                <span>{lowLabel}{domain ? ` · ${domain[0].toFixed(2)}` : ''}</span>
-                <span>{highLabel}{domain ? ` · ${domain[1].toFixed(2)}` : ''}</span>
-              </div>
-              {hist && hist.counts.length > 1 && (() => {
-                // Distribution within the legend's domain (most VI mass sits in a
-                // narrow band), bars coloured to match the ramp.
-                const lo = domain ? domain[0] : hist.bin_edges[0]
-                const hi = domain ? domain[1] : hist.bin_edges[hist.bin_edges.length - 1]
-                const span = (hi - lo) || 1
-                const all = hist.counts.map((c, i) => ({ c, mid: (hist.bin_edges[i] + hist.bin_edges[i + 1]) / 2 }))
-                const inDomain = all.filter((b) => b.mid >= lo && b.mid <= hi)
-                const bars = inDomain.length >= 2 ? inDomain : all
-                const max = Math.max(...bars.map((b) => b.c), 1)
-                return (
-                  <div style={{ display: 'flex', alignItems: 'flex-end', gap: 1, height: 32, marginTop: 6 }}>
-                    {bars.map((b, i) => (
-                      <div
-                        key={i}
-                        title={`${b.mid.toFixed(2)} · ${b.c.toLocaleString()}`}
-                        style={{
-                          flex: 1, height: `${Math.max(2, (b.c / max) * 32)}px`,
-                          background: rampColor((b.mid - lo) / span), borderRadius: 1,
-                        }}
-                      />
-                    ))}
-                  </div>
-                )
-              })()}
-            </div>
-          )
-        })()}
+        {scene && activeVi && (
+          <PlantHealthCard
+            viCode={activeVi}
+            hist={hist}
+            domain={scene.layers.find((l) => l.vi_code === activeVi)?.domain ?? null}
+            average={computeDroneAverage(zones, activeVi)}
+            lowLabel={scene.legend?.low_label || 'Stressed'}
+            highLabel={scene.legend?.high_label || 'Healthy'}
+          />
+        )}
       </div>
 
       {view === 'upload' && (claims.scope === 'upload' || claims.is_super_admin) && (

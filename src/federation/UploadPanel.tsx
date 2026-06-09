@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import {
   initDroneUpload, getPartUrls, completeDroneUpload, abortDroneUpload, fetchUploads, deleteUpload,
-  type UploadPart, type UploadItem,
+  fetchDroneScenes, deleteDroneScene,
+  type UploadPart, type UploadItem, type DroneSceneItem,
 } from './api'
 
 // Desktop-only resumable multipart uploader for a drone MS orthomosaic. The
@@ -32,13 +33,21 @@ export default function UploadPanel({
   const isRaw = kind === 'raw_frames_archive'
   const [uploads, setUploads] = useState<UploadItem[]>([])
   const [deleting, setDeleting] = useState<string | null>(null)
+  // "Map areas" = the scenes currently shown on the map, keyed by Scene. This
+  // also lists migrated/legacy areas that have NO upload row, so they're still
+  // removable (the "deleted everything but maps still show" case).
+  const [scenes, setScenes] = useState<DroneSceneItem[]>([])
+  const [deletingScene, setDeletingScene] = useState<string | null>(null)
 
-  // List all uploads (MS/RGB/raw) so they can be downloaded (raw) or deleted.
-  const refreshUploads = () =>
+  // List uploads (MS/RGB/raw) + the map areas (scenes) shown on the course.
+  const refreshUploads = () => {
     fetchUploads(droneCourseId).then(setUploads).catch(() => { /* best-effort */ })
+    fetchDroneScenes(droneCourseId).then(setScenes).catch(() => { /* best-effort */ })
+  }
   useEffect(() => {
     let alive = true
     fetchUploads(droneCourseId).then((u) => { if (alive) setUploads(u) }).catch(() => { /* best-effort */ })
+    fetchDroneScenes(droneCourseId).then((s) => { if (alive) setScenes(s) }).catch(() => { /* best-effort */ })
     return () => { alive = false }
   }, [droneCourseId])
 
@@ -49,11 +58,28 @@ export default function UploadPanel({
     try {
       await deleteUpload(droneCourseId, u.id)
       setUploads((prev) => prev.filter((x) => x.id !== u.id))
+      fetchDroneScenes(droneCourseId).then(setScenes).catch(() => { /* best-effort */ })
       onDone?.() // refresh the viewer — the area may disappear
     } catch {
       window.alert('Could not delete this upload. Please try again.')
     } finally {
       setDeleting(null)
+    }
+  }
+
+  async function handleDeleteScene(s: DroneSceneItem) {
+    const what = s.label ? `the map area "${s.label}"` : 'this map area'
+    if (!window.confirm(`Delete ${what} and everything it shows on the map? This can't be undone.`)) return
+    setDeletingScene(s.scene_id)
+    try {
+      await deleteDroneScene(droneCourseId, s.scene_id)
+      setScenes((prev) => prev.filter((x) => x.scene_id !== s.scene_id))
+      fetchUploads(droneCourseId).then(setUploads).catch(() => { /* best-effort */ })
+      onDone?.() // refresh the viewer — the area disappears
+    } catch {
+      window.alert('Could not delete this map area. Please try again.')
+    } finally {
+      setDeletingScene(null)
     }
   }
 
@@ -237,6 +263,37 @@ export default function UploadPanel({
                   style={{ border: 'none', background: 'transparent', color: '#dc2626', cursor: deleting === u.id ? 'default' : 'pointer', fontWeight: 600, flexShrink: 0, padding: 0 }}
                 >
                   {deleting === u.id ? '…' : 'Delete'}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {scenes.length > 0 && (
+        <div style={{ marginTop: 4, borderTop: '1px solid #e2e8f0', paddingTop: 8 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: '#475569', marginBottom: 2 }}>
+            Map areas
+          </div>
+          <div style={{ fontSize: 10, color: '#94a3b8', marginBottom: 5 }}>
+            Everything currently shown on the map. Deleting an area removes it for good.
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 5, maxHeight: 170, overflowY: 'auto' }}>
+            {scenes.map((s) => (
+              <div key={s.scene_id} style={{ fontSize: 11, color: '#475569', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <b>{s.label || 'Area'}</b>
+                  {s.acquired_at ? ` · ${new Date(s.acquired_at).toLocaleDateString()}` : ''}
+                  {` · ${s.vi_count}${s.has_rgb ? '+RGB' : ''}`}
+                  {!s.has_upload ? ' · legacy' : ''}
+                </span>
+                <button
+                  type="button"
+                  disabled={deletingScene === s.scene_id}
+                  onClick={() => handleDeleteScene(s)}
+                  style={{ border: 'none', background: 'transparent', color: '#dc2626', cursor: deletingScene === s.scene_id ? 'default' : 'pointer', fontWeight: 600, flexShrink: 0, padding: 0 }}
+                >
+                  {deletingScene === s.scene_id ? '…' : 'Delete'}
                 </button>
               </div>
             ))}

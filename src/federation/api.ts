@@ -203,3 +203,34 @@ export async function deleteUpload(droneCourseId: number, uploadId: string): Pro
   })
   if (!res.ok) throw new Error(`delete failed: ${res.status}`)
 }
+
+// ── Map areas (scenes) ────────────────────────────────────────────────────────
+// Keyed by Scene, not upload — so migrated/legacy areas that have no upload row
+// (and therefore can't be removed from "Manage uploads") are still deletable.
+
+export interface DroneSceneItem {
+  scene_id: string
+  label: string | null
+  acquired_at: string | null
+  vi_count: number
+  has_rgb: boolean
+  has_upload: boolean
+}
+
+/** Every drone map area currently shown on the course (latest flight). */
+export async function fetchDroneScenes(droneCourseId: number): Promise<DroneSceneItem[]> {
+  const res = await fetch(`${SATELLITE_API}/drone/courses/${droneCourseId}/scenes`, {
+    headers: { ...passHeaders() },
+  })
+  if (!res.ok) throw new Error(`scenes failed: ${res.status}`)
+  return (await res.json()).scenes as DroneSceneItem[]
+}
+
+/** Delete a whole map area (its heatmaps/RGB + analytics + any upload rows). */
+export async function deleteDroneScene(droneCourseId: number, sceneId: string): Promise<void> {
+  const res = await fetch(`${SATELLITE_API}/drone/courses/${droneCourseId}/scenes/${sceneId}`, {
+    method: 'DELETE',
+    headers: { ...passHeaders() },
+  })
+  if (!res.ok) throw new Error(`scene delete failed: ${res.status}`)
+}

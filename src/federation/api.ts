@@ -94,6 +94,10 @@ export interface ZoneProps {
   zone_class: string
   area_m2: number | null
   phyto_score: number | null
+  // Absolute, baseline-free 0–100 vegetation-vigor score. The drone viewer
+  // surfaces this instead of phyto_score (Condition), which a one-off flight has
+  // no real seasonal baseline to anchor.
+  vigor: number | null
   data_quality: string | null
   vi_means: Record<string, number | null>
 }

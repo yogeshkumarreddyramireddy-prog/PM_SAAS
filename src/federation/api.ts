@@ -47,15 +47,45 @@ export interface DroneLatest {
   legend?: DroneLegend | null // red→green legend labels (anchored-adaptive)
 }
 
-/** Latest processed drone scene for a drone course (pass-scoped, server-verified). */
-export async function fetchLatestDroneScene(droneCourseId: number): Promise<DroneLatest> {
-  const res = await fetch(`${SATELLITE_API}/drone/courses/${droneCourseId}/latest`, {
-    headers: { ...passHeaders() },
-  })
+// A ?flight_date=YYYY-MM-DD query string when a specific scan is selected; empty
+// for the latest flight (the default, so the existing call sites are unchanged).
+function flightQuery(flightDate?: string | null): string {
+  return flightDate ? `?flight_date=${encodeURIComponent(flightDate)}` : ''
+}
+
+/** Drone scene for a course — the latest flight, or a specific `flightDate`
+ *  (pass-scoped, server-verified). */
+export async function fetchLatestDroneScene(
+  droneCourseId: number, flightDate?: string | null,
+): Promise<DroneLatest> {
+  const res = await fetch(
+    `${SATELLITE_API}/drone/courses/${droneCourseId}/latest${flightQuery(flightDate)}`,
+    { headers: { ...passHeaders() } },
+  )
   if (!res.ok) {
     throw new Error(`drone latest failed: ${res.status}`)
   }
   return res.json()
+}
+
+export interface DroneFlight {
+  flight_date: string          // YYYY-MM-DD — the key passed back to load this scan
+  acquired_at: string | null
+  area_count: number
+  vi_count: number
+  has_rgb: boolean
+  label: string | null
+}
+
+/** Flight dates (scans) available for the course, newest first (pass-scoped).
+ *  Backs the scan-date selector. Throws if the endpoint isn't deployed yet — the
+ *  caller treats that as "no picker, latest only". */
+export async function fetchDroneFlights(droneCourseId: number): Promise<DroneFlight[]> {
+  const res = await fetch(`${SATELLITE_API}/drone/courses/${droneCourseId}/flights`, {
+    headers: { ...passHeaders() },
+  })
+  if (!res.ok) throw new Error(`drone flights failed: ${res.status}`)
+  return (await res.json()).flights as DroneFlight[]
 }
 
 export interface ZoneProps {
@@ -75,21 +105,29 @@ export interface ZonesResponse {
   features: Array<{ type: 'Feature'; geometry: unknown; properties: ZoneProps }>
 }
 
-/** Polygon zones + per-zone Phyto/VI for the latest drone scene (pass-scoped). */
-export async function fetchDroneZones(droneCourseId: number): Promise<ZonesResponse> {
-  const res = await fetch(`${SATELLITE_API}/drone/courses/${droneCourseId}/zones`, {
-    headers: { ...passHeaders() },
-  })
+/** Polygon zones + per-zone Phyto/VI for a drone scene — latest flight, or a
+ *  specific `flightDate` (pass-scoped). */
+export async function fetchDroneZones(
+  droneCourseId: number, flightDate?: string | null,
+): Promise<ZonesResponse> {
+  const res = await fetch(
+    `${SATELLITE_API}/drone/courses/${droneCourseId}/zones${flightQuery(flightDate)}`,
+    { headers: { ...passHeaders() } },
+  )
   if (!res.ok) throw new Error(`drone zones failed: ${res.status}`)
   return res.json()
 }
 
 export interface Histogram { counts: number[]; bin_edges: number[] }
 
-/** Per-VI histogram for the latest drone scene (pass-scoped). */
-export async function fetchDroneHistogram(droneCourseId: number, viCode: string): Promise<Histogram> {
+/** Per-VI histogram for a drone scene — latest flight, or a specific `flightDate`
+ *  (pass-scoped). */
+export async function fetchDroneHistogram(
+  droneCourseId: number, viCode: string, flightDate?: string | null,
+): Promise<Histogram> {
+  const fd = flightDate ? `&flight_date=${encodeURIComponent(flightDate)}` : ''
   const res = await fetch(
-    `${SATELLITE_API}/drone/courses/${droneCourseId}/histogram?vi_code=${encodeURIComponent(viCode)}`,
+    `${SATELLITE_API}/drone/courses/${droneCourseId}/histogram?vi_code=${encodeURIComponent(viCode)}${fd}`,
     { headers: { ...passHeaders() } },
   )
   if (!res.ok) throw new Error(`drone histogram failed: ${res.status}`)

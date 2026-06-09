@@ -77,6 +77,9 @@ const VI_LABELS: Record<string, string> = {
   ndvi: 'NDVI', ndre: 'NDRE', gndvi: 'GNDVI', osavi: 'OSAVI',
 }
 const VI_ORDER = ['ndvi', 'ndre', 'gndvi', 'osavi']
+// The index the viewer opens on by default (NDRE — best for chlorophyll on
+// established turf). Falls back to the first available index if NDRE is absent.
+const DEFAULT_VI = 'ndre'
 
 // One-line plain-language description per index (mirrors the satellite vi.options).
 const VI_DESC: Record<string, string> = {
@@ -419,7 +422,13 @@ export default function MapView() {
         setScene(s)
         const caps = normalizeCaptures(s)
         const present = new Set(caps.flatMap((c) => c.available_vis))
-        setActiveVi((prev) => (prev && present.has(prev) ? prev : VI_ORDER.find((v) => present.has(v)) ?? null))
+        setActiveVi((prev) => (
+          prev && present.has(prev)
+            ? prev
+            : present.has(DEFAULT_VI)
+              ? DEFAULT_VI
+              : VI_ORDER.find((v) => present.has(v)) ?? null
+        ))
         setShowRgb(caps.some((c) => !!c.rgb_url))
         setVisibleCaptures(new Set(caps.map((c) => c.scene_id).filter(Boolean) as string[]))
       })
